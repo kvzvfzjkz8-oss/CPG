@@ -10,7 +10,7 @@ export const pool = new pg.Pool({
   connectionString: config.databaseUrl,
   max: 10,
   idleTimeoutMillis: 30000,
-  ssl: config.env === 'production' ? { rejectUnauthorized: true } : false,
+  ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: true } : false,
 });
 
 export const query = (text, params) => pool.query(text, params);
