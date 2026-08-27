@@ -38,7 +38,8 @@
           "color": "#E8B93B"
         }
       ],
-      "expo-font"
+      "expo-font",
+      "expo-secure-store"
     ],
     "notification": {
       "iosDisplayInForeground": true,

@@ -1,12 +1,13 @@
-import React, { useState, useRef } from 'react';
+import React, { useRef } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
+import { ActivityIndicator, View } from 'react-native';
 
 import { colors, fonts } from './src/theme';
-import { account } from './src/data/mockData';
+import { AuthProvider, useAuth } from './src/auth/AuthContext';
 import { usePushNotifications } from './src/notifications/pushNotifications';
 
 import LockScreen from './src/screens/LockScreen';
@@ -33,7 +34,8 @@ const ICONS = {
  */
 function AuthenticatedApp() {
   const navigationRef = useRef(null);
-  usePushNotifications({ navigationRef, clientNumber: account.clientNumber });
+  const { user } = useAuth();
+  usePushNotifications({ navigationRef, clientNumber: user?.clientNumber });
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }} edges={['top']}>
@@ -67,19 +69,35 @@ function AuthenticatedApp() {
   );
 }
 
-export default function App() {
-  const [unlocked, setUnlocked] = useState(false);
+function Root() {
+  const { status } = useAuth();
+
+  if (status === 'checking') {
+    return (
+      <View style={{ flex: 1, backgroundColor: colors.forest, alignItems: 'center', justifyContent: 'center' }}>
+        <ActivityIndicator color={colors.gold} size="large" />
+      </View>
+    );
+  }
+
+  if (status === 'signedIn') {
+    return <AuthenticatedApp />;
+  }
 
   return (
+    <SafeAreaView style={{ flex: 1, backgroundColor: colors.forest }} edges={['top', 'bottom']}>
+      <LockScreen />
+    </SafeAreaView>
+  );
+}
+
+export default function App() {
+  return (
     <SafeAreaProvider>
-      <StatusBar style={unlocked ? 'dark' : 'light'} />
-      {unlocked ? (
-        <AuthenticatedApp />
-      ) : (
-        <SafeAreaView style={{ flex: 1, backgroundColor: colors.forest }} edges={['top', 'bottom']}>
-          <LockScreen onUnlock={() => setUnlocked(true)} />
-        </SafeAreaView>
-      )}
+      <AuthProvider>
+        <StatusBar style="light" />
+        <Root />
+      </AuthProvider>
     </SafeAreaProvider>
   );
 }

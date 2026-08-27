@@ -1,14 +1,30 @@
-import React, { useState, useMemo } from 'react';
-import { View, Text, ScrollView, TextInput, Pressable, StyleSheet } from 'react-native';
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, Text, ScrollView, TextInput, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import Slider from '@react-native-community/slider';
 import { Feather } from '@expo/vector-icons';
 import { colors, fonts, radius, formatFCFA } from '../theme';
 import { Card, ScreenHeader, PrimaryButton, SegmentedControl } from '../components/UI';
 import RailProgress from '../components/RailProgress';
-import { activeLoan, MONTHLY_RATE } from '../data/mockData';
+import { fetchProducts, fetchCredits, simulateCredit, requestCredit } from '../api/clientApi';
 
 export default function CreditsScreen() {
   const [tab, setTab] = useState('suivi');
+  const [products, setProducts] = useState([]);
+  // Portées d'un onglet à l'autre : simuler un montant puis passer à
+  // "Demande" doit repartir des mêmes valeurs, pas d'un formulaire vide.
+  const [selectedProductId, setSelectedProductId] = useState(null);
+  const [amount, setAmount] = useState(300000);
+  const [months, setMonths] = useState(12);
+
+  useEffect(() => {
+    fetchProducts()
+      .then((res) => {
+        setProducts(res.produits);
+        if (res.produits.length > 0) setSelectedProductId(res.produits[0].id);
+      })
+      .catch(() => {});
+  }, []);
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={{ paddingBottom: 32 }}>
@@ -24,27 +40,83 @@ export default function CreditsScreen() {
       />
       <View style={{ paddingHorizontal: 20 }}>
         {tab === 'suivi' && <LoanTracking />}
-        {tab === 'simulation' && <Simulator onApply={() => setTab('demande')} />}
-        {tab === 'demande' && <LoanRequest />}
+        {tab === 'simulation' && (
+          <Simulator
+            products={products}
+            selectedProductId={selectedProductId}
+            onSelectProduct={setSelectedProductId}
+            amount={amount}
+            onAmount={setAmount}
+            months={months}
+            onMonths={setMonths}
+            onApply={() => setTab('demande')}
+          />
+        )}
+        {tab === 'demande' && (
+          <LoanRequest
+            produitId={selectedProductId}
+            produit={products.find((p) => p.id === selectedProductId)}
+            montant={amount}
+            duree={months}
+          />
+        )}
       </View>
     </ScrollView>
   );
 }
 
 function LoanTracking() {
-  const monthsLeft = activeLoan.totalMonths - activeLoan.paidMonths;
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [activeCredit, setActiveCredit] = useState(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetchCredits();
+      setActiveCredit(res.activeCredit);
+    } catch (e) {
+      setError(e.message ?? 'Impossible de charger vos crédits.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  if (loading) {
+    return <ActivityIndicator color={colors.forest} style={{ marginTop: 40 }} />;
+  }
+  if (error) {
+    return (
+      <Card style={{ padding: 18 }}>
+        <Text style={styles.disclaimer}>{error}</Text>
+      </Card>
+    );
+  }
+  if (!activeCredit) {
+    return (
+      <Card style={{ padding: 18, alignItems: 'center', paddingVertical: 34 }}>
+        <Feather name="inbox" size={26} color={colors.muted} />
+        <Text style={[styles.cardTitle, { marginTop: 10 }]}>Aucun crédit actif</Text>
+        <Text style={styles.disclaimer}>Utilisez l'onglet Simulation pour préparer une demande.</Text>
+      </Card>
+    );
+  }
+
+  const monthsLeft = activeCredit.installments.filter((i) => i.status !== 'payee').length;
+  const nextDue = activeCredit.installments.find((i) => i.status === 'a_venir');
   const facts = [
-    ['Montant initial', `${formatFCFA(activeLoan.initialAmount)} F`],
-    ['Reste à payer', `${formatFCFA(activeLoan.remaining)} F`],
-    ['Mensualité', `${formatFCFA(activeLoan.monthlyPayment)} F`],
-    ['Mois restants', `${monthsLeft} / ${activeLoan.totalMonths}`],
+    ['Montant initial', `${formatFCFA(activeCredit.amount)} F`],
+    ['Reste à payer', `${formatFCFA(activeCredit.remainingAmount)} F`],
+    ['Mensualité', `${formatFCFA(activeCredit.monthly_payment)} F`],
+    ['Mois restants', `${monthsLeft} / ${activeCredit.duration_months}`],
   ];
 
   return (
     <Card style={{ padding: 18 }}>
       <View style={styles.rowIcon}>
         <Feather name="credit-card" size={16} color={colors.forestLight} />
-        <Text style={styles.cardTitle}>Microcrédit personnel · Réf. {activeLoan.ref}</Text>
+        <Text style={styles.cardTitle}>Microcrédit · Réf. {activeCredit.reference}</Text>
       </View>
 
       <View style={styles.factGrid}>
@@ -57,26 +129,51 @@ function LoanTracking() {
       </View>
 
       <Text style={styles.factLabel}>Échéancier</Text>
-      <RailProgress total={activeLoan.totalMonths} paid={activeLoan.paidMonths} />
+      <RailProgress total={activeCredit.duration_months} paid={activeCredit.paidMonths} />
 
-      <View style={styles.notice}>
-        <Feather name="shield" size={15} color={colors.forestLight} />
-        <Text style={styles.noticeText}>
-          Prochaine échéance le {activeLoan.nextDueDate} — prélèvement via Mobile Money.
-        </Text>
-      </View>
+      {nextDue && (
+        <View style={styles.notice}>
+          <Feather name="shield" size={15} color={colors.forestLight} />
+          <Text style={styles.noticeText}>
+            Prochaine échéance le {new Date(nextDue.due_date).toLocaleDateString('fr-FR')} — prélèvement automatique.
+          </Text>
+        </View>
+      )}
     </Card>
   );
 }
 
-function Simulator({ onApply }) {
-  const [amount, setAmount] = useState(500000);
-  const [months, setMonths] = useState(12);
+function Simulator({ products, selectedProductId, onSelectProduct, amount, onAmount, months, onMonths, onApply }) {
+  const product = products.find((p) => p.id === selectedProductId);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
 
-  const monthly = useMemo(
-    () => Math.round((amount * (1 + MONTHLY_RATE * months)) / months),
-    [amount, months]
-  );
+  const bounds = product
+    ? {
+        minAmount: product.montantMin, maxAmount: product.montantMax,
+        minDuration: product.dureeMin, maxDuration: product.dureeMax,
+      }
+    : { minAmount: 50000, maxAmount: 2000000, minDuration: 3, maxDuration: 36 };
+
+  const runSimulation = async () => {
+    if (!selectedProductId) return;
+    setBusy(true);
+    setError('');
+    setResult(null);
+    try {
+      const res = await simulateCredit({ produitId: selectedProductId, montant: amount, duree: months });
+      setResult(res);
+    } catch (e) {
+      setError(e.message ?? 'Simulation impossible.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (products.length === 0) {
+    return <ActivityIndicator color={colors.forest} style={{ marginTop: 40 }} />;
+  }
 
   return (
     <Card style={{ padding: 18 }}>
@@ -85,15 +182,30 @@ function Simulator({ onApply }) {
         <Text style={styles.cardTitle}>Simuler un prêt</Text>
       </View>
 
+      <Text style={styles.inputLabel}>Type de crédit</Text>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+        {products.map((p) => (
+          <Pressable
+            key={p.id}
+            onPress={() => onSelectProduct(p.id)}
+            style={[styles.productChip, selectedProductId === p.id && styles.productChipActive]}
+          >
+            <Text style={[styles.productChipText, selectedProductId === p.id && styles.productChipTextActive]}>
+              {p.nom}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+
       <Text style={styles.sliderLabel}>
         Montant souhaité : <Text style={styles.sliderValue}>{formatFCFA(amount)} FCFA</Text>
       </Text>
       <Slider
-        minimumValue={50000}
-        maximumValue={2000000}
+        minimumValue={bounds.minAmount}
+        maximumValue={bounds.maxAmount}
         step={10000}
         value={amount}
-        onValueChange={setAmount}
+        onValueChange={onAmount}
         minimumTrackTintColor={colors.forest}
         maximumTrackTintColor={colors.line}
         thumbTintColor={colors.forest}
@@ -104,40 +216,62 @@ function Simulator({ onApply }) {
         Durée : <Text style={styles.sliderValue}>{months} mois</Text>
       </Text>
       <Slider
-        minimumValue={3}
-        maximumValue={36}
+        minimumValue={bounds.minDuration}
+        maximumValue={bounds.maxDuration}
         step={1}
         value={months}
-        onValueChange={setMonths}
+        onValueChange={onMonths}
         minimumTrackTintColor={colors.forest}
         maximumTrackTintColor={colors.line}
         thumbTintColor={colors.forest}
         style={{ marginBottom: 18 }}
       />
 
-      <View style={styles.resultBox}>
-        <Text style={styles.resultLabel}>Mensualité estimée</Text>
-        <Text style={styles.resultValue}>
-          {formatFCFA(monthly)} <Text style={{ fontSize: 14 }}>FCFA / mois</Text>
-        </Text>
-      </View>
-      <Text style={styles.disclaimer}>
-        Simulation indicative, taux {(MONTHLY_RATE * 100).toString().replace('.', ',')} %/mois.
-        Sous réserve d'étude du dossier.
-      </Text>
+      <Pressable onPress={runSimulation} style={styles.simulateBtn} disabled={busy}>
+        {busy ? <ActivityIndicator color={colors.forest} /> : <Text style={styles.simulateBtnText}>Calculer la mensualité</Text>}
+      </Pressable>
+
+      {error ? <Text style={[styles.disclaimer, { color: colors.danger }]}>{error}</Text> : null}
+
+      {result && (
+        <View style={styles.resultBox}>
+          <Text style={styles.resultLabel}>Mensualité estimée</Text>
+          <Text style={styles.resultValue}>
+            {formatFCFA(result.monthlyPayment)} <Text style={{ fontSize: 14 }}>FCFA / mois</Text>
+          </Text>
+          <Text style={[styles.disclaimer, { color: colors.onForest, marginTop: 8 }]}>{result.avertissement}</Text>
+        </View>
+      )}
+
       <PrimaryButton
         label="Faire une demande avec ce montant"
         onPress={onApply}
+        disabled={!selectedProductId}
         style={{ marginTop: 14 }}
       />
     </Card>
   );
 }
 
-function LoanRequest() {
-  const [amount, setAmount] = useState('300000');
+function LoanRequest({ produitId, produit, montant, duree }) {
   const [reason, setReason] = useState('');
   const [sent, setSent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const submit = async () => {
+    if (!produitId) return;
+    setBusy(true);
+    setError('');
+    try {
+      await requestCredit({ produitId, montant, duree, motif: reason.trim() || undefined });
+      setSent(true);
+    } catch (e) {
+      setError(e.message ?? "L'envoi a échoué.");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   if (sent) {
     return (
@@ -147,7 +281,7 @@ function LoanRequest() {
         </View>
         <Text style={styles.cardTitle}>Demande envoyée</Text>
         <Text style={[styles.disclaimer, { marginTop: 6 }]}>
-          Un conseiller CPG examinera votre dossier de {formatFCFA(amount)} FCFA sous 48 h.
+          Votre dossier de {formatFCFA(montant)} FCFA est en cours de vérification.
         </Text>
       </Card>
     );
@@ -157,18 +291,16 @@ function LoanRequest() {
     <Card style={{ padding: 18 }}>
       <View style={styles.rowIcon}>
         <Feather name="file-text" size={16} color={colors.forestLight} />
-        <Text style={styles.cardTitle}>Demande de microcrédit</Text>
+        <Text style={styles.cardTitle}>Demande de crédit{produit ? ` — ${produit.nom}` : ''}</Text>
       </View>
 
-      <Text style={styles.inputLabel}>Montant demandé (FCFA)</Text>
-      <TextInput
-        value={amount}
-        onChangeText={(t) => setAmount(t.replace(/\D/g, ''))}
-        keyboardType="number-pad"
-        style={[styles.input, { fontFamily: fonts.mono }]}
-      />
+      <Text style={styles.inputLabel}>Montant demandé</Text>
+      <Text style={[styles.factValue, { marginBottom: 14 }]}>{formatFCFA(montant)} FCFA sur {duree} mois</Text>
+      <Text style={[styles.disclaimer, { textAlign: 'left', marginBottom: 14 }]}>
+        Réglez le montant et la durée depuis l'onglet Simulation avant d'envoyer.
+      </Text>
 
-      <Text style={styles.inputLabel}>Motif du prêt</Text>
+      <Text style={styles.inputLabel}>Motif du prêt (optionnel)</Text>
       <TextInput
         value={reason}
         onChangeText={setReason}
@@ -179,15 +311,12 @@ function LoanRequest() {
         style={[styles.input, { height: 80, textAlignVertical: 'top' }]}
       />
 
-      <Pressable style={styles.attach}>
-        <Feather name="paperclip" size={14} color={colors.muted} />
-        <Text style={styles.attachText}>Joindre une pièce justificative</Text>
-      </Pressable>
+      {error ? <Text style={[styles.disclaimer, { color: colors.danger, textAlign: 'left' }]}>{error}</Text> : null}
 
       <PrimaryButton
-        label="Envoyer la demande"
-        disabled={!amount}
-        onPress={() => setSent(true)}
+        label={busy ? 'Envoi…' : 'Envoyer la demande'}
+        disabled={!produitId || busy}
+        onPress={submit}
       />
     </Card>
   );
@@ -211,7 +340,19 @@ const styles = StyleSheet.create({
   noticeText: { flex: 1, fontSize: 11, color: colors.forestLight, fontFamily: fonts.body },
   sliderLabel: { fontSize: 11, color: colors.muted, fontFamily: fonts.body },
   sliderValue: { color: colors.ink, fontWeight: '600' },
-  resultBox: { backgroundColor: colors.forest, borderRadius: radius.md, padding: 16, alignItems: 'center' },
+  productChip: {
+    paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999,
+    borderWidth: 1, borderColor: colors.line,
+  },
+  productChipActive: { backgroundColor: colors.forest, borderColor: colors.forest },
+  productChipText: { fontSize: 11, color: colors.muted, fontFamily: fonts.body },
+  productChipTextActive: { color: '#fff', fontWeight: '600' },
+  simulateBtn: {
+    backgroundColor: colors.forestPale, borderRadius: radius.md, paddingVertical: 12,
+    alignItems: 'center', marginBottom: 12,
+  },
+  simulateBtnText: { color: colors.forestLight, fontSize: 12, fontWeight: '600', fontFamily: fonts.body },
+  resultBox: { backgroundColor: colors.forest, borderRadius: radius.md, padding: 16, alignItems: 'center', marginTop: 4 },
   resultLabel: { fontSize: 11, color: colors.onForest, fontFamily: fonts.body },
   resultValue: { fontSize: 24, color: '#fff', fontFamily: fonts.mono, marginTop: 4 },
   disclaimer: { fontSize: 10, color: colors.muted, textAlign: 'center', marginTop: 8, fontFamily: fonts.body },
@@ -227,19 +368,6 @@ const styles = StyleSheet.create({
     fontFamily: fonts.body,
     marginBottom: 14,
   },
-  attach: {
-    flexDirection: 'row',
-    gap: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    borderColor: colors.line,
-    borderRadius: radius.sm,
-    paddingVertical: 11,
-    marginBottom: 16,
-  },
-  attachText: { fontSize: 12, color: colors.muted, fontFamily: fonts.body },
   successIcon: {
     width: 56,
     height: 56,

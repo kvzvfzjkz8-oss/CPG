@@ -1,13 +1,29 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { View, Text, Pressable, Animated, StyleSheet, Alert } from 'react-native';
+import { View, Text, Pressable, Animated, StyleSheet, TextInput, ActivityIndicator } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { colors, fonts } from '../theme';
+import { useAuth } from '../auth/AuthContext';
 
-const DEMO_PIN = '1234';
-
-export default function LockScreen({ onUnlock }) {
+/**
+ * Deux modes selon qu'un numéro de téléphone est déjà enregistré sur
+ * l'appareil :
+ *   - première connexion : demande le numéro, puis le code PIN, et
+ *     authentifie les deux ensemble contre le serveur.
+ *   - retour : le numéro est déjà connu, seul le code PIN est demandé
+ *     (avec un raccourci biométrique).
+ *
+ * Contrairement à l'ancienne version, ceci parle réellement au
+ * serveur : un mauvais code PIN est refusé par cpg-api, pas comparé à
+ * une valeur codée en dur ici.
+ */
+export default function LockScreen() {
+  const { login, knownPhone } = useAuth();
+  const [phone, setPhone] = useState(knownPhone ?? '');
+  const [step, setStep] = useState(knownPhone ? 'pin' : 'phone');
   const [pin, setPin] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
   const [biometricLabel, setBiometricLabel] = useState('Empreinte');
   const shake = useRef(new Animated.Value(0)).current;
 
@@ -20,7 +36,8 @@ export default function LockScreen({ onUnlock }) {
     })();
   }, []);
 
-  const fail = useCallback(() => {
+  const fail = useCallback((message) => {
+    setError(message);
     Animated.sequence([
       Animated.timing(shake, { toValue: 1, duration: 60, useNativeDriver: true }),
       Animated.timing(shake, { toValue: -1, duration: 60, useNativeDriver: true }),
@@ -29,23 +46,33 @@ export default function LockScreen({ onUnlock }) {
     ]).start(() => setPin(''));
   }, [shake]);
 
-  const press = (digit) => {
-    if (pin.length >= 4) return;
+  const attemptLogin = useCallback(async (enteredPin) => {
+    setBusy(true);
+    setError('');
+    try {
+      await login(phone, enteredPin);
+    } catch (e) {
+      fail(e.message ?? 'Code PIN incorrect.');
+    } finally {
+      setBusy(false);
+    }
+  }, [phone, login, fail]);
+
+  const pressDigit = (digit) => {
+    if (busy || pin.length >= 6) return;
     const next = pin + digit;
     setPin(next);
     if (next.length === 4) {
-      setTimeout(() => (next === DEMO_PIN ? onUnlock() : fail()), 140);
+      setTimeout(() => attemptLogin(next), 120);
     }
   };
 
-  const authenticate = async () => {
+  const authenticateBiometric = async () => {
     const hasHardware = await LocalAuthentication.hasHardwareAsync();
     const enrolled = await LocalAuthentication.isEnrolledAsync();
 
     if (!hasHardware || !enrolled) {
-      // Sur simulateur ou appareil sans biométrie configurée : on laisse passer
-      // pour que la démonstration reste testable.
-      onUnlock();
+      setError('Utilisez votre code PIN : la biométrie n’est pas configurée sur cet appareil.');
       return;
     }
 
@@ -55,13 +82,54 @@ export default function LockScreen({ onUnlock }) {
       disableDeviceFallback: false,
     });
 
-    if (result.success) onUnlock();
-    else if (result.error && result.error !== 'user_cancel') {
-      Alert.alert('Connexion impossible', 'Utilisez votre code PIN pour continuer.');
+    if (!result.success) {
+      if (result.error && result.error !== 'user_cancel') {
+        setError('Utilisez votre code PIN pour continuer.');
+      }
+      return;
+    }
+
+    if (!knownPhone) {
+      setError('Saisissez votre code PIN pour la première connexion sur cet appareil.');
     }
   };
 
   const translateX = shake.interpolate({ inputRange: [-1, 1], outputRange: [-10, 10] });
+
+  if (step === 'phone') {
+    return (
+      <View style={styles.root}>
+        <View style={styles.brand}>
+          <View style={styles.logo}>
+            <Feather name="git-commit" size={24} color={colors.forest} />
+          </View>
+          <Text style={styles.brandName}>Crédit Populaire du Gabon</Text>
+          <Text style={styles.brandHint}>Entrez votre numéro de téléphone</Text>
+        </View>
+
+        <TextInput
+          style={styles.phoneInput}
+          placeholder="+241 06 00 00 01"
+          placeholderTextColor="rgba(255,255,255,0.4)"
+          keyboardType="phone-pad"
+          autoFocus
+          value={phone}
+          onChangeText={setPhone}
+        />
+
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+
+        <Pressable
+          onPress={() => phone.trim().length >= 8 && setStep('pin')}
+          style={({ pressed }) => [styles.continueBtn, { opacity: pressed ? 0.7 : 1 }]}
+        >
+          <Text style={styles.continueText}>Continuer</Text>
+        </Pressable>
+
+        <View style={{ height: 40 }} />
+      </View>
+    );
+  }
 
   return (
     <View style={styles.root}>
@@ -70,26 +138,37 @@ export default function LockScreen({ onUnlock }) {
           <Feather name="git-commit" size={24} color={colors.forest} />
         </View>
         <Text style={styles.brandName}>Crédit Populaire du Gabon</Text>
-        <Text style={styles.brandHint}>Entrez votre code PIN</Text>
+        <Text style={styles.brandHint}>
+          {knownPhone ? `Code PIN pour ${phone}` : 'Créez votre code PIN'}
+        </Text>
+        {!knownPhone && (
+          <Pressable onPress={() => setStep('phone')}>
+            <Text style={styles.changePhone}>Modifier le numéro</Text>
+          </Pressable>
+        )}
       </View>
 
-      <Animated.View style={[styles.dots, { transform: [{ translateX }] }]}>
-        {[0, 1, 2, 3].map((i) => (
-          <View
-            key={i}
-            style={[
-              styles.dot,
-              { backgroundColor: i < pin.length ? colors.gold : 'rgba(255,255,255,0.18)' },
-            ]}
-          />
-        ))}
-      </Animated.View>
+      {busy ? (
+        <ActivityIndicator color={colors.gold} size="large" />
+      ) : (
+        <Animated.View style={[styles.dots, { transform: [{ translateX }] }]}>
+          {[0, 1, 2, 3].map((i) => (
+            <View
+              key={i}
+              style={[styles.dot, { backgroundColor: i < pin.length ? colors.gold : 'rgba(255,255,255,0.18)' }]}
+            />
+          ))}
+        </Animated.View>
+      )}
+
+      {error ? <Text style={styles.error}>{error}</Text> : <View style={{ height: 18 }} />}
 
       <View style={styles.pad}>
         {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => (
           <Pressable
             key={d}
-            onPress={() => press(d)}
+            onPress={() => pressDigit(d)}
+            disabled={busy}
             accessibilityRole="button"
             accessibilityLabel={`Chiffre ${d}`}
             style={({ pressed }) => [styles.key, { opacity: pressed ? 0.5 : 1 }]}
@@ -98,7 +177,8 @@ export default function LockScreen({ onUnlock }) {
           </Pressable>
         ))}
         <Pressable
-          onPress={authenticate}
+          onPress={authenticateBiometric}
+          disabled={busy}
           accessibilityRole="button"
           accessibilityLabel={`Déverrouiller avec ${biometricLabel}`}
           style={({ pressed }) => [styles.key, { opacity: pressed ? 0.5 : 1 }]}
@@ -106,7 +186,8 @@ export default function LockScreen({ onUnlock }) {
           <Feather name={biometricLabel === 'Face ID' ? 'user-check' : 'unlock'} size={22} color={colors.gold} />
         </Pressable>
         <Pressable
-          onPress={() => press('0')}
+          onPress={() => pressDigit('0')}
+          disabled={busy}
           accessibilityRole="button"
           style={({ pressed }) => [styles.key, { opacity: pressed ? 0.5 : 1 }]}
         >
@@ -114,6 +195,7 @@ export default function LockScreen({ onUnlock }) {
         </Pressable>
         <Pressable
           onPress={() => setPin(pin.slice(0, -1))}
+          disabled={busy}
           accessibilityRole="button"
           accessibilityLabel="Effacer"
           style={({ pressed }) => [styles.key, { opacity: pressed ? 0.5 : 1 }]}
@@ -121,8 +203,6 @@ export default function LockScreen({ onUnlock }) {
           <Feather name="delete" size={20} color={colors.onForest} />
         </Pressable>
       </View>
-
-      <Text style={styles.footer}>Code de démonstration : 1234 · ou touchez {biometricLabel}</Text>
     </View>
   );
 }
@@ -149,6 +229,28 @@ const styles = StyleSheet.create({
   },
   brandName: { color: '#fff', fontSize: 17, fontWeight: '600', fontFamily: fonts.display },
   brandHint: { color: colors.onForest, fontSize: 12, marginTop: 5, fontFamily: fonts.body },
+  changePhone: { color: colors.gold, fontSize: 11, marginTop: 8, fontFamily: fonts.body, textDecorationLine: 'underline' },
+  phoneInput: {
+    width: '100%',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
+    borderRadius: 12,
+    padding: 14,
+    color: '#fff',
+    fontSize: 16,
+    fontFamily: fonts.mono,
+    textAlign: 'center',
+  },
+  continueBtn: {
+    backgroundColor: colors.gold,
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 40,
+    width: '100%',
+    alignItems: 'center',
+  },
+  continueText: { color: colors.forest, fontSize: 15, fontWeight: '600', fontFamily: fonts.body },
+  error: { color: '#F4A6A6', fontSize: 12, fontFamily: fonts.body, textAlign: 'center' },
   dots: { flexDirection: 'row', gap: 14 },
   dot: { width: 14, height: 14, borderRadius: 7 },
   pad: {
@@ -160,5 +262,4 @@ const styles = StyleSheet.create({
   },
   key: { width: 80, height: 58, alignItems: 'center', justifyContent: 'center' },
   keyText: { color: '#fff', fontSize: 24, fontFamily: fonts.mono },
-  footer: { color: '#8FB09D', fontSize: 10, fontFamily: fonts.body },
 });
