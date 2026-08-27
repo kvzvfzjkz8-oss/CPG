@@ -1,0 +1,48 @@
+{
+  "expo": {
+    "name": "CPG",
+    "slug": "cpg-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#0B3D2E"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "ga.cpg.mobile",
+      "infoPlist": {
+        "NSFaceIDUsageDescription": "CPG utilise Face ID pour sécuriser l'accès à votre compte."
+      }
+    },
+    "android": {
+      "package": "ga.cpg.mobile",
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "backgroundColor": "#0B3D2E"
+      },
+      "permissions": [
+        "USE_BIOMETRIC",
+        "USE_FINGERPRINT"
+      ]
+    },
+    "plugins": [
+      "expo-local-authentication",
+      [
+        "expo-notifications",
+        {
+          "color": "#E8B93B"
+        }
+      ],
+      "expo-font"
+    ],
+    "notification": {
+      "iosDisplayInForeground": true,
+      "color": "#E8B93B"
+    }
+  }
+}

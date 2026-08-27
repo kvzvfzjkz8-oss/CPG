@@ -1,0 +1,18 @@
+-- ─────────────────────────────────────────────────────────────────────
+--  OPÉRATIONS MENSUELLES DE L'OPÉRATEUR
+-- ─────────────────────────────────────────────────────────────────────
+--
+-- L'opérateur crédite chaque mois les comptes des agents (paie versée
+-- par leur employeur, ex. SETRAG) et s'assure que les échéances de
+-- crédit et les agios ont bien été prélevés sur la période. Le journal
+-- ledger_entries porte déjà tout ce qu'il faut (compte, montant, motif,
+-- référence, auteur) : seul le type d'écriture manquait pour distinguer
+-- un crédit de salaire d'un simple dépôt.
+--
+-- ⚠️ ALTER TYPE ... ADD VALUE seule dans ce fichier, à dessein : cette
+-- commande ne peut pas être utilisée dans la même transaction qu'une
+-- commande qui se sert ensuite de la nouvelle valeur. migrate.js exécute
+-- chaque fichier comme une requête à part, donc l'isoler ici garantit
+-- que la valeur est déjà validée avant qu'une migration suivante ou le
+-- code applicatif ne s'en serve.
+ALTER TYPE entry_type ADD VALUE 'salaire';
