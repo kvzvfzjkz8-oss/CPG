@@ -57,9 +57,20 @@ export function errorHandler(err, req, res, _next) {
     return res.status(err.status).json({ error: err.message, code: err.code });
   }
 
-  // Violation de contrainte d'unicité PostgreSQL.
+  // Violation de contrainte d'unicité PostgreSQL. Le nom de la
+  // contrainte dit précisément quel champ est en cause — un message
+  // générique force à aller lire les logs pour comprendre, alors que
+  // le serveur le sait déjà.
   if (err.code === '23505') {
-    return res.status(409).json({ error: 'Cette entrée existe déjà.' });
+    const messages = {
+      users_phone_key: 'Ce numéro de téléphone est déjà utilisé par un autre compte.',
+      users_email_key: 'Cette adresse email est déjà utilisée par un autre compte.',
+      users_client_number_key: 'Numéro client déjà attribué — réessayez.',
+    };
+    return res.status(409).json({
+      error: messages[err.constraint] ?? 'Cette entrée existe déjà.',
+      code: err.constraint,
+    });
   }
 
   req.log?.error({ err }, 'Erreur non gérée');
