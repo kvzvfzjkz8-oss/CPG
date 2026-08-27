@@ -452,7 +452,17 @@ function UserManagement() {
     setBusy(true);
     setError('');
     try {
-      await createUser(form);
+      // Filet de sécurité : n'envoie que les champs pertinents pour
+      // le rôle choisi, même si le formulaire garde en mémoire une
+      // ancienne valeur (remplissage automatique du navigateur, ou
+      // changement de rôle en cours de saisie) — un client ne doit
+      // jamais se voir attribuer un email ou un mot de passe resté
+      // d'un essai précédent avec un autre rôle.
+      const payload = form.role === 'client'
+        ? { nomComplet: form.nomComplet, telephone: form.telephone, role: form.role, codePin: form.codePin }
+        : { nomComplet: form.nomComplet, telephone: form.telephone, role: form.role, email: form.email, motDePasse: form.motDePasse };
+
+      await createUser(payload);
       setCreating(false);
       setForm({ nomComplet: '', telephone: '', email: '', role: 'operateur', motDePasse: '', codePin: '' });
       load();
@@ -488,7 +498,13 @@ function UserManagement() {
               <input placeholder="Téléphone" required value={form.telephone}
                 onChange={(e) => setForm((f) => ({ ...f, telephone: e.target.value }))}
                 style={{ padding: '9px 11px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body }} />
-              <select value={form.role} onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}
+              <select value={form.role} onChange={(e) => {
+                const role = e.target.value;
+                setForm((f) => ({
+                  ...f, role,
+                  ...(role === 'client' ? { email: '', motDePasse: '' } : { codePin: '' }),
+                }));
+              }}
                 style={{ padding: '9px 11px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body }}>
                 <option value="client">Client</option>
                 <option value="operateur">Opérateur</option>
