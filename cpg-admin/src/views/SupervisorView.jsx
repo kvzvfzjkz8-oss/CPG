@@ -10,10 +10,7 @@ import {
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, Tabs, KpiCard, SectionTitle, DataTable, td } from '../components/UI';
 import {
-  kpis, monthlyCredits, clientSegments, users, momoTransactions,
-} from '../data/mockData';
-import {
-  approveCredit, setUserStatus,
+  approveCredit, setUserStatus, fetchUsers, createUser, fetchStatistics, fetchMomoTransactions,
   fetchPendingInstallmentAdjustments, decideInstallmentAdjustment,
   fetchFinalApprovalQueue, grantExceptionAuthorization, fetchExceptionAuthorizations,
 } from '../api/adminApi';
@@ -72,11 +69,35 @@ const tooltipStyle = {
 };
 
 function Overview() {
+  const [stats, setStats] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchStatistics().then(setStats).finally(() => setLoading(false));
+  }, []);
+
+  if (loading || !stats) {
+    return <Card style={{ padding: 40, textAlign: 'center' }}>Chargement…</Card>;
+  }
+
+  const { kpis: k, creditsParMois, segments } = stats;
+  const kpiCards = [
+    { label: 'Crédits actifs', value: String(k.credits_actifs), delta: '', up: true },
+    { label: 'Encours total', value: `${formatFCFA(k.encours_total)} F`, delta: '', up: true },
+    { label: 'Dossiers en attente', value: String(k.en_attente), delta: '', up: true },
+    { label: 'Échéances en retard', value: String(k.echeances_en_retard), delta: '', up: k.echeances_en_retard === 0 },
+  ];
+  const palette = [colors.forest, colors.gold, colors.forestLight, colors.muted, colors.danger, colors.ink];
+  const clientSegments = segments.map((s, i) => ({
+    name: s.segment, value: Number(s.clients), color: palette[i % palette.length],
+  }));
+  const monthlyCredits = creditsParMois.map((m) => ({ mois: m.mois, credits: Number(m.credits) }));
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
-        {kpis.map((k) => (
-          <KpiCard key={k.label} {...k} />
+        {kpiCards.map((c) => (
+          <KpiCard key={c.label} {...c} />
         ))}
       </div>
 
@@ -146,7 +167,7 @@ function Overview() {
                   <span style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>{s.name}</span>
                 </span>
                 <span style={{ fontSize: 11, fontWeight: 600, color: colors.ink, fontFamily: fonts.mono }}>
-                  {s.value} %
+                  {s.value}
                 </span>
               </div>
             ))}
@@ -385,83 +406,168 @@ function ExceptionAuthorizations() {
 }
 
 function UserManagement() {
-  const [list, setList] = useState(users);
+  const [list, setList] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState({ nomComplet: '', telephone: '', email: '', role: 'operateur', motDePasse: '', codePin: '' });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const load = () => {
+    setLoading(true);
+    fetchUsers().then(setList).finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
 
   const toggle = async (u) => {
-    const next = u.statut === 'Actif' ? 'Suspendu' : 'Actif';
+    const next = u.status === 'actif' ? 'suspendu' : 'actif';
     await setUserStatus(u.id, next);
-    setList((prev) => prev.map((x) => (x.id === u.id ? { ...x, statut: next } : x)));
+    setList((prev) => prev.map((x) => (x.id === u.id ? { ...x, status: next } : x)));
+  };
+
+  const submitCreate = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      await createUser(form);
+      setCreating(false);
+      setForm({ nomComplet: '', telephone: '', email: '', role: 'operateur', motDePasse: '', codePin: '' });
+      load();
+    } catch (err) {
+      setError(err.message ?? 'Création impossible.');
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
-    <Card style={{ padding: 0, overflow: 'hidden' }}>
-      <SectionTitle
-        right={
-          <button
-            style={{
-              border: 'none',
-              background: 'transparent',
-              color: colors.forestLight,
-              fontSize: 12,
-              fontWeight: 600,
-              fontFamily: fonts.body,
-              cursor: 'pointer',
-            }}
-          >
-            + Ajouter un utilisateur
-          </button>
-        }
-      >
-        Employés et clients
-      </SectionTitle>
-
-      <DataTable
-        columns={['Nom', 'Rôle', 'Type', 'Statut', '']}
-        rows={list}
-        renderCell={(u) => (
-          <>
-            <td style={{ ...td, fontWeight: 500 }}>{u.nom}</td>
-            <td style={{ ...td, color: colors.muted }}>{u.role}</td>
-            <td style={td}>
-              <Badge>{u.type === 'employé' ? 'Employé' : 'Client'}</Badge>
-            </td>
-            <td style={td}>
-              <Badge tone={u.statut === 'Suspendu' ? 'danger' : 'neutral'}>{u.statut}</Badge>
-            </td>
-            <td style={{ ...td, textAlign: 'right' }}>
-              <button
-                onClick={() => toggle(u)}
-                title={u.statut === 'Actif' ? 'Suspendre' : 'Réactiver'}
-                style={{ border: 'none', background: 'transparent', cursor: 'pointer' }}
-              >
-                <UserCog size={15} color={colors.muted} />
+    <div>
+      {creating && (
+        <Card style={{ padding: 18, marginBottom: 16 }}>
+          <form onSubmit={submitCreate}>
+            <p style={{ margin: '0 0 12px', fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
+              Nouvel utilisateur
+            </p>
+            {error && <p style={{ fontSize: 12, color: colors.danger, fontFamily: fonts.body }}>{error}</p>}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+              <input placeholder="Nom complet" required value={form.nomComplet}
+                onChange={(e) => setForm((f) => ({ ...f, nomComplet: e.target.value }))}
+                style={{ padding: '9px 11px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body }} />
+              <input placeholder="Téléphone" required value={form.telephone}
+                onChange={(e) => setForm((f) => ({ ...f, telephone: e.target.value }))}
+                style={{ padding: '9px 11px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body }} />
+              <select value={form.role} onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}
+                style={{ padding: '9px 11px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body }}>
+                <option value="client">Client</option>
+                <option value="operateur">Opérateur</option>
+                <option value="superviseur">Gestionnaire / Superviseur</option>
+              </select>
+              {form.role === 'client' ? (
+                <input placeholder="Code PIN (4-6 chiffres)" value={form.codePin}
+                  onChange={(e) => setForm((f) => ({ ...f, codePin: e.target.value }))}
+                  style={{ padding: '9px 11px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body }} />
+              ) : (
+                <>
+                  <input placeholder="Email" type="email" value={form.email}
+                    onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                    style={{ padding: '9px 11px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body }} />
+                  <input placeholder="Mot de passe (12+ caractères)" type="password" value={form.motDePasse}
+                    onChange={(e) => setForm((f) => ({ ...f, motDePasse: e.target.value }))}
+                    style={{ padding: '9px 11px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body }} />
+                </>
+              )}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="submit" disabled={busy} style={actionBtn(colors.forest, '#fff')}>
+                {busy ? 'Création…' : 'Créer'}
               </button>
-            </td>
-          </>
-        )}
-      />
-    </Card>
+              <button type="button" onClick={() => setCreating(false)} style={actionBtn('transparent', colors.muted)}>
+                Annuler
+              </button>
+            </div>
+          </form>
+        </Card>
+      )}
+
+      <Card style={{ padding: 0, overflow: 'hidden' }}>
+        <SectionTitle
+          right={
+            <button
+              onClick={() => setCreating(true)}
+              style={{
+                border: 'none', background: 'transparent', color: colors.forestLight,
+                fontSize: 12, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer',
+              }}
+            >
+              + Ajouter un utilisateur
+            </button>
+          }
+        >
+          {loading ? 'Chargement…' : 'Employés et clients'}
+        </SectionTitle>
+
+        <DataTable
+          columns={['Nom', 'Rôle', 'Type', 'Statut', '']}
+          rows={list}
+          renderCell={(u) => (
+            <>
+              <td style={{ ...td, fontWeight: 500 }}>{u.full_name}</td>
+              <td style={{ ...td, color: colors.muted }}>{u.role}</td>
+              <td style={td}>
+                <Badge>{u.role === 'client' ? 'Client' : 'Employé'}</Badge>
+              </td>
+              <td style={td}>
+                <Badge tone={u.status === 'suspendu' ? 'danger' : 'neutral'}>
+                  {u.status === 'actif' ? 'Actif' : u.status === 'suspendu' ? 'Suspendu' : 'Fermé'}
+                </Badge>
+              </td>
+              <td style={{ ...td, textAlign: 'right' }}>
+                <button
+                  onClick={() => toggle(u)}
+                  title={u.status === 'actif' ? 'Suspendre' : 'Réactiver'}
+                  style={{ border: 'none', background: 'transparent', cursor: 'pointer' }}
+                >
+                  <UserCog size={15} color={colors.muted} />
+                </button>
+              </td>
+            </>
+          )}
+        />
+      </Card>
+    </div>
   );
 }
 
 function MomoSupervision() {
-  const tone = (s) => (s === 'Échouée' ? 'danger' : s === 'En attente' ? 'gold' : 'neutral');
+  const [transactions, setTransactions] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchMomoTransactions().then(setTransactions).finally(() => setLoading(false));
+  }, []);
+
+  const tone = (s) => (s === 'echouee' ? 'danger' : s === 'en_attente' || s === 'initiee' ? 'gold' : 'neutral');
+  const label = (s) => ({
+    initiee: 'Initiée', en_attente: 'En attente', confirmee: 'Confirmée', echouee: 'Échouée', annulee: 'Annulée',
+  }[s] ?? s);
 
   return (
     <Card style={{ padding: 0, overflow: 'hidden' }}>
-      <SectionTitle>Supervision des transactions Mobile Money</SectionTitle>
+      <SectionTitle>{loading ? 'Chargement…' : 'Supervision des transactions Mobile Money'}</SectionTitle>
       <DataTable
         columns={['Référence', 'Client', 'Opérateur', 'Sens', 'Montant', 'Statut']}
-        rows={momoTransactions}
+        rows={transactions}
         renderCell={(t) => (
           <>
-            <td style={{ ...td, fontFamily: fonts.mono, color: colors.muted }}>{t.id}</td>
+            <td style={{ ...td, fontFamily: fonts.mono, color: colors.muted }}>{t.reference}</td>
             <td style={{ ...td, fontWeight: 500 }}>{t.client}</td>
-            <td style={{ ...td, color: colors.muted }}>{t.operateur}</td>
-            <td style={{ ...td, color: colors.muted }}>{t.sens}</td>
-            <td style={{ ...td, fontFamily: fonts.mono, fontWeight: 600 }}>{formatFCFA(t.montant)} F</td>
+            <td style={{ ...td, color: colors.muted }}>{t.operator === 'airtel' ? 'Airtel Money' : 'Moov Money'}</td>
+            <td style={{ ...td, color: colors.muted }}>{t.direction === 'entrant' ? 'Entrant' : 'Sortant'}</td>
+            <td style={{ ...td, fontFamily: fonts.mono, fontWeight: 600 }}>{formatFCFA(t.amount)} F</td>
             <td style={td}>
-              <Badge tone={tone(t.statut)}>{t.statut}</Badge>
+              <Badge tone={tone(t.status)}>{label(t.status)}</Badge>
             </td>
           </>
         )}

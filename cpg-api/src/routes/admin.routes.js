@@ -30,7 +30,10 @@ router.use('/commission', commissionRoutes);
    ═══════════════════════════════════════════════════════════════════ */
 
 const listQuery = z.object({
-  statut: z.enum(['en_verification', 'valide_niveau1', 'approuve', 'rejete']).optional(),
+  statut: z.enum([
+    'en_verification', 'valide_niveau1', 'en_attente_commission',
+    'valide_commission', 'valide_double', 'approuve', 'rejete',
+  ]).optional(),
   limite: z.coerce.number().int().min(1).max(100).default(50),
 });
 
@@ -302,6 +305,25 @@ router.get('/conversations', requirePermission('messagerie.repondre'), async (re
     next(error);
   }
 });
+
+/** GET /admin/conversations/:id/messages — historique complet d'une conversation. */
+router.get(
+  '/conversations/:id/messages',
+  requirePermission('messagerie.repondre'),
+  async (req, res, next) => {
+    try {
+      const { rows } = await query(
+        `SELECT id, sender_id, body, created_at, read_at
+         FROM messages WHERE conversation_id = $1
+         ORDER BY created_at ASC`,
+        [req.params.id]
+      );
+      res.json({ messages: rows });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 router.post(
   '/conversations/:id/messages',

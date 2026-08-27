@@ -1,13 +1,21 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { GitCommit, Search, Bell, LogOut } from 'lucide-react';
 import { colors, fonts } from './theme';
-import { ROLES, ROLE_LABELS, ROLE_DESCRIPTIONS, DEMO_ACCOUNTS } from './auth/roles';
+import { ROLES, ROLE_LABELS, ROLE_DESCRIPTIONS } from './auth/roles';
+import { AuthProvider, useAuth } from './auth/AuthContext';
+import LoginView from './views/LoginView';
 import OperatorView from './views/OperatorView';
 import SupervisorView from './views/SupervisorView';
 
-export default function App() {
-  const [role, setRole] = useState(ROLES.OPERATEUR);
-  const account = DEMO_ACCOUNTS[role];
+function initialsOf(fullName) {
+  if (!fullName) return '';
+  const parts = fullName.trim().split(/\s+/);
+  return ((parts[0]?.[0] ?? '') + (parts[1]?.[0] ?? '')).toUpperCase();
+}
+
+function AuthenticatedApp() {
+  const { user, logout } = useAuth();
+  const role = user?.role;
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: colors.bg }}>
@@ -49,39 +57,16 @@ export default function App() {
           </div>
 
           <div style={{ background: 'rgba(255,255,255,0.08)', borderRadius: 12, padding: 12, marginBottom: 14 }}>
-            <p style={{ margin: '0 0 8px', fontSize: 10, color: colors.onForest, fontFamily: fonts.body }}>
-              Poste connecté
+            <p style={{ margin: '0 0 4px', fontSize: 10, color: colors.onForest, fontFamily: fonts.body }}>
+              Connecté en tant que
             </p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {Object.values(ROLES).map((r) => {
-                const active = role === r;
-                return (
-                  <button
-                    key={r}
-                    onClick={() => setRole(r)}
-                    style={{
-                      textAlign: 'left',
-                      padding: '7px 10px',
-                      borderRadius: 8,
-                      border: 'none',
-                      background: active ? colors.gold : 'transparent',
-                      color: active ? colors.forest : '#fff',
-                      fontSize: 12,
-                      fontWeight: 500,
-                      fontFamily: fonts.body,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    {r === ROLES.OPERATEUR ? 'Opérateur de crédit' : r === ROLES.DIRECTEUR ? 'Directeur' : 'Gestionnaire / Superviseur'}
-                  </button>
-                );
-              })}
-            </div>
+            <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: '#fff', fontFamily: fonts.body }}>
+              {user?.fullName}
+            </p>
+            <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.gold, fontFamily: fonts.body }}>
+              {ROLE_LABELS[role] ?? role}
+            </p>
           </div>
-
-          <p style={{ margin: 0, padding: '0 8px', fontSize: 10, lineHeight: 1.6, color: '#8FB09D', fontFamily: fonts.body }}>
-            Démonstration : basculez de poste pour voir l'interface se compartimenter selon le rôle.
-          </p>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '0 8px' }}>
@@ -100,10 +85,14 @@ export default function App() {
               fontFamily: fonts.body,
             }}
           >
-            {account.initials}
+            {initialsOf(user?.fullName)}
           </div>
-          <span style={{ flex: 1, fontSize: 11, color: '#fff', fontFamily: fonts.body }}>{account.name}</span>
-          <button style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: 0 }} title="Déconnexion">
+          <span style={{ flex: 1, fontSize: 11, color: '#fff', fontFamily: fonts.body }}>{user?.fullName}</span>
+          <button
+            onClick={logout}
+            style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: 0 }}
+            title="Déconnexion"
+          >
             <LogOut size={14} color={colors.onForest} />
           </button>
         </div>
@@ -124,10 +113,10 @@ export default function App() {
         >
           <div>
             <h1 style={{ margin: 0, fontSize: 18, fontWeight: 600, color: colors.ink, fontFamily: fonts.display }}>
-              Espace {ROLE_LABELS[role]}
+              Espace {ROLE_LABELS[role] ?? role}
             </h1>
             <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
-              {ROLE_DESCRIPTIONS[role]}
+              {ROLE_DESCRIPTIONS[role] ?? ''}
             </p>
           </div>
 
@@ -156,5 +145,34 @@ export default function App() {
         </div>
       </main>
     </div>
+  );
+}
+
+function Root() {
+  const { status } = useAuth();
+
+  if (status === 'checking') {
+    return (
+      <div style={{
+        minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: colors.forest,
+      }}>
+        <p style={{ color: colors.onForest, fontFamily: fonts.body, fontSize: 13 }}>Chargement…</p>
+      </div>
+    );
+  }
+
+  if (status === 'signedIn') {
+    return <AuthenticatedApp />;
+  }
+
+  return <LoginView />;
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <Root />
+    </AuthProvider>
   );
 }

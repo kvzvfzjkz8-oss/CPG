@@ -4,10 +4,10 @@ import {
 } from 'lucide-react';
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, Tabs, SectionTitle } from '../components/UI';
-import { creditRequests, conversations, STATUTS } from '../data/mockData';
 import {
   validateLevel1, rejectCredit, sendAdvisorReply,
   fetchDoubleValidationQueue, doubleValidateCredit,
+  fetchCreditRequests, fetchCreditDetail, fetchConversations, fetchConversationMessages,
 } from '../api/adminApi';
 import OperationsView from './OperationsView';
 
@@ -132,11 +132,17 @@ function DoubleValidation() {
   );
 }
 
-function IncomingRequests() {
-  const [requests, setRequests] = useState(
-    creditRequests.filter((r) => r.statut === STATUTS.EN_VERIFICATION)
-  );
+function IncomingRequests({ onSelect }) {
+  const [requests, setRequests] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(null);
+
+  const load = () => {
+    setLoading(true);
+    fetchCreditRequests('en_verification').then(setRequests).finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
 
   const handle = async (id, action) => {
     setBusy(id);
@@ -158,10 +164,10 @@ function IncomingRequests() {
           </button>
         }
       >
-        {requests.length} demande{requests.length > 1 ? 's' : ''} à traiter
+        {loading ? 'Chargement…' : `${requests.length} demande${requests.length > 1 ? 's' : ''} à traiter`}
       </SectionTitle>
 
-      {requests.length === 0 && (
+      {!loading && requests.length === 0 && (
         <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
           Aucune demande en attente. Tout est traité.
         </p>
@@ -185,15 +191,15 @@ function IncomingRequests() {
               {r.client}
             </p>
             <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
-              {r.poste} · Réf. {r.id} · {r.date}
+              {r.job_title} · Réf. {r.reference} · {new Date(r.created_at).toLocaleDateString('fr-FR')}
             </p>
           </div>
           <div style={{ textAlign: 'right' }}>
             <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.mono }}>
-              {formatFCFA(r.montant)} F
+              {formatFCFA(r.amount)} F
             </p>
             <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
-              {r.duree} mois
+              {r.duration_months} mois
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -213,7 +219,7 @@ function IncomingRequests() {
             >
               <X size={16} color={colors.danger} />
             </button>
-            <button title="Consulter le dossier" style={roundBtn(colors.bg)}>
+            <button onClick={() => onSelect?.(r.id)} title="Consulter le dossier" style={roundBtn(colors.bg)}>
               <Eye size={15} color={colors.muted} />
             </button>
           </div>
@@ -224,75 +230,152 @@ function IncomingRequests() {
 }
 
 function ClientVerification() {
-  const dossier = creditRequests.find((r) => r.pieces);
-  const entries = Object.entries(dossier.pieces);
-  const complete = entries.every(([, v]) => v === 'ok');
+  const [reference, setReference] = useState('');
+  const [dossier, setDossier] = useState(null);
+  const [documents, setDocuments] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [pending, setPending] = useState([]);
+
+  useEffect(() => {
+    fetchCreditRequests('en_verification').then(setPending).catch(() => {});
+  }, []);
+
+  const load = async (creditId) => {
+    setLoading(true);
+    setError('');
+    try {
+      const result = await fetchCreditDetail(creditId);
+      setDossier(result.credit);
+      setDocuments(result.documents ?? []);
+    } catch (e) {
+      setError(e.message ?? 'Dossier introuvable.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!dossier) {
+    return (
+      <Card style={{ padding: 0, overflow: 'hidden' }}>
+        <SectionTitle>Choisir un dossier à vérifier</SectionTitle>
+        {pending.length === 0 && (
+          <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
+            Aucun dossier en attente de vérification.
+          </p>
+        )}
+        {pending.map((r) => (
+          <button
+            key={r.id}
+            onClick={() => load(r.id)}
+            style={{
+              display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between',
+              gap: 16, padding: '14px 20px', border: 'none', borderBottom: `1px solid ${colors.line}`,
+              background: 'transparent', cursor: 'pointer', textAlign: 'left',
+            }}
+          >
+            <span style={{ fontSize: 13, color: colors.ink, fontFamily: fonts.body }}>{r.client}</span>
+            <span style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>Réf. {r.reference}</span>
+          </button>
+        ))}
+        {error && <p style={{ padding: 16, color: colors.danger, fontSize: 12, fontFamily: fonts.body }}>{error}</p>}
+      </Card>
+    );
+  }
+
+  const complete = documents.length > 0 && documents.every((d) => d.status === 'verifiee');
 
   return (
     <Card style={{ padding: 20 }}>
       <p style={{ margin: '0 0 16px', fontSize: 14, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
-        Dossier en cours — {dossier.client} · Réf. {dossier.id}
+        Dossier en cours — {dossier.client} · Réf. {dossier.reference}
       </p>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 }}>
-        {entries.map(([piece, status]) => (
-          <div
-            key={piece}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              background: colors.bg,
-              borderRadius: 10,
-              padding: '10px 14px',
-            }}
-          >
-            <span style={{ fontSize: 12, color: colors.ink, fontFamily: fonts.body }}>{piece}</span>
-            <Badge tone={status === 'ok' ? 'neutral' : 'danger'}>
-              {status === 'ok' ? 'Vérifiée' : 'En attente'}
-            </Badge>
-          </div>
-        ))}
-      </div>
+      {documents.length === 0 ? (
+        <p style={{ fontSize: 12, color: colors.muted, fontFamily: fonts.body, marginBottom: 20 }}>
+          Aucune pièce justificative enregistrée pour ce dossier.
+        </p>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 }}>
+          {documents.map((doc) => (
+            <div
+              key={doc.id}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                background: colors.bg, borderRadius: 10, padding: '10px 14px',
+              }}
+            >
+              <span style={{ fontSize: 12, color: colors.ink, fontFamily: fonts.body }}>{doc.kind}</span>
+              <Badge tone={doc.status === 'verifiee' ? 'neutral' : doc.status === 'refusee' ? 'danger' : 'gold'}>
+                {doc.status === 'verifiee' ? 'Vérifiée' : doc.status === 'refusee' ? 'Refusée' : 'En attente'}
+              </Badge>
+            </div>
+          ))}
+        </div>
+      )}
 
-      {!complete && (
+      {!complete && documents.length > 0 && (
         <p style={{ fontSize: 11, color: colors.danger, fontFamily: fonts.body, marginBottom: 14 }}>
-          Une pièce manque : la validation de premier niveau reste possible, mais le gestionnaire en
-          sera informé.
+          Une pièce manque ou reste à vérifier : la validation de premier niveau reste possible depuis
+          l'onglet « Demandes entrantes », mais le gestionnaire en sera informé.
         </p>
       )}
 
       <button
+        onClick={() => setDossier(null)}
         style={{
-          padding: '11px 20px',
-          borderRadius: 12,
-          border: 'none',
-          background: colors.forest,
-          color: '#fff',
-          fontSize: 12,
-          fontWeight: 600,
-          fontFamily: fonts.body,
-          cursor: 'pointer',
+          padding: '11px 20px', borderRadius: 12, border: `1px solid ${colors.line}`,
+          background: 'transparent', color: colors.muted, fontSize: 12, fontWeight: 600,
+          fontFamily: fonts.body, cursor: 'pointer',
         }}
       >
-        Valider premier niveau
+        Choisir un autre dossier
       </button>
     </Card>
   );
 }
 
 function Messaging() {
-  const [active, setActive] = useState(conversations[0]);
+  const [conversations, setConversations] = useState([]);
+  const [active, setActive] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState('');
   const [sent, setSent] = useState(false);
 
+  useEffect(() => {
+    fetchConversations().then((list) => {
+      setConversations(list);
+      if (list.length > 0) selectConversation(list[0]);
+    }).finally(() => setLoading(false));
+  }, []);
+
+  const selectConversation = async (conv) => {
+    setActive(conv);
+    const history = await fetchConversationMessages(conv.id);
+    setMessages(history);
+  };
+
   const send = async () => {
-    if (!draft.trim()) return;
-    await sendAdvisorReply(active.id, draft);
+    if (!draft.trim() || !active) return;
+    const result = await sendAdvisorReply(active.id, draft);
+    setMessages((prev) => [...prev, result.message ?? result]);
     setDraft('');
     setSent(true);
     setTimeout(() => setSent(false), 2500);
   };
+
+  if (loading) {
+    return <Card style={{ padding: 40, textAlign: 'center' }}>Chargement…</Card>;
+  }
+
+  if (!active) {
+    return (
+      <Card style={{ padding: 40, textAlign: 'center' }}>
+        <p style={{ color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>Aucune conversation pour le moment.</p>
+      </Card>
+    );
+  }
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: 16 }}>
@@ -301,7 +384,7 @@ function Messaging() {
         {conversations.map((c) => (
           <button
             key={c.id}
-            onClick={() => setActive(c)}
+            onClick={() => selectConversation(c)}
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -348,10 +431,10 @@ function Messaging() {
                   textOverflow: 'ellipsis',
                 }}
               >
-                {c.last}
+                {c.dernier_message}
               </p>
             </div>
-            {c.unread > 0 && <Badge tone="gold">{c.unread}</Badge>}
+            {c.non_lus > 0 && <Badge tone="gold">{c.non_lus}</Badge>}
           </button>
         ))}
       </Card>
@@ -361,7 +444,7 @@ function Messaging() {
           {active.client}
         </p>
         <p style={{ margin: '0 0 16px', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
-          Dernier message il y a {active.ago}
+          {active.client_number}
         </p>
 
         <div
@@ -371,23 +454,31 @@ function Messaging() {
             borderRadius: 12,
             padding: 16,
             marginBottom: 14,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+            overflowY: 'auto',
           }}
         >
-          <div
-            style={{
-              background: colors.card,
-              border: `1px solid ${colors.line}`,
-              borderRadius: 14,
-              borderBottomLeftRadius: 4,
-              padding: '10px 14px',
-              maxWidth: '75%',
-              fontSize: 13,
-              color: colors.ink,
-              fontFamily: fonts.body,
-            }}
-          >
-            {active.last}
-          </div>
+          {messages.map((m) => (
+            <div
+              key={m.id}
+              style={{
+                background: colors.card,
+                border: `1px solid ${colors.line}`,
+                borderRadius: 14,
+                borderBottomLeftRadius: 4,
+                padding: '10px 14px',
+                maxWidth: '75%',
+                fontSize: 13,
+                color: colors.ink,
+                fontFamily: fonts.body,
+                alignSelf: 'flex-start',
+              }}
+            >
+              {m.body}
+            </div>
+          ))}
         </div>
 
         <div style={{ display: 'flex', gap: 8 }}>

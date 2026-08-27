@@ -10,6 +10,11 @@ export const pool = new pg.Pool({
   connectionString: config.databaseUrl,
   max: 10,
   idleTimeoutMillis: 30000,
+  // SSL exigé uniquement si explicitement demandé (DATABASE_SSL=true) :
+  // beaucoup d'hébergeurs gérés (Railway notamment) exposent leur base
+  // via une connexion interne qui ne supporte pas le SSL strict, et
+  // l'ancien réglage « toujours en production » cassait le démarrage
+  // dans ce cas précis.
   ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: true } : false,
 });
 

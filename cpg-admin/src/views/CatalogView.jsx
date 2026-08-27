@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Package, Percent, GitPullRequest, ShieldAlert, Plus, Play, Pause, Check, X,
 } from 'lucide-react';
@@ -6,13 +6,9 @@ import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, Tabs, SectionTitle, DataTable, td } from '../components/UI';
 import { can } from '../auth/roles';
 import {
-  creditProducts as mockProducts, fees as mockFees,
-  changeRequests as mockChangeRequests, rateCeilings as mockCeilings,
-} from '../data/mockData';
-import {
-  createProduct, adjustProductRate, setProductStatus,
-  createFee, adjustFeeRate, setFeeStatus, runAgiosBatch,
-  decideChangeRequest, updateCeiling,
+  fetchProducts, createProduct, adjustProductRate, setProductStatus,
+  fetchFees, createFee, adjustFeeRate, setFeeStatus, runAgiosBatch,
+  fetchChangeRequests, decideChangeRequest, fetchCeilings, updateCeiling,
 } from '../api/adminApi';
 
 const pct = (n) => `${(Number(n) * 100).toFixed(2).replace('.', ',')} %`;
@@ -82,11 +78,16 @@ export default function CatalogView({ role }) {
    ═══════════════════════════════════════════════════════════════════ */
 
 function ProductsPanel({ role }) {
-  const [products, setProducts] = useState(mockProducts);
+  const [products, setProducts] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [adjusting, setAdjusting] = useState(null); // id du produit en cours d'ajustement
   const [busy, setBusy] = useState(null);
   const [toast, setToast] = useState('');
+
+  useEffect(() => {
+    fetchProducts().then(setProducts).finally(() => setLoading(false));
+  }, []);
 
   const flash = (text) => {
     setToast(text);
@@ -169,7 +170,9 @@ function ProductsPanel({ role }) {
       )}
 
       <Card style={{ padding: 0, overflow: 'hidden' }}>
-        <SectionTitle>{products.length} produit{products.length > 1 ? 's' : ''} au catalogue</SectionTitle>
+        <SectionTitle>
+          {loading ? 'Chargement…' : `${products.length} produit${products.length > 1 ? 's' : ''} au catalogue`}
+        </SectionTitle>
 
         {products.map((p) => (
           <div key={p.id} style={{ borderBottom: `1px solid ${colors.line}` }}>
@@ -392,10 +395,15 @@ function RateAdjustForm({ current, onSubmit, onCancel, busy }) {
    ═══════════════════════════════════════════════════════════════════ */
 
 function ServicesPanel({ role }) {
-  const [items, setItems] = useState(mockFees);
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(null);
   const [toast, setToast] = useState('');
   const [range, setRange] = useState({ debut: '', fin: '' });
+
+  useEffect(() => {
+    fetchFees().then(setItems).finally(() => setLoading(false));
+  }, []);
 
   const flash = (text) => {
     setToast(text);
@@ -430,7 +438,9 @@ function ServicesPanel({ role }) {
       <Toast text={toast} />
 
       <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 16 }}>
-        <SectionTitle>{items.length} service{items.length > 1 ? 's' : ''} annexe{items.length > 1 ? 's' : ''}</SectionTitle>
+        <SectionTitle>
+          {loading ? 'Chargement…' : `${items.length} service${items.length > 1 ? 's' : ''} annexe${items.length > 1 ? 's' : ''}`}
+        </SectionTitle>
         <DataTable
           columns={['Service', 'Statut', 'Base', 'Déclencheur', 'Barème', '']}
           rows={items}
@@ -505,9 +515,14 @@ function ServicesPanel({ role }) {
    ═══════════════════════════════════════════════════════════════════ */
 
 function ChangeRequestsPanel({ role }) {
-  const [items, setItems] = useState(mockChangeRequests.filter((r) => r.status === 'en_attente'));
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(null);
   const [toast, setToast] = useState('');
+
+  useEffect(() => {
+    fetchChangeRequests().then(setItems).finally(() => setLoading(false));
+  }, []);
 
   const decide = async (request, approve) => {
     setBusy(request.id);
@@ -529,7 +544,7 @@ function ChangeRequestsPanel({ role }) {
     <Card style={{ padding: 0, overflow: 'hidden' }}>
       <Toast text={toast} />
       <SectionTitle>
-        {items.length} demande{items.length > 1 ? 's' : ''} en attente d'arbitrage
+        {loading ? 'Chargement…' : `${items.length} demande${items.length > 1 ? 's' : ''} en attente d'arbitrage`}
       </SectionTitle>
 
       {items.length === 0 && (
@@ -583,11 +598,16 @@ function ChangeRequestsPanel({ role }) {
    ═══════════════════════════════════════════════════════════════════ */
 
 function CeilingsPanel() {
-  const [items, setItems] = useState(mockCeilings);
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(null);
   const [toast, setToast] = useState('');
+
+  useEffect(() => {
+    fetchCeilings().then(setItems).finally(() => setLoading(false));
+  }, []);
 
   const startEdit = (c) => {
     setEditing(c.scope);
@@ -612,7 +632,7 @@ function CeilingsPanel() {
   return (
     <Card style={{ padding: 0, overflow: 'hidden' }}>
       <Toast text={toast} />
-      <SectionTitle>Plafonds réglementaires</SectionTitle>
+      <SectionTitle>{loading ? 'Chargement…' : 'Plafonds réglementaires'}</SectionTitle>
       <p style={{ margin: 0, padding: '14px 20px 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
         Garde-fou contre l'erreur de saisie : personne, pas même vous, ne peut créer ou activer
         un barème au-delà de ces valeurs.
