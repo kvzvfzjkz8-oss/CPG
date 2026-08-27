@@ -66,13 +66,34 @@ export async function fetchUsers() {
 export async function createUser({ nomComplet, telephone, email, role, motDePasse, codePin, employeur, poste }) {
   return apiRequest('/v1/admin/utilisateurs', {
     method: 'POST',
-    body: { nomComplet, telephone, email, role, motDePasse, codePin, employeur, poste },
+    body: {
+      nomComplet, telephone, role,
+      // Les champs optionnels ne doivent jamais partir en chaîne
+      // vide : la validation du serveur les refuserait (format email,
+      // longueur minimale, 4-6 chiffres...). Un client créé sans PIN
+      // pourra l'activer lui-même depuis l'app avec son numéro client.
+      ...(email ? { email } : {}),
+      ...(motDePasse ? { motDePasse } : {}),
+      ...(codePin ? { codePin } : {}),
+      ...(employeur ? { employeur } : {}),
+      ...(poste ? { poste } : {}),
+    },
   });
 }
 
 /** Suspension ou réactivation d'un compte. */
 export async function setUserStatus(userId, statut) {
   return apiRequest(`/v1/admin/utilisateurs/${userId}/statut`, { method: 'PATCH', body: { statut } });
+}
+
+/**
+ * Efface le PIN d'un client qui l'a oublié — il pourra en recréer un
+ * lui-même depuis l'app, avec son numéro client. Accessible au
+ * gestionnaire (pas besoin du directeur, contrairement au PIN
+ * back-office).
+ */
+export async function resetClientPin(userId) {
+  return apiRequest(`/v1/admin/utilisateurs/${userId}/reinitialiser-pin-client`, { method: 'POST' });
 }
 
 /**

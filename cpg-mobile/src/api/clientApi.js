@@ -17,6 +17,22 @@ export async function loginWithPin(phone, pin) {
   return data.user;
 }
 
+/**
+ * Première activation du compte : le client prouve que c'est bien lui
+ * avec son numéro client CPG (communiqué par le gestionnaire à la
+ * création de sa fiche), puis choisit son propre code PIN. Réussit
+ * aussi après une réinitialisation par le gestionnaire.
+ */
+export async function activateAccount(phone, clientNumber, nouveauPin) {
+  const data = await apiRequest('/v1/auth/activer-compte', {
+    method: 'POST',
+    body: { phone, clientNumber, nouveauPin },
+    skipAuth: true,
+  });
+  await persistSession({ accessToken: data.accessToken, refreshToken: data.refreshToken, phone });
+  return data.user;
+}
+
 /** Profil de l'utilisateur connecté. */
 export async function fetchMe() {
   return apiRequest('/v1/auth/moi');

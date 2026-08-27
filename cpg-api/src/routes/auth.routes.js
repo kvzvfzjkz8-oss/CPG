@@ -109,6 +109,18 @@ router.post(
 
       assertNotLocked(user);
 
+      // Un compte sans PIN n'a encore jamais été activé (ou vient
+      // d'être réinitialisé par le gestionnaire) : ce n'est pas une
+      // tentative ratée, donc pas de compteur d'échec ici — juste une
+      // redirection claire vers l'activation.
+      if (user && !user.pin_hash) {
+        throw new ApiError(
+          403,
+          'Ce compte n’a pas encore de code PIN. Activez-le avec votre numéro client.',
+          'pin_non_defini'
+        );
+      }
+
       // Message identique que le compte existe ou non : sinon l'API
       // permet d'énumérer les numéros de téléphone des clients CPG.
       const valid = user?.pin_hash && (await bcrypt.compare(pin, user.pin_hash));
@@ -130,6 +142,73 @@ router.post(
       await audit(req, { action: 'connexion.client', entityType: 'user', entityId: user.id });
 
       res.json({
+        accessToken,
+        refreshToken,
+        user: {
+          id: user.id,
+          fullName: user.full_name,
+          clientNumber: user.client_number,
+          role: user.role,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * ── POST /auth/activer-compte — le client crée lui-même son PIN ────
+ *
+ * « Chaque client puisse se connecter avec leur numéro et un mot de
+ *   passe qu'ils vont créer par eux-mêmes. » Le gestionnaire crée la
+ * fiche du client (nom, téléphone, employeur) sans définir de PIN ; le
+ * client prouve que c'est bien lui avec son numéro client CPG
+ * (communiqué par le gestionnaire à la création), puis choisit son
+ * propre code. Ne fonctionne que si aucun PIN n'est encore défini —
+ * un compte déjà activé ne peut pas être détourné par cette voie, il
+ * faut passer par la réinitialisation du gestionnaire.
+ */
+const activateAccountSchema = z.object({
+  phone: z.string().min(8).max(20),
+  clientNumber: z.string().min(3).max(30),
+  nouveauPin: z.string().regex(/^\d{4,6}$/, 'Le code PIN doit contenir 4 à 6 chiffres.'),
+});
+
+router.post(
+  '/activer-compte',
+  clientLoginLimiter,
+  validate(activateAccountSchema),
+  async (req, res, next) => {
+    try {
+      const { phone, clientNumber, nouveauPin } = req.body;
+      const { rows } = await query(
+        `SELECT id, full_name, role, status, pin_hash, client_number
+         FROM users WHERE phone = $1 AND client_number = $2 AND role = 'client'`,
+        [phone, clientNumber]
+      );
+      const user = rows[0];
+
+      // Même message que le numéro/matricule ne correspondent pas ou
+      // que le compte soit déjà activé : ne pas révéler lequel des
+      // deux cas s'est produit.
+      if (!user || user.pin_hash) {
+        throw new ApiError(422, 'Numéro de téléphone ou numéro client incorrect, ou compte déjà activé.');
+      }
+      if (user.status !== 'actif') {
+        throw new ApiError(403, 'Ce compte est suspendu. Contactez votre agence.');
+      }
+
+      const pinHash = await bcrypt.hash(nouveauPin, 12);
+      await query('UPDATE users SET pin_hash = $2 WHERE id = $1', [user.id, pinHash]);
+
+      const { accessToken, refreshToken } = issueTokens(user);
+      await storeRefreshToken(user.id, refreshToken);
+
+      req.user = user;
+      await audit(req, { action: 'client.compte_active', entityType: 'user', entityId: user.id });
+
+      res.status(201).json({
         accessToken,
         refreshToken,
         user: {

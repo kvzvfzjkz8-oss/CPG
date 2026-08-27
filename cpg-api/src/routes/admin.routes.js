@@ -400,9 +400,11 @@ router.post(
     try {
       const b = req.body;
 
-      if (b.role === 'client' && !b.codePin) {
-        throw new ApiError(422, 'Un code PIN est requis pour un compte client.');
-      }
+      // Un compte client peut être créé sans PIN : le client
+      // l'active alors lui-même depuis l'application, avec son
+      // numéro de téléphone et son numéro client CPG (voir
+      // POST /auth/activer-compte). Le gestionnaire peut aussi lui en
+      // définir un directement s'il préfère.
       if (b.role !== 'client' && (!b.motDePasse || !b.email)) {
         throw new ApiError(422, 'Un email et un mot de passe sont requis pour un compte employé.');
       }
@@ -574,6 +576,49 @@ router.delete(
       });
 
       res.json({ id: rows[0].id, fullName: rows[0].full_name, pinBackofficeDefini: false });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /admin/utilisateurs/:id/reinitialiser-pin-client — efface le PIN
+ * d'un client qui l'a oublié, pour qu'il puisse en créer un nouveau
+ * lui-même (voir POST /auth/activer-compte). Contrairement au PIN
+ * back-office (réservé au directeur), c'est une opération courante de
+ * gestion de compte client : la même permission que la création de
+ * compte suffit — pas besoin du directeur pour ça.
+ */
+router.post(
+  '/utilisateurs/:id/reinitialiser-pin-client',
+  requirePermission('utilisateurs.gerer'),
+  async (req, res, next) => {
+    try {
+      const { rows } = await query(
+        `UPDATE users
+         SET pin_hash = NULL
+         WHERE id = $1 AND role = 'client'
+         RETURNING id, full_name, client_number`,
+        [req.params.id]
+      );
+      if (!rows[0]) throw new ApiError(404, 'Client introuvable.');
+
+      await query(
+        'UPDATE refresh_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL',
+        [req.params.id]
+      );
+
+      await audit(req, {
+        action: 'utilisateur.pin_client_reinitialise',
+        entityType: 'user',
+        entityId: rows[0].id,
+      });
+
+      res.json({
+        id: rows[0].id, fullName: rows[0].full_name, clientNumber: rows[0].client_number,
+        pinDefini: false,
+      });
     } catch (error) {
       next(error);
     }

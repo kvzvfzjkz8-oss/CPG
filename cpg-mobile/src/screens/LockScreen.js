@@ -3,25 +3,30 @@ import { View, Text, Pressable, Animated, StyleSheet, TextInput, ActivityIndicat
 import { Feather } from '@expo/vector-icons';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { colors, fonts } from '../theme';
-import { useAuth } from '../auth/AuthContext';
+import { useAuth, ApiError } from '../auth/AuthContext';
 
 /**
- * Deux modes selon qu'un numéro de téléphone est déjà enregistré sur
- * l'appareil :
- *   - première connexion : demande le numéro, puis le code PIN, et
- *     authentifie les deux ensemble contre le serveur.
- *   - retour : le numéro est déjà connu, seul le code PIN est demandé
- *     (avec un raccourci biométrique).
+ * Quatre étapes possibles :
+ *   - 'phone'           : numéro de téléphone (première fois sur cet appareil)
+ *   - 'pin'              : code PIN, pour une connexion normale
+ *   - 'activate-number'  : le compte n'a pas encore de PIN (première
+ *                          activation, ou après une réinitialisation
+ *                          par le gestionnaire) — demande le numéro
+ *                          client CPG, qui prouve l'identité
+ *   - 'activate-pin'     : le client choisit lui-même son propre code
  *
- * Contrairement à l'ancienne version, ceci parle réellement au
- * serveur : un mauvais code PIN est refusé par cpg-api, pas comparé à
- * une valeur codée en dur ici.
+ * « Chaque client puisse se connecter avec leur numéro et un mot de
+ *   passe qu'ils vont créer par eux-mêmes. » — c'est le passage par
+ * 'activate-number' → 'activate-pin' qui réalise ça : le serveur ne
+ * laisse passer que si le numéro client correspond, jamais le
+ * gestionnaire ne choisit le code à la place du client.
  */
 export default function LockScreen() {
-  const { login, knownPhone } = useAuth();
+  const { login, activate, knownPhone } = useAuth();
   const [phone, setPhone] = useState(knownPhone ?? '');
   const [step, setStep] = useState(knownPhone ? 'pin' : 'phone');
   const [pin, setPin] = useState('');
+  const [clientNumber, setClientNumber] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [biometricLabel, setBiometricLabel] = useState('Empreinte');
@@ -52,18 +57,42 @@ export default function LockScreen() {
     try {
       await login(phone, enteredPin);
     } catch (e) {
-      fail(e.message ?? 'Code PIN incorrect.');
+      if (e instanceof ApiError && e.code === 'pin_non_defini') {
+        // Pas un échec de saisie : ce compte attend simplement sa
+        // première activation (ou vient d'être réinitialisé).
+        setPin('');
+        setStep('activate-number');
+        setError('');
+      } else {
+        fail(e.message ?? 'Code PIN incorrect.');
+      }
     } finally {
       setBusy(false);
     }
   }, [phone, login, fail]);
+
+  const attemptActivation = useCallback(async (newPin) => {
+    setBusy(true);
+    setError('');
+    try {
+      await activate(phone, clientNumber.trim().toUpperCase(), newPin);
+    } catch (e) {
+      fail(e.message ?? 'Activation impossible.');
+      setStep('activate-pin');
+    } finally {
+      setBusy(false);
+    }
+  }, [phone, clientNumber, activate, fail]);
 
   const pressDigit = (digit) => {
     if (busy || pin.length >= 6) return;
     const next = pin + digit;
     setPin(next);
     if (next.length === 4) {
-      setTimeout(() => attemptLogin(next), 120);
+      setTimeout(() => {
+        if (step === 'activate-pin') attemptActivation(next);
+        else attemptLogin(next);
+      }, 120);
     }
   };
 
@@ -131,17 +160,60 @@ export default function LockScreen() {
     );
   }
 
+  if (step === 'activate-number') {
+    return (
+      <View style={styles.root}>
+        <View style={styles.brand}>
+          <View style={styles.logo}>
+            <Feather name="user-plus" size={24} color={colors.forest} />
+          </View>
+          <Text style={styles.brandName}>Première connexion</Text>
+          <Text style={styles.brandHint}>
+            Entrez votre numéro client CPG (communiqué par votre agence) pour créer votre code PIN.
+          </Text>
+        </View>
+
+        <TextInput
+          style={styles.phoneInput}
+          placeholder="CPG-00931"
+          placeholderTextColor="rgba(255,255,255,0.4)"
+          autoCapitalize="characters"
+          autoFocus
+          value={clientNumber}
+          onChangeText={setClientNumber}
+        />
+
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+
+        <Pressable
+          onPress={() => clientNumber.trim().length >= 3 && setStep('activate-pin')}
+          style={({ pressed }) => [styles.continueBtn, { opacity: pressed ? 0.7 : 1 }]}
+        >
+          <Text style={styles.continueText}>Continuer</Text>
+        </Pressable>
+
+        <Pressable onPress={() => { setStep('phone'); setError(''); }}>
+          <Text style={styles.changePhone}>Modifier le numéro de téléphone</Text>
+        </Pressable>
+
+        <View style={{ height: 20 }} />
+      </View>
+    );
+  }
+
+  const isActivating = step === 'activate-pin';
+
   return (
     <View style={styles.root}>
       <View style={styles.brand}>
         <View style={styles.logo}>
-          <Feather name="git-commit" size={24} color={colors.forest} />
+          <Feather name={isActivating ? 'user-plus' : 'git-commit'} size={24} color={colors.forest} />
         </View>
         <Text style={styles.brandName}>Crédit Populaire du Gabon</Text>
         <Text style={styles.brandHint}>
-          {knownPhone ? `Code PIN pour ${phone}` : 'Créez votre code PIN'}
+          {isActivating ? 'Choisissez votre code PIN' : knownPhone ? `Code PIN pour ${phone}` : 'Créez votre code PIN'}
         </Text>
-        {!knownPhone && (
+        {!knownPhone && !isActivating && (
           <Pressable onPress={() => setStep('phone')}>
             <Text style={styles.changePhone}>Modifier le numéro</Text>
           </Pressable>
@@ -176,15 +248,19 @@ export default function LockScreen() {
             <Text style={styles.keyText}>{d}</Text>
           </Pressable>
         ))}
-        <Pressable
-          onPress={authenticateBiometric}
-          disabled={busy}
-          accessibilityRole="button"
-          accessibilityLabel={`Déverrouiller avec ${biometricLabel}`}
-          style={({ pressed }) => [styles.key, { opacity: pressed ? 0.5 : 1 }]}
-        >
-          <Feather name={biometricLabel === 'Face ID' ? 'user-check' : 'unlock'} size={22} color={colors.gold} />
-        </Pressable>
+        {isActivating ? (
+          <View style={styles.key} />
+        ) : (
+          <Pressable
+            onPress={authenticateBiometric}
+            disabled={busy}
+            accessibilityRole="button"
+            accessibilityLabel={`Déverrouiller avec ${biometricLabel}`}
+            style={({ pressed }) => [styles.key, { opacity: pressed ? 0.5 : 1 }]}
+          >
+            <Feather name={biometricLabel === 'Face ID' ? 'user-check' : 'unlock'} size={22} color={colors.gold} />
+          </Pressable>
+        )}
         <Pressable
           onPress={() => pressDigit('0')}
           disabled={busy}
@@ -228,7 +304,10 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   brandName: { color: '#fff', fontSize: 17, fontWeight: '600', fontFamily: fonts.display },
-  brandHint: { color: colors.onForest, fontSize: 12, marginTop: 5, fontFamily: fonts.body },
+  brandHint: {
+    color: colors.onForest, fontSize: 12, marginTop: 5, fontFamily: fonts.body,
+    textAlign: 'center', paddingHorizontal: 12,
+  },
   changePhone: { color: colors.gold, fontSize: 11, marginTop: 8, fontFamily: fonts.body, textDecorationLine: 'underline' },
   phoneInput: {
     width: '100%',

@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { loadStoredSession, clearSession, ApiError } from '../api/client';
-import { loginWithPin, fetchMe, logout as apiLogout } from '../api/clientApi';
+import { loginWithPin, activateAccount, fetchMe, logout as apiLogout } from '../api/clientApi';
 
 const AuthContext = createContext(null);
 
@@ -50,6 +50,14 @@ export function AuthProvider({ children }) {
     return me;
   }, []);
 
+  const activate = useCallback(async (phone, clientNumber, nouveauPin) => {
+    const me = await activateAccount(phone, clientNumber, nouveauPin);
+    setUser(me);
+    setKnownPhone(phone);
+    setStatus('signedIn');
+    return me;
+  }, []);
+
   const logout = useCallback(async () => {
     try {
       await apiLogout();
@@ -63,7 +71,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ status, user, knownPhone, login, logout }}>
+    <AuthContext.Provider value={{ status, user, knownPhone, login, activate, logout }}>
       {children}
     </AuthContext.Provider>
   );

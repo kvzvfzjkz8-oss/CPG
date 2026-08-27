@@ -10,7 +10,7 @@ import {
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, Tabs, KpiCard, SectionTitle, DataTable, td } from '../components/UI';
 import {
-  approveCredit, setUserStatus, fetchUsers, createUser, fetchStatistics, fetchMomoTransactions,
+  approveCredit, setUserStatus, fetchUsers, createUser, resetClientPin, fetchStatistics, fetchMomoTransactions,
   fetchPendingInstallmentAdjustments, decideInstallmentAdjustment,
   fetchFinalApprovalQueue, grantExceptionAuthorization, fetchExceptionAuthorizations,
 } from '../api/adminApi';
@@ -412,6 +412,14 @@ function UserManagement() {
   const [form, setForm] = useState({ nomComplet: '', telephone: '', email: '', role: 'operateur', motDePasse: '', codePin: '' });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [confirmingResetId, setConfirmingResetId] = useState(null);
+  const [resetBusy, setResetBusy] = useState(null);
+  const [toast, setToast] = useState('');
+
+  const flash = (text) => {
+    setToast(text);
+    setTimeout(() => setToast(''), 5000);
+  };
 
   const load = () => {
     setLoading(true);
@@ -424,6 +432,19 @@ function UserManagement() {
     const next = u.status === 'actif' ? 'suspendu' : 'actif';
     await setUserStatus(u.id, next);
     setList((prev) => prev.map((x) => (x.id === u.id ? { ...x, status: next } : x)));
+  };
+
+  const doResetPin = async (u) => {
+    setResetBusy(u.id);
+    try {
+      await resetClientPin(u.id);
+      setConfirmingResetId(null);
+      flash(`Code PIN de ${u.full_name} réinitialisé — le client peut en recréer un avec son numéro client (${u.client_number}).`);
+    } catch (err) {
+      flash(err.message ?? 'Réinitialisation impossible.');
+    } finally {
+      setResetBusy(null);
+    }
   };
 
   const submitCreate = async (e) => {
@@ -444,6 +465,15 @@ function UserManagement() {
 
   return (
     <div>
+      {toast && (
+        <div style={{
+          background: colors.goldPale, border: `1px solid ${colors.gold}`, borderRadius: 12,
+          padding: '11px 16px', marginBottom: 16, fontSize: 12, color: colors.goldDark, fontFamily: fonts.body,
+        }}>
+          {toast}
+        </div>
+      )}
+
       {creating && (
         <Card style={{ padding: 18, marginBottom: 16 }}>
           <form onSubmit={submitCreate}>
@@ -465,7 +495,7 @@ function UserManagement() {
                 <option value="superviseur">Gestionnaire / Superviseur</option>
               </select>
               {form.role === 'client' ? (
-                <input placeholder="Code PIN (4-6 chiffres)" value={form.codePin}
+                <input placeholder="Code PIN (optionnel — laissez vide pour que le client l'active lui-même)" value={form.codePin}
                   onChange={(e) => setForm((f) => ({ ...f, codePin: e.target.value }))}
                   style={{ padding: '9px 11px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body }} />
               ) : (
@@ -524,13 +554,43 @@ function UserManagement() {
                 </Badge>
               </td>
               <td style={{ ...td, textAlign: 'right' }}>
-                <button
-                  onClick={() => toggle(u)}
-                  title={u.status === 'actif' ? 'Suspendre' : 'Réactiver'}
-                  style={{ border: 'none', background: 'transparent', cursor: 'pointer' }}
-                >
-                  <UserCog size={15} color={colors.muted} />
-                </button>
+                <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', alignItems: 'center' }}>
+                  {u.role === 'client' && (
+                    confirmingResetId === u.id ? (
+                      <>
+                        <span style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>Confirmer ?</span>
+                        <button
+                          onClick={() => doResetPin(u)}
+                          disabled={resetBusy === u.id}
+                          style={{ ...actionBtn(colors.danger, '#fff'), padding: '5px 10px' }}
+                        >
+                          Oui
+                        </button>
+                        <button
+                          onClick={() => setConfirmingResetId(null)}
+                          style={{ border: 'none', background: 'transparent', color: colors.muted, fontSize: 11, cursor: 'pointer', fontFamily: fonts.body }}
+                        >
+                          Annuler
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={() => setConfirmingResetId(u.id)}
+                        title="Réinitialiser le code PIN du client"
+                        style={{ border: 'none', background: 'transparent', color: colors.forestLight, fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: fonts.body }}
+                      >
+                        Réinitialiser le PIN
+                      </button>
+                    )
+                  )}
+                  <button
+                    onClick={() => toggle(u)}
+                    title={u.status === 'actif' ? 'Suspendre' : 'Réactiver'}
+                    style={{ border: 'none', background: 'transparent', cursor: 'pointer' }}
+                  >
+                    <UserCog size={15} color={colors.muted} />
+                  </button>
+                </div>
               </td>
             </>
           )}
