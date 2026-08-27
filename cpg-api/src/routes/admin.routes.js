@@ -409,31 +409,47 @@ router.post(
         throw new ApiError(422, 'Un email et un mot de passe sont requis pour un compte employé.');
       }
 
-      const created = await withTransaction(async (client) => {
-        const { rows } = await client.query(
-          `INSERT INTO users (full_name, phone, email, role, employer, job_title, pin_hash, password_hash, client_number)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-           RETURNING id, full_name, role, status, client_number`,
-          [
-            b.nomComplet,
-            b.telephone,
-            b.email?.toLowerCase() ?? null,
-            b.role,
-            b.employeur ?? null,
-            b.poste ?? null,
-            b.codePin ? await bcrypt.hash(b.codePin, 12) : null,
-            b.motDePasse ? await bcrypt.hash(b.motDePasse, 12) : null,
-            b.role === 'client' ? `CPG-${String(Math.floor(Math.random() * 90000) + 10000)}` : null,
-          ]
-        );
+      const pinHash = b.codePin ? await bcrypt.hash(b.codePin, 12) : null;
+      const passwordHash = b.motDePasse ? await bcrypt.hash(b.motDePasse, 12) : null;
 
-        // Un client sans compte ne peut rien faire : on le crée d'office.
-        if (b.role === 'client') {
-          await client.query('INSERT INTO accounts (user_id) VALUES ($1)', [rows[0].id]);
+      // Le numéro client est tiré au hasard : une collision reste
+      // possible (plus la base grandit, plus elle devient probable).
+      // On réessaie automatiquement avec un nouveau numéro plutôt que
+      // de faire échouer toute la création pour ça — un vrai doublon
+      // de téléphone ou d'email, lui, doit continuer à remonter tel quel.
+      const MAX_TENTATIVES = 5;
+      let created;
+      for (let tentative = 1; tentative <= MAX_TENTATIVES; tentative += 1) {
+        const clientNumber = b.role === 'client'
+          ? `CPG-${String(Math.floor(Math.random() * 900000) + 100000)}`
+          : null;
+
+        try {
+          created = await withTransaction(async (client) => {
+            const { rows } = await client.query(
+              `INSERT INTO users (full_name, phone, email, role, employer, job_title, pin_hash, password_hash, client_number)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+               RETURNING id, full_name, role, status, client_number`,
+              [
+                b.nomComplet, b.telephone, b.email?.toLowerCase() ?? null, b.role,
+                b.employeur ?? null, b.poste ?? null, pinHash, passwordHash, clientNumber,
+              ]
+            );
+
+            // Un client sans compte ne peut rien faire : on le crée d'office.
+            if (b.role === 'client') {
+              await client.query('INSERT INTO accounts (user_id) VALUES ($1)', [rows[0].id]);
+            }
+
+            return rows[0];
+          });
+          break; // succès, pas besoin de retenter
+        } catch (error) {
+          const estCollisionNumeroClient = error.code === '23505' && error.constraint === 'users_client_number_key';
+          if (!estCollisionNumeroClient || tentative === MAX_TENTATIVES) throw error;
+          // Sinon : on boucle, avec un nouveau numéro tiré au sort.
         }
-
-        return rows[0];
-      });
+      }
 
       await audit(req, {
         action: 'utilisateur.cree',
