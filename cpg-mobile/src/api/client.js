@@ -35,7 +35,7 @@ const storage = Platform.OS === 'web'
  * l'ordinateur qui fait tourner l'API. Voir le README de ce dossier
  * pour la marche à suivre.
  */
-export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'https://api.cpg.ga';
+export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'https://cpg-production.up.railway.app';
 
 const TOKEN_KEY = 'cpg_access_token';
 const REFRESH_KEY = 'cpg_refresh_token';
