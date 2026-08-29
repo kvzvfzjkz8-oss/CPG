@@ -462,10 +462,13 @@ function UserManagement() {
         ? { nomComplet: form.nomComplet, telephone: form.telephone, role: form.role, codePin: form.codePin }
         : { nomComplet: form.nomComplet, telephone: form.telephone, role: form.role, email: form.email, motDePasse: form.motDePasse };
 
-      await createUser(payload);
+      const cree = await createUser(payload);
       setCreating(false);
       setForm({ nomComplet: '', telephone: '', email: '', role: 'operateur', motDePasse: '', codePin: '' });
       load();
+      if (payload.role === 'client') {
+        flash(`Compte créé — numéro client ${cree.client_number}. Communiquez-le au client pour qu'il active son PIN dans l'app.`);
+      }
     } catch (err) {
       setError(err.message ?? 'Création impossible.');
     } finally {
@@ -555,11 +558,12 @@ function UserManagement() {
         </SectionTitle>
 
         <DataTable
-          columns={['Nom', 'Rôle', 'Type', 'Statut', '']}
+          columns={['Nom', 'Numéro client', 'Rôle', 'Type', 'Statut', '']}
           rows={list}
           renderCell={(u) => (
             <>
               <td style={{ ...td, fontWeight: 500 }}>{u.full_name}</td>
+              <td style={{ ...td, color: colors.muted, fontFamily: fonts.mono }}>{u.client_number ?? '—'}</td>
               <td style={{ ...td, color: colors.muted }}>{u.role}</td>
               <td style={td}>
                 <Badge>{u.role === 'client' ? 'Client' : 'Employé'}</Badge>
