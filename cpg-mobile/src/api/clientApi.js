@@ -6,6 +6,21 @@ import { apiRequest, persistSession } from './client';
  * ─────────────────────────────────────────────────────────────────────
  */
 
+/**
+ * Vérifie si un numéro a besoin d'être activé, avant même d'afficher
+ * le clavier PIN. Appelée juste après la saisie du numéro : évite de
+ * faire taper un PIN qui serait de toute façon rejeté pour un compte
+ * fraîchement créé par le gestionnaire.
+ */
+export async function checkActivationNeeded(phone) {
+  const data = await apiRequest('/v1/auth/verifier-numero', {
+    method: 'POST',
+    body: { phone },
+    skipAuth: true,
+  });
+  return data.activationRequise;
+}
+
 /** Connexion par téléphone + code PIN. Stocke la session en cas de succès. */
 export async function loginWithPin(phone, pin) {
   const data = await apiRequest('/v1/auth/connexion-client', {

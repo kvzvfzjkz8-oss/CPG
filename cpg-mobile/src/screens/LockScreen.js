@@ -4,6 +4,7 @@ import { Feather } from '@expo/vector-icons';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { colors, fonts } from '../theme';
 import { useAuth, ApiError } from '../auth/AuthContext';
+import { checkActivationNeeded } from '../api/clientApi';
 
 /**
  * Quatre étapes possibles :
@@ -25,6 +26,7 @@ export default function LockScreen() {
   const { login, activate, knownPhone } = useAuth();
   const [phone, setPhone] = useState(knownPhone ?? '');
   const [step, setStep] = useState(knownPhone ? 'pin' : 'phone');
+  const [compteConnu, setCompteConnu] = useState(Boolean(knownPhone));
   const [pin, setPin] = useState('');
   const [clientNumber, setClientNumber] = useState('');
   const [busy, setBusy] = useState(false);
@@ -50,6 +52,25 @@ export default function LockScreen() {
       Animated.timing(shake, { toValue: 0, duration: 60, useNativeDriver: true }),
     ]).start(() => setPin(''));
   }, [shake]);
+
+  const confirmPhone = useCallback(async () => {
+    if (phone.trim().length < 8) return;
+    setBusy(true);
+    setError('');
+    try {
+      const activationRequise = await checkActivationNeeded(phone);
+      setCompteConnu(!activationRequise);
+      setStep(activationRequise ? 'activate-number' : 'pin');
+    } catch {
+      // Vérification indisponible (réseau, etc.) : on ne bloque pas
+      // pour autant, l'écran PIN classique reste un repli valable
+      // puisque la connexion elle-même redirige déjà vers
+      // l'activation si besoin.
+      setStep('pin');
+    } finally {
+      setBusy(false);
+    }
+  }, [phone]);
 
   const attemptLogin = useCallback(async (enteredPin) => {
     setBusy(true);
@@ -149,11 +170,13 @@ export default function LockScreen() {
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
         <Pressable
-          onPress={() => phone.trim().length >= 8 && setStep('pin')}
-          style={({ pressed }) => [styles.continueBtn, { opacity: pressed ? 0.7 : 1 }]}
+          onPress={confirmPhone}
+          disabled={busy}
+          style={({ pressed }) => [styles.continueBtn, { opacity: pressed || busy ? 0.7 : 1 }]}
         >
-          <Text style={styles.continueText}>Continuer</Text>
+          {busy ? <ActivityIndicator color={colors.forest} /> : <Text style={styles.continueText}>Continuer</Text>}
         </Pressable>
+
 
         <View style={{ height: 40 }} />
       </View>
@@ -211,7 +234,7 @@ export default function LockScreen() {
         </View>
         <Text style={styles.brandName}>Crédit Populaire du Gabon</Text>
         <Text style={styles.brandHint}>
-          {isActivating ? 'Choisissez votre code PIN' : knownPhone ? `Code PIN pour ${phone}` : 'Créez votre code PIN'}
+          {isActivating ? 'Choisissez votre code PIN' : compteConnu ? `Code PIN pour ${phone}` : 'Entrez votre code PIN'}
         </Text>
         {!isActivating && (
           <Pressable onPress={() => { setPin(''); setError(''); setStep('phone'); }}>

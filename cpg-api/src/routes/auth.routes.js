@@ -42,6 +42,22 @@ const staffLoginLimiter = rateLimit({
   message: { error: 'Trop de tentatives. Réessayez dans quinze minutes.' },
 });
 
+/**
+ * Plus généreux que les limiteurs de connexion : cette route ne
+ * prend pas de PIN, donc aucun risque de brute-force à limiter
+ * strictement. Elle est appelée à chaque ouverture de l'app tant que
+ * le client n'est pas connecté — la coller au même budget que les
+ * tentatives de PIN aurait pénalisé des utilisateurs légitimes qui
+ * rouvrent simplement l'app plusieurs fois.
+ */
+const verifierNumeroLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Trop de tentatives. Réessayez dans quinze minutes.' },
+});
+
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCK_MINUTES = 15;
 
@@ -86,6 +102,45 @@ function assertNotLocked(user) {
     throw new ApiError(423, 'Compte temporairement bloqué après plusieurs échecs. Réessayez plus tard.');
   }
 }
+
+/**
+ * ── POST /auth/verifier-numero — évite de faire deviner un PIN qui
+ *   sera de toute façon rejeté ────────────────────────────────────
+ *
+ * L'app mobile appelle cette route juste après la saisie du numéro,
+ * avant d'afficher le clavier PIN, pour savoir immédiatement quel
+ * écran proposer : code existant (connexion normale) ou première
+ * activation (numéro client + choix du PIN). Sans ça, quelqu'un dont
+ * le compte vient d'être créé devait taper un PIN au hasard, se le
+ * voir refuser, puis seulement là être redirigé — une étape inutile.
+ *
+ * Distinction de sécurité : ce que révèle cette route (compte activé
+ * ou non) est déjà indirectement révélé par POST /connexion-client
+ * elle-même (code 403 pin_non_defini vs 401 générique) — l'avancer
+ * d'un écran ne change donc rien à ce qui peut déjà être déduit,
+ * simplement plus tôt. La limite de tentatives reste la même que
+ * pour la connexion, pour ne pas ouvrir une voie de contournement.
+ */
+router.post(
+  '/verifier-numero',
+  verifierNumeroLimiter,
+  validate(z.object({ phone: z.string().min(8).max(20) })),
+  async (req, res, next) => {
+    try {
+      const { rows } = await query(
+        `SELECT pin_hash FROM users WHERE phone = $1 AND role = 'client'`,
+        [req.body.phone]
+      );
+      const user = rows[0];
+      // Un numéro totalement inconnu suit le même chemin qu'un compte
+      // déjà activé : les deux mènent à l'écran de connexion normal,
+      // qui répond alors par le message générique habituel.
+      res.json({ activationRequise: Boolean(user) && !user.pin_hash });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 /* ── POST /auth/connexion-client — application mobile, code PIN ───── */
 const clientLoginSchema = z.object({

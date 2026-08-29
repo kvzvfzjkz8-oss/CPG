@@ -158,3 +158,26 @@ describe(
     });
   }
 );
+
+describe(
+  'vérification du numéro avant affichage du PIN',
+  { skip: !hasTestDatabase() && 'DATABASE_URL ne pointe pas vers une base de test' },
+  () => {
+    test('un compte fraîchement créé sans PIN signale une activation requise', async () => {
+      const client = await createUnactivatedClient('VerifNeeded');
+      const { status, body } = await api('/v1/auth/verifier-numero', {
+        method: 'POST', body: { phone: client.phone },
+      });
+      assert.equal(status, 200);
+      assert.equal(body.activationRequise, true);
+    });
+
+    test('un numéro totalement inconnu ne signale rien de particulier', async () => {
+      const { status, body } = await api('/v1/auth/verifier-numero', {
+        method: 'POST', body: { phone: '+24101020304' },
+      });
+      assert.equal(status, 200);
+      assert.equal(body.activationRequise, false);
+    });
+  }
+);
