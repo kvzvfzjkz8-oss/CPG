@@ -79,6 +79,16 @@ export async function getStoredPhone() {
   return storage.getItemAsync(PHONE_KEY);
 }
 
+/**
+ * Oublie le numéro mémorisé sur cet appareil. Utile quand il n'y a
+ * pas (ou plus) de session valide : un numéro resté en mémoire sans
+ * session associée ne doit jamais bloquer l'écran de connexion sans
+ * offre de le changer.
+ */
+export async function forgetPhone() {
+  await storage.deleteItemAsync(PHONE_KEY);
+}
+
 export class ApiError extends Error {
   constructor(status, message, code) {
     super(message);

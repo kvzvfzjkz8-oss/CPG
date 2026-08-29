@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { loadStoredSession, clearSession, ApiError } from '../api/client';
+import { loadStoredSession, clearSession, forgetPhone, ApiError } from '../api/client';
 import { loginWithPin, activateAccount, fetchMe, logout as apiLogout } from '../api/clientApi';
 
 const AuthContext = createContext(null);
@@ -23,12 +23,19 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     (async () => {
       const { hasSession, phone } = await loadStoredSession();
-      setKnownPhone(phone ?? null);
 
       if (!hasSession) {
+        // Pas de session valide : le numéro mémorisé d'un essai
+        // précédent (même une tentative ratée) ne doit pas rester
+        // affiché indéfiniment sans possibilité de le changer. On
+        // repart d'un écran de connexion propre.
+        setKnownPhone(null);
+        await forgetPhone();
         setStatus('signedOut');
         return;
       }
+
+      setKnownPhone(phone ?? null);
       try {
         const me = await fetchMe();
         setUser(me);
@@ -37,6 +44,7 @@ export function AuthProvider({ children }) {
         // Jeton de rafraîchissement expiré ou révoqué : retour à
         // l'écran de connexion, sans faire planter l'app.
         await clearSession();
+        setKnownPhone(null);
         setStatus('signedOut');
       }
     })();
@@ -66,7 +74,9 @@ export function AuthProvider({ children }) {
       // échoue (pas de réseau, jeton déjà expiré…).
     }
     await clearSession();
+    await forgetPhone();
     setUser(null);
+    setKnownPhone(null);
     setStatus('signedOut');
   }, []);
 

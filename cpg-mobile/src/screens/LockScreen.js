@@ -213,8 +213,8 @@ export default function LockScreen() {
         <Text style={styles.brandHint}>
           {isActivating ? 'Choisissez votre code PIN' : knownPhone ? `Code PIN pour ${phone}` : 'Créez votre code PIN'}
         </Text>
-        {!knownPhone && !isActivating && (
-          <Pressable onPress={() => setStep('phone')}>
+        {!isActivating && (
+          <Pressable onPress={() => { setPin(''); setError(''); setStep('phone'); }}>
             <Text style={styles.changePhone}>Modifier le numéro</Text>
           </Pressable>
         )}
