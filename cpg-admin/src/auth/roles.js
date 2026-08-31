@@ -156,6 +156,7 @@ export const PERMISSIONS = {
     // seule initiative de la caissière.
     'caisse.valider',
     'caisse.consulter_toutes_caisses',
+    'caisse.gerer_principale',
   ],
 
   // La caissière sert les retraits au guichet, dans la limite de son

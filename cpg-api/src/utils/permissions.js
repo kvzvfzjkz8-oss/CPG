@@ -151,6 +151,7 @@ export const PERMISSIONS = {
     // d'argent qui bouge sur la seule initiative de la caissière.
     'caisse.valider',
     'caisse.consulter_toutes_caisses',
+    'caisse.gerer_principale',
   ],
 
   // La caissière sert les retraits au guichet, dans la limite de son
@@ -162,6 +163,9 @@ export const PERMISSIONS = {
     'caisse.demander_appro',
     'caisse.consulter_sa_caisse',
     'caisse.imprimer_rib',
+    'caisse.demander_depense',
+    'caisse.encaisser_client',
+    'caisse.cloturer',
   ],
 
   // L'administrateur technique hérite de tout, mais reste tracé dans

@@ -27,7 +27,13 @@
       },
       "permissions": [
         "USE_BIOMETRIC",
-        "USE_FINGERPRINT"
+        "USE_FINGERPRINT",
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT",
+        "USE_BIOMETRIC",
+        "USE_FINGERPRINT",
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT"
       ]
     },
     "plugins": [
@@ -44,6 +50,17 @@
     "notification": {
       "iosDisplayInForeground": true,
       "color": "#E8B93B"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "c4d31fd0-ce13-4756-96ba-522f590af764"
+      }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/c4d31fd0-ce13-4756-96ba-522f590af764"
     }
   }
 }

@@ -502,8 +502,11 @@ export async function fetchMesOperationsCaisse() {
 }
 
 /** Dépose une demande de retrait guichet pour un client. */
-export async function demanderRetraitCaisse(clientId, montant, motif) {
-  return apiRequest('/v1/caisse/retraits', { method: 'POST', body: { clientId, montant, motif } });
+export async function demanderRetraitCaisse(clientId, montant, motif, modePaiement = 'especes', telephonePaiement) {
+  return apiRequest('/v1/caisse/retraits', {
+    method: 'POST',
+    body: { clientId, montant, motif, modePaiement, telephonePaiement },
+  });
 }
 
 /** Demande un réapprovisionnement de sa caisse. */
@@ -536,4 +539,34 @@ export async function rejeterOperationCaisse(id, motif) {
 export async function fetchAuditLog() {
   const { entrees } = await apiRequest('/v1/admin/audit');
   return entrees;
+}
+
+/** Directeur : solde et mouvements de la caisse principale de l'entreprise. */
+export async function fetchCaissePrincipale() {
+  return apiRequest('/v1/caisse/principale');
+}
+
+/** Directeur : injecte des fonds dans la caisse principale. */
+export async function alimenterCaissePrincipale(montant, motif) {
+  return apiRequest('/v1/caisse/principale/alimenter', { method: 'POST', body: { montant, motif } });
+}
+
+/** Caissière : dépense de fonctionnement (pas un client), soumise à validation. */
+export async function demanderDepenseCaisse(montant, motif) {
+  return apiRequest('/v1/caisse/depenses', { method: 'POST', body: { montant, motif } });
+}
+
+/** Caissière : un client dépose des espèces — appliqué immédiatement. */
+export async function encaisserClient(clientId, montant, motif) {
+  return apiRequest('/v1/caisse/encaissements', { method: 'POST', body: { clientId, montant, motif } });
+}
+
+/** Caissière : consulte si elle a déjà clôturé aujourd'hui, et le montant de base attendu. */
+export async function fetchClotureDuJour() {
+  return apiRequest('/v1/caisse/cloture-du-jour');
+}
+
+/** Caissière : clôture la journée, renvoie l'excédent au-delà du montant de base. */
+export async function cloturerCaisse() {
+  return apiRequest('/v1/caisse/clore', { method: 'POST' });
 }

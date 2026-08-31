@@ -14,7 +14,7 @@ import {
   fetchPendingInstallmentAdjustments, decideInstallmentAdjustment,
   fetchFinalApprovalQueue, grantExceptionAuthorization, fetchExceptionAuthorizations,
   fetchDemandesCaisseEnAttente, validerOperationCaisse, rejeterOperationCaisse,
-  fetchAuditLog,
+  fetchAuditLog, fetchCaissePrincipale, alimenterCaissePrincipale,
 } from '../api/adminApi';
 import { can } from '../auth/roles';
 import CatalogView from './CatalogView';
@@ -415,6 +415,133 @@ function ExceptionAuthorizations() {
   );
 }
 
+function CaissePrincipalePanel() {
+  const [info, setInfo] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [montant, setMontant] = useState('');
+  const [motif, setMotif] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [toast, setToast] = useState('');
+
+  const flash = (text) => {
+    setToast(text);
+    setTimeout(() => setToast(''), 6000);
+  };
+
+  const load = () => {
+    setLoading(true);
+    fetchCaissePrincipale().then(setInfo).finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await alimenterCaissePrincipale(Number(montant), motif);
+      flash(`${formatFCFA(Number(montant))} F ajoutés à la caisse principale.`);
+      setMontant('');
+      setMotif('');
+      setShowForm(false);
+      load();
+    } catch (err) {
+      flash(err.message ?? 'Alimentation impossible.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ marginBottom: 20 }}>
+      {toast && (
+        <div style={{
+          background: colors.goldPale, border: `1px solid ${colors.gold}`, borderRadius: 12,
+          padding: '11px 16px', marginBottom: 16, fontSize: 12, color: colors.goldDark, fontFamily: fonts.body,
+        }}>
+          {toast}
+        </div>
+      )}
+
+      <Card style={{ padding: 20, background: colors.forest, marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div>
+            <p style={{ margin: 0, fontSize: 11, color: '#B7CFC2', fontFamily: fonts.body }}>
+              Caisse principale de l'entreprise
+            </p>
+            <p style={{ margin: '6px 0 0', fontSize: 28, fontWeight: 700, color: '#fff', fontFamily: fonts.mono }}>
+              {loading ? '—' : `${formatFCFA(info.solde)} F`}
+            </p>
+            <p style={{ margin: '4px 0 0', fontSize: 11, color: '#B7CFC2', fontFamily: fonts.body }}>
+              Alimente les réapprovisionnements des caissières — jamais plus que ce solde ne peut être transféré.
+            </p>
+          </div>
+          <button
+            onClick={() => setShowForm((v) => !v)}
+            style={{
+              padding: '9px 16px', borderRadius: 10, border: 'none', background: colors.gold,
+              color: colors.forest, fontSize: 12, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          >
+            + Alimenter
+          </button>
+        </div>
+
+        {showForm && (
+          <form onSubmit={submit} style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.15)' }}>
+            <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
+              <input
+                type="number" min="1000" required autoFocus
+                value={montant}
+                onChange={(e) => setMontant(e.target.value)}
+                placeholder="Montant (FCFA)"
+                style={{ flex: 1, padding: '10px 14px', borderRadius: 9, border: 'none', fontSize: 13, fontFamily: fonts.mono }}
+              />
+              <input
+                required
+                value={motif}
+                onChange={(e) => setMotif(e.target.value)}
+                placeholder="Motif — ex : retrait bancaire apporté au bureau"
+                style={{ flex: 2, padding: '10px 14px', borderRadius: 9, border: 'none', fontSize: 13, fontFamily: fonts.body }}
+              />
+            </div>
+            <button
+              type="submit" disabled={busy}
+              style={{ padding: '9px 18px', borderRadius: 9, border: 'none', background: '#fff', color: colors.forest, fontSize: 12, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer' }}
+            >
+              Confirmer
+            </button>
+          </form>
+        )}
+      </Card>
+
+      {!loading && info.mouvements.length > 0 && (
+        <Card style={{ padding: 0, overflow: 'hidden' }}>
+          <SectionTitle>Derniers mouvements</SectionTitle>
+          {info.mouvements.slice(0, 8).map((m) => (
+            <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 20px', borderBottom: `1px solid ${colors.line}` }}>
+              <div>
+                <p style={{ margin: 0, fontSize: 12, color: colors.ink, fontFamily: fonts.body }}>
+                  {m.type === 'alimentation' ? 'Alimentation' : `Transfert vers ${m.caissier}`}
+                  {m.motif ? ` — ${m.motif}` : ''}
+                </p>
+                <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+                  {new Date(m.created_at).toLocaleString('fr-FR')}
+                </p>
+              </div>
+              <p style={{ margin: 0, fontSize: 13, fontWeight: 600, fontFamily: fonts.mono, color: m.type === 'alimentation' ? colors.forestLight : colors.danger }}>
+                {m.type === 'alimentation' ? '+' : '−'}{formatFCFA(m.montant)} F
+              </p>
+            </div>
+          ))}
+        </Card>
+      )}
+    </div>
+  );
+}
+
 function CaisseValidation() {
   const [demandes, setDemandes] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -465,6 +592,8 @@ function CaisseValidation() {
 
   return (
     <div>
+      <CaissePrincipalePanel />
+
       {toast && (
         <div style={{
           background: colors.goldPale, border: `1px solid ${colors.gold}`, borderRadius: 12,
