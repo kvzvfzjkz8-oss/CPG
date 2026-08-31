@@ -22,6 +22,20 @@ import { checkActivationNeeded } from '../api/clientApi';
  * laisse passer que si le numéro client correspond, jamais le
  * gestionnaire ne choisit le code à la place du client.
  */
+/** Flèche retour, cohérente sur tous les écrans qui en ont besoin. */
+function BackArrow({ onPress }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel="Retour"
+      style={({ pressed }) => [styles.backArrow, { opacity: pressed ? 0.5 : 1 }]}
+    >
+      <Feather name="chevron-left" size={26} color="#fff" />
+    </Pressable>
+  );
+}
+
 export default function LockScreen() {
   const { login, activate, knownPhone } = useAuth();
   const [phone, setPhone] = useState(knownPhone ?? '');
@@ -186,6 +200,7 @@ export default function LockScreen() {
   if (step === 'activate-number') {
     return (
       <View style={styles.root}>
+        <BackArrow onPress={() => { setError(''); setStep('phone'); }} />
         <View style={styles.brand}>
           <View style={styles.logo}>
             <Feather name="user-plus" size={24} color={colors.forest} />
@@ -215,10 +230,6 @@ export default function LockScreen() {
           <Text style={styles.continueText}>Continuer</Text>
         </Pressable>
 
-        <Pressable onPress={() => { setStep('phone'); setError(''); }}>
-          <Text style={styles.changePhone}>Modifier le numéro de téléphone</Text>
-        </Pressable>
-
         <View style={{ height: 20 }} />
       </View>
     );
@@ -228,6 +239,12 @@ export default function LockScreen() {
 
   return (
     <View style={styles.root}>
+      <BackArrow
+        onPress={() => {
+          setPin(''); setError('');
+          setStep(isActivating ? 'activate-number' : 'phone');
+        }}
+      />
       <View style={styles.brand}>
         <View style={styles.logo}>
           <Feather name={isActivating ? 'user-plus' : 'git-commit'} size={24} color={colors.forest} />
@@ -236,11 +253,6 @@ export default function LockScreen() {
         <Text style={styles.brandHint}>
           {isActivating ? 'Choisissez votre code PIN' : compteConnu ? `Code PIN pour ${phone}` : 'Entrez votre code PIN'}
         </Text>
-        {!isActivating && (
-          <Pressable onPress={() => { setPin(''); setError(''); setStep('phone'); }}>
-            <Text style={styles.changePhone}>Modifier le numéro</Text>
-          </Pressable>
-        )}
       </View>
 
       {busy ? (
@@ -332,6 +344,7 @@ const styles = StyleSheet.create({
     textAlign: 'center', paddingHorizontal: 12,
   },
   changePhone: { color: colors.gold, fontSize: 11, marginTop: 8, fontFamily: fonts.body, textDecorationLine: 'underline' },
+  backArrow: { position: 'absolute', top: 40, left: 20, padding: 8, zIndex: 10 },
   phoneInput: {
     width: '100%',
     borderWidth: 1,

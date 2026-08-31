@@ -318,6 +318,17 @@ router.get(
          ORDER BY created_at ASC`,
         [req.params.id]
       );
+
+      // Ouvrir la conversation vaut lecture : sans ça, le badge de
+      // messages non lus resterait bloqué indéfiniment même après
+      // que le conseiller ait effectivement vu et répondu.
+      await query(
+        `UPDATE messages SET read_at = now()
+         WHERE conversation_id = $1 AND read_at IS NULL
+           AND sender_id = (SELECT client_id FROM conversations WHERE id = $1)`,
+        [req.params.id]
+      );
+
       res.json({ messages: rows });
     } catch (error) {
       next(error);
@@ -385,7 +396,7 @@ const createUserSchema = z.object({
   nomComplet: z.string().min(2).max(120),
   telephone: z.string().min(8).max(20),
   email: z.string().email().optional(),
-  role: z.enum(['client', 'operateur', 'superviseur']),
+  role: z.enum(['client', 'operateur', 'superviseur', 'caissier']),
   motDePasse: z.string().min(12).optional(), // employés
   codePin: z.string().regex(/^\d{4,6}$/).optional(), // clients
   employeur: z.string().max(120).optional(),
@@ -427,12 +438,13 @@ router.post(
         try {
           created = await withTransaction(async (client) => {
             const { rows } = await client.query(
-              `INSERT INTO users (full_name, phone, email, role, employer, job_title, pin_hash, password_hash, client_number)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+              `INSERT INTO users (full_name, phone, email, role, employer, job_title, pin_hash, password_hash, client_number, created_by)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                RETURNING id, full_name, role, status, client_number`,
               [
                 b.nomComplet, b.telephone, b.email?.toLowerCase() ?? null, b.role,
                 b.employeur ?? null, b.poste ?? null, pinHash, passwordHash, clientNumber,
+                req.user.id,
               ]
             );
 

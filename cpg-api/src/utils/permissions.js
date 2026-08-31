@@ -23,6 +23,7 @@ export const ROLES = {
   OPERATEUR: 'operateur',
   SUPERVISEUR: 'superviseur',
   DIRECTEUR: 'directeur',
+  CAISSIER: 'caissier',
   ADMIN: 'admin',
 };
 
@@ -144,6 +145,23 @@ export const PERMISSIONS = {
     // l'opérateur — c'est la validation demandée, pas une formalité :
     // la contrainte no_self_decision_echeance l'impose aussi en base.
     'operations.decider_correction_echeance',
+
+    // La Caisse : le directeur valide chaque retrait guichet et chaque
+    // réapprovisionnement avant qu'ils aient un effet réel — jamais
+    // d'argent qui bouge sur la seule initiative de la caissière.
+    'caisse.valider',
+    'caisse.consulter_toutes_caisses',
+  ],
+
+  // La caissière sert les retraits au guichet, dans la limite de son
+  // budget en espèces. Elle ne peut ni créer de compte, ni consulter
+  // les dossiers de crédit : uniquement solde, retrait et RIB.
+  [ROLES.CAISSIER]: [
+    'caisse.consulter_solde_client',
+    'caisse.demander_retrait',
+    'caisse.demander_appro',
+    'caisse.consulter_sa_caisse',
+    'caisse.imprimer_rib',
   ],
 
   // L'administrateur technique hérite de tout, mais reste tracé dans

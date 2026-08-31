@@ -4,7 +4,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
-import { ActivityIndicator, View } from 'react-native';
+import { ActivityIndicator, View, Text } from 'react-native';
 
 import { colors, fonts } from './src/theme';
 import { AuthProvider, useAuth } from './src/auth/AuthContext';
@@ -43,8 +43,11 @@ function AuthenticatedApp() {
         <Tab.Navigator
           screenOptions={({ route }) => ({
             headerShown: false,
-            tabBarActiveTintColor: colors.forest,
-            tabBarInactiveTintColor: colors.muted,
+            // tabBarActiveTintColor ne colorait pas fiablement le
+            // texte dans cet environnement (la page active
+            // s'affichait en noir au lieu du vert du thème) : on
+            // reprend la main explicitement via tabBarLabel plutôt
+            // que de compter sur ce réglage automatique.
             tabBarStyle: {
               backgroundColor: colors.card,
               borderTopColor: colors.line,
@@ -52,9 +55,32 @@ function AuthenticatedApp() {
               paddingTop: 8,
               paddingBottom: 24,
             },
-            tabBarLabelStyle: { fontSize: 10, fontFamily: fonts.body },
-            tabBarIcon: ({ color }) => (
-              <Feather name={ICONS[route.name]} size={20} color={color} />
+            tabBarLabel: ({ focused }) => (
+              <Text
+                style={{
+                  fontSize: 10,
+                  fontFamily: fonts.body,
+                  fontWeight: focused ? '700' : '400',
+                  color: focused ? colors.forest : colors.muted,
+                  marginTop: 2,
+                }}
+              >
+                {route.name}
+              </Text>
+            ),
+            tabBarIcon: ({ focused }) => (
+              <View
+                style={{
+                  width: 40,
+                  height: 28,
+                  borderRadius: 10,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: focused ? colors.forestPale : 'transparent',
+                }}
+              >
+                <Feather name={ICONS[route.name]} size={19} color={focused ? colors.forest : colors.muted} />
+              </View>
             ),
           })}
         >

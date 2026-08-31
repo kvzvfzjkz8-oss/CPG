@@ -477,3 +477,63 @@ export async function fetchExceptionAuthorizations() {
   const { autorisations } = await apiRequest('/v1/admin/commission/autorisations');
   return autorisations;
 }
+
+/**
+ * ─────────────────────────────────────────────────────────────────────
+ *  LA CAISSE
+ * ─────────────────────────────────────────────────────────────────────
+ */
+
+/** Recherche un client par nom ou numéro de compte. */
+export async function searchCaisseClient(q) {
+  const { resultats } = await apiRequest(`/v1/caisse/rechercher-client?q=${encodeURIComponent(q)}`);
+  return resultats;
+}
+
+/** Solde courant de la caisse de l'agent connecté, et bilan du jour. */
+export async function fetchMaCaisse() {
+  return apiRequest('/v1/caisse/ma-caisse');
+}
+
+/** Historique des demandes de la caissière connectée. */
+export async function fetchMesOperationsCaisse() {
+  const { operations } = await apiRequest('/v1/caisse/mes-operations');
+  return operations;
+}
+
+/** Dépose une demande de retrait guichet pour un client. */
+export async function demanderRetraitCaisse(clientId, montant, motif) {
+  return apiRequest('/v1/caisse/retraits', { method: 'POST', body: { clientId, montant, motif } });
+}
+
+/** Demande un réapprovisionnement de sa caisse. */
+export async function demanderApproCaisse(montant, motif) {
+  return apiRequest('/v1/caisse/appro', { method: 'POST', body: { montant, motif } });
+}
+
+/** RIB imprimable : nom, numéro de compte, gestionnaire. */
+export async function fetchRib(clientId) {
+  return apiRequest(`/v1/caisse/rib/${clientId}`);
+}
+
+/** Directeur : toutes les demandes de caisse en attente, tous guichets confondus. */
+export async function fetchDemandesCaisseEnAttente() {
+  const { demandes } = await apiRequest('/v1/caisse/demandes-en-attente');
+  return demandes;
+}
+
+/** Directeur : valide une demande (retrait ou appro). */
+export async function validerOperationCaisse(id) {
+  return apiRequest(`/v1/caisse/operations/${id}/valider`, { method: 'POST' });
+}
+
+/** Directeur : rejette une demande, avec motif obligatoire. */
+export async function rejeterOperationCaisse(id, motif) {
+  return apiRequest(`/v1/caisse/operations/${id}/rejeter`, { method: 'POST', body: { motif } });
+}
+
+/** Journal d'audit — qui a fait quoi, quand. Gestionnaire et directeur seulement. */
+export async function fetchAuditLog() {
+  const { entrees } = await apiRequest('/v1/admin/audit');
+  return entrees;
+}

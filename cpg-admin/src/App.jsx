@@ -6,6 +6,7 @@ import { AuthProvider, useAuth } from './auth/AuthContext';
 import LoginView from './views/LoginView';
 import OperatorView from './views/OperatorView';
 import SupervisorView from './views/SupervisorView';
+import CaissierView from './views/CaissierView';
 
 function initialsOf(fullName) {
   if (!fullName) return '';
@@ -141,7 +142,9 @@ function AuthenticatedApp() {
         </header>
 
         <div style={{ flex: 1, padding: 32, overflowY: 'auto' }}>
-          {role === ROLES.OPERATEUR ? <OperatorView /> : <SupervisorView role={role} />}
+          {role === ROLES.OPERATEUR && <OperatorView />}
+          {role === ROLES.CAISSIER && <CaissierView />}
+          {role !== ROLES.OPERATEUR && role !== ROLES.CAISSIER && <SupervisorView role={role} />}
         </div>
       </main>
     </div>

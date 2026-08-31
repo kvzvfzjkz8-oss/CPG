@@ -48,6 +48,11 @@ export const TEMPLATES = {
     body: `Votre mensualité de ${formatFCFA(data.amount)} FCFA sera prélevée le ${data.dueDate}.`,
     data: { type: 'echeance', screen: 'Crédits' },
   }),
+  retrait_caisse: (data) => ({
+    title: 'Retrait effectué',
+    body: `Un retrait de ${formatFCFA(data.amount)} FCFA a été effectué au guichet sur votre compte.`,
+    data: { type: 'transaction', screen: 'Accueil' },
+  }),
 };
 
 const formatFCFA = (n) =>

@@ -4,11 +4,19 @@ import { Feather } from '@expo/vector-icons';
 import { colors, fonts, radius, formatFCFA } from '../theme';
 import { Card, ScreenHeader, PrimaryButton } from '../components/UI';
 import { OPERATORS, requestDeposit, requestWithdrawal } from '../api/mobileMoneyApi';
+import { useAuth } from '../auth/AuthContext';
 
 export default function MobileMoneyScreen() {
+  const { knownPhone } = useAuth();
   const [direction, setDirection] = useState('in');
   const [operator, setOperator] = useState(OPERATORS[0]);
   const [amount, setAmount] = useState('');
+  // Pour un dépôt, c'est en général le propre numéro du client qui
+  // reçoit la demande USSD Airtel/Moov — préremplipar défaut, mais
+  // modifiable (il peut vouloir créditer depuis un autre portefeuille).
+  // Pour un envoi, c'est le compte de l'entreprise CPG qui envoie
+  // l'argent vers le numéro que le client précise ici.
+  const [phone, setPhone] = useState(knownPhone ?? '');
   const [status, setStatus] = useState('idle'); // idle | loading | done | error
   const [receipt, setReceipt] = useState(null);
   const [error, setError] = useState('');
@@ -24,13 +32,13 @@ export default function MobileMoneyScreen() {
     setStatus('loading');
     setError('');
     try {
-      const payload = { operator: operator.id, amount: Number(amount) };
+      const payload = { operator: operator.id, amount: Number(amount), phone: phone.trim() };
       const result =
         direction === 'in' ? await requestDeposit(payload) : await requestWithdrawal(payload);
       setReceipt(result);
       setStatus('done');
     } catch (e) {
-      setError("L'opération n'a pas pu être envoyée. Vérifiez votre connexion et réessayez.");
+      setError(e.message ?? "L'opération n'a pas pu être envoyée. Vérifiez votre connexion et réessayez.");
       setStatus('error');
     }
   };
@@ -51,6 +59,7 @@ export default function MobileMoneyScreen() {
                 key={d.key}
                 onPress={() => {
                   setDirection(d.key);
+                  setPhone(d.key === 'in' ? (knownPhone ?? '') : '');
                   reset();
                 }}
                 style={[
@@ -113,6 +122,18 @@ export default function MobileMoneyScreen() {
                 })}
               </View>
 
+              <Text style={styles.inputLabel}>
+                {direction === 'in' ? 'Numéro qui envoie le dépôt' : 'Numéro du destinataire'}
+              </Text>
+              <TextInput
+                value={phone}
+                onChangeText={setPhone}
+                placeholder="+241 06 00 00 01"
+                placeholderTextColor={colors.muted}
+                keyboardType="phone-pad"
+                style={styles.input}
+              />
+
               <Text style={styles.inputLabel}>Montant (FCFA)</Text>
               <TextInput
                 value={amount}
@@ -132,24 +153,19 @@ export default function MobileMoneyScreen() {
               ) : (
                 <PrimaryButton
                   label={direction === 'in' ? 'Confirmer le dépôt' : "Confirmer l'envoi"}
-                  disabled={!amount || Number(amount) <= 0}
+                  disabled={!amount || Number(amount) <= 0 || phone.trim().length < 8}
                   onPress={submit}
                 />
               )}
 
               <Text style={styles.hint}>
-                Vous recevrez une demande de confirmation {operator.label} sur votre téléphone.
+                {direction === 'in'
+                  ? `Vous recevrez une demande de confirmation ${operator.label} sur ce numéro.`
+                  : `Le destinataire recevra les fonds sur son compte ${operator.label}.`}
               </Text>
             </>
           )}
         </Card>
-
-        <View style={styles.devNote}>
-          <Feather name="link-2" size={13} color={colors.goldDark} />
-          <Text style={styles.devNoteText}>
-            Intégration opérateur non branchée : voir src/api/mobileMoneyApi.js
-          </Text>
-        </View>
       </View>
     </ScrollView>
   );
@@ -195,14 +211,5 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginBottom: 12,
   },
-  devNote: {
-    flexDirection: 'row',
-    gap: 8,
-    alignItems: 'center',
-    backgroundColor: colors.goldPale,
-    borderRadius: radius.sm,
-    padding: 10,
-    marginTop: 14,
-  },
-  devNoteText: { flex: 1, fontSize: 10, color: colors.goldDark, fontFamily: fonts.body },
 });
+

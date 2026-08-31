@@ -110,6 +110,8 @@ function ProductsPanel({ role }) {
       ]);
       setCreating(false);
       flash(result?.message ?? 'Produit créé en brouillon. Il doit être activé par le directeur.');
+    } catch (err) {
+      flash(err.message ?? 'Création impossible.');
     } finally {
       setBusy(null);
     }
@@ -128,6 +130,12 @@ function ProductsPanel({ role }) {
         flash(`Changement hors marge envoyé au directeur pour ${product.code} : rien n'est appliqué avant sa décision.`);
       }
       setAdjusting(null);
+    } catch (err) {
+      // Sans ce message, un refus du serveur (plafond réglementaire
+      // dépassé, taux invalide...) ne laissait aucune trace à
+      // l'écran : le formulaire restait ouvert sans explication,
+      // comme s'il ne s'était rien passé.
+      flash(err.message ?? "L'ajustement n'a pas pu être appliqué.");
     } finally {
       setBusy(null);
     }
@@ -144,6 +152,8 @@ function ProductsPanel({ role }) {
           ? `${product.code} est désormais proposé aux clients.`
           : `${product.code} suspendu : n'apparaît plus dans le catalogue client.`
       );
+    } catch (err) {
+      flash(err.message ?? 'Changement de statut impossible.');
     } finally {
       setBusy(null);
     }
@@ -417,6 +427,8 @@ function ServicesPanel({ role }) {
       await setFeeStatus(fee.id, next);
       setItems((prev) => prev.map((f) => (f.id === fee.id ? { ...f, status: next } : f)));
       flash(`${fee.code} ${next === 'actif' ? 'activé' : 'suspendu'}.`);
+    } catch (err) {
+      flash(err.message ?? 'Changement de statut impossible.');
     } finally {
       setBusy(null);
     }
@@ -428,6 +440,8 @@ function ServicesPanel({ role }) {
     try {
       const result = await runAgiosBatch(range.debut, range.fin);
       flash(`Agios prélevés sur ${result.applied ?? 0} compte(s), total ${formatFCFA(result.total ?? 0)} F.`);
+    } catch (err) {
+      flash(err.message ?? "Le prélèvement des agios n'a pas pu être lancé.");
     } finally {
       setBusy(null);
     }
@@ -535,6 +549,9 @@ function ChangeRequestsPanel({ role }) {
           : `Proposition rejetée pour ${request.cible}.`
       );
       setTimeout(() => setToast(''), 5000);
+    } catch (err) {
+      setToast(err.message ?? 'Décision impossible.');
+      setTimeout(() => setToast(''), 5000);
     } finally {
       setBusy(null);
     }
@@ -623,6 +640,9 @@ function CeilingsPanel() {
       );
       setEditing(null);
       setToast(`Plafond « ${c.scope} » mis à jour. Aucun barème existant n'est modifié rétroactivement.`);
+      setTimeout(() => setToast(''), 5000);
+    } catch (err) {
+      setToast(err.message ?? 'Mise à jour du plafond impossible.');
       setTimeout(() => setToast(''), 5000);
     } finally {
       setBusy(null);

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   LayoutDashboard, ShieldCheck, Users, Wallet, UserCog, Bell, Package, CalendarClock, Check, X,
-  Gavel, KeyRound,
+  Gavel, KeyRound, History,
 } from 'lucide-react';
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -13,6 +13,8 @@ import {
   approveCredit, setUserStatus, fetchUsers, createUser, resetClientPin, fetchStatistics, fetchMomoTransactions,
   fetchPendingInstallmentAdjustments, decideInstallmentAdjustment,
   fetchFinalApprovalQueue, grantExceptionAuthorization, fetchExceptionAuthorizations,
+  fetchDemandesCaisseEnAttente, validerOperationCaisse, rejeterOperationCaisse,
+  fetchAuditLog,
 } from '../api/adminApi';
 import { can } from '../auth/roles';
 import CatalogView from './CatalogView';
@@ -41,6 +43,12 @@ export default function SupervisorView({ role }) {
   if (can(role, 'commission.autoriser_exception')) {
     tabs.push({ key: 'exceptions', label: 'Autorisations d\'exception', icon: KeyRound });
   }
+  if (can(role, 'caisse.valider')) {
+    tabs.push({ key: 'caisse', label: 'Validations caisse', icon: Wallet });
+  }
+  if (can(role, 'audit.lire')) {
+    tabs.push({ key: 'audit', label: "Journal d'activité", icon: History });
+  }
 
   return (
     <div>
@@ -57,6 +65,8 @@ export default function SupervisorView({ role }) {
       {tab === 'momo' && <MomoSupervision />}
       {tab === 'corrections' && <PendingAdjustments />}
       {tab === 'exceptions' && <ExceptionAuthorizations />}
+      {tab === 'caisse' && <CaisseValidation />}
+      {tab === 'audit' && <AuditLog />}
     </div>
   );
 }
@@ -405,6 +415,225 @@ function ExceptionAuthorizations() {
   );
 }
 
+function CaisseValidation() {
+  const [demandes, setDemandes] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(null);
+  const [rejectingId, setRejectingId] = useState(null);
+  const [motifRejet, setMotifRejet] = useState('');
+  const [toast, setToast] = useState('');
+
+  const flash = (text) => {
+    setToast(text);
+    setTimeout(() => setToast(''), 6000);
+  };
+
+  const load = () => {
+    setLoading(true);
+    fetchDemandesCaisseEnAttente().then(setDemandes).finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const valider = async (id) => {
+    setBusy(id);
+    try {
+      await validerOperationCaisse(id);
+      flash('Opération validée — les fonds ont été débités.');
+      load();
+    } catch (err) {
+      flash(err.message ?? 'Validation impossible.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const rejeter = async (id) => {
+    setBusy(id);
+    try {
+      await rejeterOperationCaisse(id, motifRejet);
+      flash('Demande rejetée.');
+      setRejectingId(null);
+      setMotifRejet('');
+      load();
+    } catch (err) {
+      flash(err.message ?? 'Rejet impossible.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div>
+      {toast && (
+        <div style={{
+          background: colors.goldPale, border: `1px solid ${colors.gold}`, borderRadius: 12,
+          padding: '11px 16px', marginBottom: 16, fontSize: 12, color: colors.goldDark, fontFamily: fonts.body,
+        }}>
+          {toast}
+        </div>
+      )}
+
+      <Card style={{ padding: 0, overflow: 'hidden' }}>
+        <SectionTitle>
+          {loading ? 'Chargement…' : `${demandes.length} demande${demandes.length > 1 ? 's' : ''} de caisse en attente`}
+        </SectionTitle>
+
+        {!loading && demandes.length === 0 && (
+          <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
+            Aucune demande en attente.
+          </p>
+        )}
+
+        {demandes.map((d) => (
+          <div key={d.id} style={{ padding: '16px 20px', borderBottom: `1px solid ${colors.line}` }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                  <Badge tone={d.type === 'appro' ? 'gold' : 'neutral'}>
+                    {d.type === 'appro' ? 'Réapprovisionnement' : 'Retrait guichet'}
+                  </Badge>
+                  <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>
+                    {d.caissier}
+                  </p>
+                </div>
+                {d.client && (
+                  <p style={{ margin: 0, fontSize: 12, color: colors.muted, fontFamily: fonts.body }}>
+                    Client : {d.client} ({d.client_number})
+                  </p>
+                )}
+                <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+                  {new Date(d.demandee_le).toLocaleString('fr-FR')}
+                  {d.motif ? ` · ${d.motif}` : ''}
+                </p>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                <p style={{ margin: 0, fontSize: 16, fontWeight: 700, color: colors.ink, fontFamily: fonts.mono }}>
+                  {formatFCFA(d.montant)} F
+                </p>
+                <button
+                  onClick={() => valider(d.id)}
+                  disabled={busy === d.id}
+                  style={roundBtn(colors.forestPale)}
+                  title="Valider"
+                >
+                  <Check size={16} color={colors.forestLight} />
+                </button>
+                <button
+                  onClick={() => setRejectingId(rejectingId === d.id ? null : d.id)}
+                  disabled={busy === d.id}
+                  style={roundBtn(colors.dangerPale)}
+                  title="Rejeter"
+                >
+                  <X size={16} color={colors.danger} />
+                </button>
+              </div>
+            </div>
+
+            {rejectingId === d.id && (
+              <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                <input
+                  autoFocus
+                  value={motifRejet}
+                  onChange={(e) => setMotifRejet(e.target.value)}
+                  placeholder="Motif du rejet (obligatoire)"
+                  style={{ flex: 1, padding: '9px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body }}
+                />
+                <button
+                  onClick={() => rejeter(d.id)}
+                  disabled={!motifRejet.trim() || busy === d.id}
+                  style={{ padding: '9px 16px', borderRadius: 9, border: 'none', background: colors.danger, color: '#fff', fontSize: 12, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer' }}
+                >
+                  Confirmer le rejet
+                </button>
+              </div>
+            )}
+          </div>
+        ))}
+      </Card>
+    </div>
+  );
+}
+
+const ACTION_LABELS = {
+  'utilisateur.cree': 'Création de compte',
+  'utilisateur.pin_client_reinitialise': 'Réinitialisation PIN client',
+  'client.compte_active': 'Activation compte (client)',
+  'connexion.client': 'Connexion client',
+  'caisse.retrait_demande': 'Demande de retrait guichet',
+  'caisse.appro_demandee': 'Demande de réapprovisionnement',
+  'caisse.operation_validee': 'Opération de caisse validée',
+  'caisse.operation_rejetee': 'Opération de caisse rejetée',
+  'credit.valide_niveau1': 'Validation niveau 1',
+  'credit.valide_double': 'Double validation',
+  'credit.approuve_final': 'Approbation finale',
+  'credit.rejete': 'Crédit rejeté',
+  'commission.seance_programmee': 'Séance de commission programmée',
+  'commission.decision': 'Décision en commission',
+  'catalogue.produit_cree': 'Produit créé',
+  'catalogue.taux_ajuste': 'Taux ajusté',
+  'operations.echeance_corrigee': 'Correction d\'échéance',
+};
+
+function AuditLog() {
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filtreActeur, setFiltreActeur] = useState('');
+
+  useEffect(() => {
+    fetchAuditLog().then(setEntries).finally(() => setLoading(false));
+  }, []);
+
+  const filtered = filtreActeur.trim()
+    ? entries.filter((e) => (e.acteur ?? '').toLowerCase().includes(filtreActeur.trim().toLowerCase()))
+    : entries;
+
+  return (
+    <Card style={{ padding: 0, overflow: 'hidden' }}>
+      <SectionTitle
+        right={
+          <input
+            value={filtreActeur}
+            onChange={(e) => setFiltreActeur(e.target.value)}
+            placeholder="Filtrer par personne…"
+            style={{ padding: '6px 10px', borderRadius: 8, border: `1px solid ${colors.line}`, fontSize: 11, fontFamily: fonts.body }}
+          />
+        }
+      >
+        {loading ? 'Chargement…' : `${filtered.length} action${filtered.length > 1 ? 's' : ''} — 200 dernières au total`}
+      </SectionTitle>
+
+      {!loading && filtered.length === 0 && (
+        <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
+          Aucune activité correspondante.
+        </p>
+      )}
+
+      {filtered.map((e) => (
+        <div
+          key={e.id}
+          style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            padding: '11px 20px', borderBottom: `1px solid ${colors.line}`,
+          }}
+        >
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <p style={{ margin: 0, fontSize: 12, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>
+              {ACTION_LABELS[e.action] ?? e.action}
+            </p>
+            <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+              {e.acteur ?? 'Système'} {e.actor_role ? `(${e.actor_role})` : ''}
+            </p>
+          </div>
+          <p style={{ margin: 0, fontSize: 11, color: colors.muted, fontFamily: fonts.mono, flexShrink: 0 }}>
+            {new Date(e.created_at).toLocaleString('fr-FR')}
+          </p>
+        </div>
+      ))}
+    </Card>
+  );
+}
+
 function UserManagement() {
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -665,6 +894,18 @@ const actionBtn = (bg, fg) => ({
   fontSize: 11,
   fontWeight: 600,
   fontFamily: fonts.body,
+  cursor: 'pointer',
+});
+
+const roundBtn = (bg, size = 32) => ({
+  width: size,
+  height: size,
+  borderRadius: size / 2,
+  border: 'none',
+  background: bg,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
   cursor: 'pointer',
 });
 

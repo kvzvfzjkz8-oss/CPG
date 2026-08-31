@@ -38,7 +38,12 @@ router.get('/compte', requirePermission('compte.lire_le_sien'), async (req, res,
 
     res.json({
       account: rows[0],
-      holder: { fullName: req.user.full_name, clientNumber: req.user.client_number },
+      holder: {
+        fullName: req.user.full_name,
+        clientNumber: req.user.client_number,
+        jobTitle: req.user.job_title,
+        memberSince: req.user.created_at,
+      },
     });
   } catch (error) {
     next(error);
@@ -362,19 +367,49 @@ router.post(
   async (req, res, next) => {
     try {
       const message = await withTransaction(async (client) => {
+        // `xmax = 0` distingue un vrai INSERT d'un UPDATE déclenché par
+        // le ON CONFLICT : c'est ce qui nous dit si cette conversation
+        // vient tout juste d'être créée (premier message du client),
+        // sans avoir besoin d'une requête SELECT séparée avant.
         const { rows: conv } = await client.query(
           `INSERT INTO conversations (client_id, last_message_at)
            VALUES ($1, now())
            ON CONFLICT (client_id) DO UPDATE SET last_message_at = now()
-           RETURNING id`,
+           RETURNING id, (xmax = 0) AS nouvelle_conversation`,
           [req.user.id]
         );
+        const estNouvelle = conv[0].nouvelle_conversation;
 
         const { rows } = await client.query(
           `INSERT INTO messages (conversation_id, sender_id, body)
            VALUES ($1, $2, $3) RETURNING id, body, created_at`,
           [conv[0].id, req.user.id, req.body.texte]
         );
+
+        // Une seule réponse automatique, uniquement à la toute première
+        // prise de contact — pas à chaque message. Les échanges suivants
+        // attendent une vraie réponse d'un conseiller (voir la
+        // notification au gestionnaire, gérée séparément).
+        if (estNouvelle) {
+          const { rows: conseiller } = await client.query(
+            `SELECT id FROM users WHERE role = 'operateur' AND status = 'actif'
+             ORDER BY created_at LIMIT 1`
+          );
+          if (conseiller[0]) {
+            await client.query(
+              `UPDATE conversations SET advisor_id = $2 WHERE id = $1`,
+              [conv[0].id, conseiller[0].id]
+            );
+            await client.query(
+              `INSERT INTO messages (conversation_id, sender_id, body)
+               VALUES ($1, $2, $3)`,
+              [
+                conv[0].id, conseiller[0].id,
+                'Merci pour votre message, un conseiller CPG vous répondra rapidement.',
+              ]
+            );
+          }
+        }
 
         return rows[0];
       });

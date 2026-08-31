@@ -29,7 +29,7 @@ export async function requireAuth(req, _res, next) {
     }
 
     const { rows } = await query(
-      'SELECT id, full_name, role, status, client_number FROM users WHERE id = $1',
+      'SELECT id, full_name, role, status, client_number, job_title, created_at FROM users WHERE id = $1',
       [payload.sub]
     );
     const user = rows[0];

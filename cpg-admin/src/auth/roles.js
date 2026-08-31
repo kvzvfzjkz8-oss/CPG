@@ -26,12 +26,14 @@ export const ROLES = {
   OPERATEUR: 'operateur',
   SUPERVISEUR: 'superviseur',
   DIRECTEUR: 'directeur',
+  CAISSIER: 'caissier',
 };
 
 export const ROLE_LABELS = {
   [ROLES.OPERATEUR]: 'Opérateur de crédit / Conseiller',
   [ROLES.SUPERVISEUR]: 'Gestionnaire / Superviseur',
   [ROLES.DIRECTEUR]: 'Directeur',
+  [ROLES.CAISSIER]: 'Caissière',
 };
 
 export const ROLE_DESCRIPTIONS = {
@@ -41,6 +43,8 @@ export const ROLE_DESCRIPTIONS = {
     'Statistiques, validation finale, gestion des utilisateurs, catalogue et supervision Mobile Money',
   [ROLES.DIRECTEUR]:
     'Tout le périmètre du gestionnaire, plus l\'activation des produits, l\'arbitrage des barèmes et les plafonds réglementaires',
+  [ROLES.CAISSIER]:
+    'Retraits au guichet, réapprovisionnement de caisse et remise de RIB — dans la limite de son budget en espèces',
 };
 
 /** Capacités accordées à chaque rôle. */
@@ -78,6 +82,7 @@ export const PERMISSIONS = {
     'demandes.rejeter',
     'utilisateurs.gerer',
     'momo.superviser',
+    'audit.lire',
 
     // Comité de crédit : le gestionnaire programme les séances
     // (cadence hebdomadaire), dépose les dossiers (nouveaux crédits,
@@ -114,6 +119,7 @@ export const PERMISSIONS = {
     'demandes.rejeter',
     'utilisateurs.gerer',
     'momo.superviser',
+    'audit.lire',
 
     // Approbation finale d'un crédit — réservée au directeur seul,
     // dernière étape une fois le comité et la double validation de
@@ -144,6 +150,23 @@ export const PERMISSIONS = {
     // Le code PIN back-office est une attribution, pas un self-service :
     // seul le directeur le définit, le modifie ou le supprime.
     'utilisateurs.gerer_pin',
+
+    // La Caisse : le directeur valide chaque retrait guichet et
+    // chaque réapprovisionnement — jamais d'argent qui bouge sur la
+    // seule initiative de la caissière.
+    'caisse.valider',
+    'caisse.consulter_toutes_caisses',
+  ],
+
+  // La caissière sert les retraits au guichet, dans la limite de son
+  // budget en espèces. Elle ne voit ni les dossiers de crédit ni la
+  // gestion des utilisateurs — uniquement solde, retrait et RIB.
+  [ROLES.CAISSIER]: [
+    'caisse.consulter_solde_client',
+    'caisse.demander_retrait',
+    'caisse.demander_appro',
+    'caisse.consulter_sa_caisse',
+    'caisse.imprimer_rib',
   ],
 };
 

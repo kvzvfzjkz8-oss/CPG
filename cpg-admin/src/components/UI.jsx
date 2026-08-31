@@ -65,10 +65,31 @@ export function Tabs({ options, value, onChange }) {
               fontWeight: 600,
               fontFamily: fonts.body,
               cursor: 'pointer',
+              position: 'relative',
             }}
           >
             {Icon && <Icon size={14} />}
             {o.label}
+            {!!o.badge && (
+              <span
+                style={{
+                  minWidth: 16,
+                  height: 16,
+                  padding: '0 4px',
+                  borderRadius: 8,
+                  background: active ? '#fff' : colors.danger,
+                  color: active ? colors.forest : '#fff',
+                  fontSize: 10,
+                  fontWeight: 700,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  lineHeight: 1,
+                }}
+              >
+                {o.badge > 99 ? '99+' : o.badge}
+              </span>
+            )}
           </button>
         );
       })}

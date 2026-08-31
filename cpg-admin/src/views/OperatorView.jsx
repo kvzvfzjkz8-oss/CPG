@@ -13,6 +13,21 @@ import OperationsView from './OperationsView';
 
 export default function OperatorView() {
   const [tab, setTab] = useState('demandes');
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  useEffect(() => {
+    const checkUnread = () => {
+      fetchConversations()
+        .then((list) => setUnreadCount(list.reduce((sum, c) => sum + (c.non_lus ?? 0), 0)))
+        .catch(() => {});
+    };
+    checkUnread();
+    // Vérifie toutes les 30 secondes : assez réactif pour qu'un
+    // gestionnaire remarque vite un nouveau message, sans solliciter
+    // le serveur en continu.
+    const interval = setInterval(checkUnread, 30000);
+    return () => clearInterval(interval);
+  }, [tab]);
 
   return (
     <div>
@@ -24,7 +39,7 @@ export default function OperatorView() {
           { key: 'double-validation', label: 'Double validation', icon: Gavel },
           { key: 'verification', label: 'Vérification client', icon: ShieldCheck },
           { key: 'operations', label: 'Opérations mensuelles', icon: CalendarClock },
-          { key: 'messagerie', label: 'Messagerie', icon: MessageCircle },
+          { key: 'messagerie', label: 'Messagerie', icon: MessageCircle, badge: unreadCount },
         ]}
       />
       {tab === 'demandes' && <IncomingRequests />}
