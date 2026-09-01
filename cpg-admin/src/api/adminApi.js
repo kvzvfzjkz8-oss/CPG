@@ -172,6 +172,14 @@ export async function fetchProducts() {
   return produits;
 }
 
+/** Simulation pure, sans enregistrement — pour expliquer des mensualités à un client. */
+export async function simulateCredit({ produitId, montant, duree }) {
+  return apiRequest('/v1/client/credits/simulation', {
+    method: 'POST',
+    body: { produitId, montant, duree },
+  });
+}
+
 /** Historique des barèmes d'un produit (versionnement, jamais écrasé). */
 export async function fetchProductHistory(productId) {
   const { versions } = await apiRequest(`/v1/admin/catalogue/produits/${productId}/historique`);
@@ -246,8 +254,8 @@ export async function fetchAppliedFees() {
  * de l'arbitrage du directeur.
  */
 export async function fetchChangeRequests() {
-  const { demandes } = await apiRequest('/v1/admin/catalogue/changements');
-  return demandes;
+  const { changements } = await apiRequest('/v1/admin/catalogue/changements');
+  return changements;
 }
 
 /** Décision du directeur : approuver applique le barème proposé, sinon il est écarté. */
@@ -569,4 +577,12 @@ export async function fetchClotureDuJour() {
 /** Caissière : clôture la journée, renvoie l'excédent au-delà du montant de base. */
 export async function cloturerCaisse() {
   return apiRequest('/v1/caisse/clore', { method: 'POST' });
+}
+
+/** Changement du mot de passe de son propre compte (personnel uniquement). */
+export async function changerMonMotDePasse(ancienMotDePasse, nouveauMotDePasse) {
+  return apiRequest('/v1/auth/changer-mot-de-passe', {
+    method: 'POST',
+    body: { ancienMotDePasse, nouveauMotDePasse },
+  });
 }

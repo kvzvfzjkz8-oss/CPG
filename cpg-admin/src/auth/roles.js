@@ -83,6 +83,7 @@ export const PERMISSIONS = {
     'utilisateurs.gerer',
     'momo.superviser',
     'audit.lire',
+    'credits.simuler',
 
     // Comité de crédit : le gestionnaire programme les séances
     // (cadence hebdomadaire), dépose les dossiers (nouveaux crédits,
@@ -120,6 +121,7 @@ export const PERMISSIONS = {
     'utilisateurs.gerer',
     'momo.superviser',
     'audit.lire',
+    'credits.simuler',
 
     // Approbation finale d'un crédit — réservée au directeur seul,
     // dernière étape une fois le comité et la double validation de

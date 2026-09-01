@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   LayoutDashboard, ShieldCheck, Users, Wallet, UserCog, Bell, Package, CalendarClock, Check, X,
-  Gavel, KeyRound, History,
+  Gavel, KeyRound, History, Calculator,
 } from 'lucide-react';
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -15,6 +15,7 @@ import {
   fetchFinalApprovalQueue, grantExceptionAuthorization, fetchExceptionAuthorizations,
   fetchDemandesCaisseEnAttente, validerOperationCaisse, rejeterOperationCaisse,
   fetchAuditLog, fetchCaissePrincipale, alimenterCaissePrincipale,
+  simulateCredit, fetchProducts,
 } from '../api/adminApi';
 import { can } from '../auth/roles';
 import CatalogView from './CatalogView';
@@ -28,6 +29,9 @@ export default function SupervisorView({ role }) {
   ];
   if (can(role, 'commission.programmer')) {
     tabs.push({ key: 'commission', label: 'Commission', icon: Gavel });
+  }
+  if (can(role, 'credits.simuler')) {
+    tabs.push({ key: 'simulation', label: 'Simulation', icon: Calculator });
   }
   if (can(role, 'demandes.approuver_final')) {
     tabs.push({ key: 'validation', label: 'Approbation finale', icon: ShieldCheck });
@@ -59,6 +63,7 @@ export default function SupervisorView({ role }) {
       />
       {tab === 'vue' && <Overview />}
       {tab === 'commission' && <CommissionView />}
+      {tab === 'simulation' && <SimulationPanel />}
       {tab === 'validation' && <FinalValidation />}
       {tab === 'catalogue' && <CatalogView role={role} />}
       {tab === 'utilisateurs' && <UserManagement />}
@@ -411,6 +416,136 @@ function ExceptionAuthorizations() {
           </div>
         ))}
       </Card>
+    </div>
+  );
+}
+
+function SimulationPanel() {
+  const [products, setProducts] = useState([]);
+  const [productId, setProductId] = useState('');
+  const [montant, setMontant] = useState('');
+  const [duree, setDuree] = useState('');
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    fetchProducts().then((list) => {
+      setProducts(list.filter((p) => p.status === 'actif'));
+    });
+  }, []);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError('');
+    setResult(null);
+    try {
+      const data = await simulateCredit({
+        produitId: productId || undefined,
+        montant: Number(montant),
+        duree: Number(duree),
+      });
+      setResult(data);
+    } catch (err) {
+      setError(err.message ?? 'Simulation impossible avec ces paramètres.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '380px 1fr', gap: 20, alignItems: 'start' }}>
+      <Card style={{ padding: 20 }}>
+        <p style={{ margin: '0 0 16px', fontSize: 14, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
+          Simuler un crédit
+        </p>
+        <form onSubmit={submit}>
+          <label style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>Produit</label>
+          <select
+            value={productId}
+            onChange={(e) => setProductId(e.target.value)}
+            style={{ width: '100%', padding: '10px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.body, margin: '6px 0 14px' }}
+          >
+            <option value="">Barème par défaut (générique)</option>
+            {products.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+
+          <label style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>Montant demandé (FCFA)</label>
+          <input
+            type="number" required min="10000" value={montant}
+            onChange={(e) => setMontant(e.target.value)}
+            placeholder="ex. 500000"
+            style={{ width: '100%', padding: '10px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.mono, margin: '6px 0 14px' }}
+          />
+
+          <label style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>Durée (mois)</label>
+          <input
+            type="number" required min="1" max="120" value={duree}
+            onChange={(e) => setDuree(e.target.value)}
+            placeholder="ex. 12"
+            style={{ width: '100%', padding: '10px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.mono, margin: '6px 0 16px' }}
+          />
+
+          {error && <p style={{ fontSize: 12, color: colors.danger, fontFamily: fonts.body, marginBottom: 14 }}>{error}</p>}
+
+          <button
+            type="submit" disabled={busy}
+            style={{ width: '100%', padding: '11px 0', borderRadius: 10, border: 'none', background: colors.forest, color: '#fff', fontSize: 13, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer' }}
+          >
+            {busy ? 'Calcul…' : 'Simuler'}
+          </button>
+        </form>
+        <p style={{ margin: '12px 0 0', fontSize: 10, color: colors.muted, fontFamily: fonts.body }}>
+          Calcul indicatif, rien n'est enregistré — utile pour expliquer des mensualités à un client au guichet ou au téléphone.
+        </p>
+      </Card>
+
+      {result && (
+        <Card style={{ padding: 20 }}>
+          <p style={{ margin: '0 0 4px', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+            {result.produit ? result.produit.nom : 'Barème par défaut'} · {pct(result.tauxMensuel)}/mois
+          </p>
+          <p style={{ margin: '0 0 20px', fontSize: 20, fontWeight: 700, color: colors.ink, fontFamily: fonts.mono }}>
+            {formatFCFA(result.montant)} F sur {result.duree} mois
+          </p>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16, marginBottom: 20 }}>
+            <div style={{ background: colors.forestPale, borderRadius: 12, padding: 16 }}>
+              <p style={{ margin: 0, fontSize: 10, color: colors.forestLight, fontFamily: fonts.body }}>Mensualité</p>
+              <p style={{ margin: '4px 0 0', fontSize: 18, fontWeight: 700, color: colors.forest, fontFamily: fonts.mono }}>
+                {formatFCFA(result.monthlyPayment)} F
+              </p>
+            </div>
+            <div style={{ background: colors.bg, borderRadius: 12, padding: 16 }}>
+              <p style={{ margin: 0, fontSize: 10, color: colors.muted, fontFamily: fonts.body }}>Net reçu par le client</p>
+              <p style={{ margin: '4px 0 0', fontSize: 18, fontWeight: 700, color: colors.ink, fontFamily: fonts.mono }}>
+                {formatFCFA(result.netReceived)} F
+              </p>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {[
+              ['Frais de dossier', result.fileFee],
+              ['Total des intérêts', result.totalInterest],
+              ['Total dû (capital + intérêts)', result.totalDue],
+              ['Coût total du crédit', result.totalCost],
+            ].map(([label, value]) => (
+              <div key={label} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: `1px solid ${colors.line}` }}>
+                <span style={{ fontSize: 12, color: colors.muted, fontFamily: fonts.body }}>{label}</span>
+                <span style={{ fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.mono }}>{formatFCFA(value)} F</span>
+              </div>
+            ))}
+          </div>
+
+          <p style={{ margin: '16px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body, fontStyle: 'italic' }}>
+            {result.avertissement}
+          </p>
+        </Card>
+      )}
     </div>
   );
 }
@@ -1013,6 +1148,8 @@ function MomoSupervision() {
     </Card>
   );
 }
+
+const pct = (n) => `${(Number(n) * 100).toFixed(2).replace('.', ',')} %`;
 
 const actionBtn = (bg, fg) => ({
   padding: '8px 14px',

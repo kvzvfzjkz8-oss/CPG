@@ -104,4 +104,64 @@ describe('authentification', { skip: !hasTestDatabase() && 'DATABASE_URL ne poin
     // d'Express, pas 204 : elle a un corps de réponse.
     assert.equal(status, 200);
   });
+
+  describe('changement de mot de passe', () => {
+    test('un mauvais ancien mot de passe est refusé', async () => {
+      const gestionnaireToken = await loginStaff('gestionnaire');
+      const { status } = await api('/v1/auth/changer-mot-de-passe', {
+        method: 'POST', token: gestionnaireToken,
+        body: { ancienMotDePasse: 'FauxMotDePasse', nouveauMotDePasse: 'NouveauMotDePasseValide2026!' },
+      });
+      assert.equal(status, 401);
+    });
+
+    test('un nouveau mot de passe trop court est refusé', async () => {
+      const gestionnaireToken = await loginStaff('gestionnaire');
+      const { status } = await api('/v1/auth/changer-mot-de-passe', {
+        method: 'POST', token: gestionnaireToken,
+        body: { ancienMotDePasse: 'MotDePasseDemo2026!', nouveauMotDePasse: 'court' },
+      });
+      assert.equal(status, 422);
+    });
+
+    test('un client (PIN, pas mot de passe) ne peut pas utiliser cette route', async () => {
+      const clientToken = await loginClient();
+      const { status } = await api('/v1/auth/changer-mot-de-passe', {
+        method: 'POST', token: clientToken,
+        body: { ancienMotDePasse: 'x', nouveauMotDePasse: 'NouveauMotDePasseValide2026!' },
+      });
+      assert.equal(status, 403);
+    });
+
+    test('un changement réussi permet de se reconnecter avec le nouveau mot de passe', async () => {
+      // Un compte jetable dédié à ce test : muter le mot de passe du
+      // compte de démonstration partagé (david@cpg.ga) ferait échouer
+      // au hasard tous les autres fichiers de test qui s'authentifient
+      // avec lui pendant la fenêtre où son mot de passe est changé.
+      const gestionnaireToken = await loginStaff('gestionnaire');
+      const email = `pwd-test-${Date.now()}@cpg.ga`;
+      const phone = `+24102${String(Math.floor(Math.random() * 900000) + 100000)}`;
+      await api('/v1/admin/utilisateurs', {
+        method: 'POST', token: gestionnaireToken,
+        body: { nomComplet: 'Compte Test Mot De Passe', telephone: phone, email, role: 'operateur', motDePasse: 'MotDePasseDemo2026!' },
+      });
+      const jetableToken = await loginStaff(email);
+
+      const { status } = await api('/v1/auth/changer-mot-de-passe', {
+        method: 'POST', token: jetableToken,
+        body: { ancienMotDePasse: 'MotDePasseDemo2026!', nouveauMotDePasse: 'NouveauMotDePasseValide2026!' },
+      });
+      assert.equal(status, 200);
+
+      const { status: statutAncien } = await api('/v1/auth/connexion-agent', {
+        method: 'POST', body: { email, password: 'MotDePasseDemo2026!' },
+      });
+      assert.equal(statutAncien, 401);
+
+      const { status: statutNouveau } = await api('/v1/auth/connexion-agent', {
+        method: 'POST', body: { email, password: 'NouveauMotDePasseValide2026!' },
+      });
+      assert.equal(statutNouveau, 200);
+    });
+  });
 });

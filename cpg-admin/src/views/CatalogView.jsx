@@ -404,12 +404,92 @@ function RateAdjustForm({ current, onSubmit, onCancel, busy }) {
    SERVICES ANNEXES ET AGIOS
    ═══════════════════════════════════════════════════════════════════ */
 
+function FeeAdjustForm({ fee, onSubmit, onCancel, busy }) {
+  const isTaux = fee.basis === 'taux';
+  const [form, setForm] = useState({
+    rate: isTaux ? (fee.rate * 100).toFixed(3) : '',
+    amount: !isTaux ? fee.amount : '',
+    minAmount: fee.min_amount ?? 0,
+    maxAmount: fee.max_amount ?? '',
+    exemptBelow: fee.exempt_below ?? 0,
+    motif: '',
+  });
+  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  const submit = () => {
+    onSubmit({
+      motif: form.motif,
+      bareme: {
+        rate: isTaux ? Number(form.rate) / 100 : 0,
+        amount: !isTaux ? Number(form.amount) : 0,
+        minAmount: Number(form.minAmount) || 0,
+        maxAmount: form.maxAmount === '' ? null : Number(form.maxAmount),
+        exemptBelow: Number(form.exemptBelow) || 0,
+      },
+    });
+  };
+
+  return (
+    <Card style={{ padding: 16, background: colors.bg }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+        {isTaux ? (
+          <Field>
+            <label style={label}>Nouveau taux (%)</label>
+            <input style={input} type="number" step="0.001" value={form.rate} onChange={set('rate')} />
+          </Field>
+        ) : (
+          <Field>
+            <label style={label}>Nouveau montant (FCFA)</label>
+            <input style={input} type="number" value={form.amount} onChange={set('amount')} />
+          </Field>
+        )}
+        <Field>
+          <label style={label}>Montant min concerné</label>
+          <input style={input} type="number" value={form.minAmount} onChange={set('minAmount')} />
+        </Field>
+        <Field>
+          <label style={label}>Montant max concerné</label>
+          <input style={input} type="number" value={form.maxAmount} onChange={set('maxAmount')} placeholder="Illimité" />
+        </Field>
+        <Field>
+          <label style={label}>Exonéré en dessous de</label>
+          <input style={input} type="number" value={form.exemptBelow} onChange={set('exemptBelow')} />
+        </Field>
+        <Field span={4}>
+          <label style={label}>Motif (obligatoire)</label>
+          <input
+            style={input} value={form.motif} onChange={set('motif')}
+            placeholder="Pourquoi ce changement ?"
+          />
+        </Field>
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+        <button
+          onClick={submit}
+          disabled={busy || form.motif.trim().length < 5 || (isTaux ? !form.rate : !form.amount)}
+          style={actionBtn(colors.forest, '#fff')}
+        >
+          Appliquer
+        </button>
+        <button onClick={onCancel} style={actionBtn('transparent', colors.muted)}>
+          Annuler
+        </button>
+      </div>
+      <p style={{ margin: '10px 0 0', fontSize: 10, color: colors.muted, fontFamily: fonts.body }}>
+        Dans la marge déléguée (±20 % de la valeur actuelle), le nouveau barème s'applique tout de suite.
+        Au-delà, il part en attente de l'arbitrage du directeur.
+      </p>
+    </Card>
+  );
+}
+
 function ServicesPanel({ role }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(null);
   const [toast, setToast] = useState('');
   const [range, setRange] = useState({ debut: '', fin: '' });
+  const [adjusting, setAdjusting] = useState(null);
 
   useEffect(() => {
     fetchFees().then(setItems).finally(() => setLoading(false));
@@ -429,6 +509,28 @@ function ServicesPanel({ role }) {
       flash(`${fee.code} ${next === 'actif' ? 'activé' : 'suspendu'}.`);
     } catch (err) {
       flash(err.message ?? 'Changement de statut impossible.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleAdjustFee = async (fee, form) => {
+    setBusy(fee.id);
+    try {
+      const result = await adjustFeeRate(fee.id, form);
+      if (result.statut === 'applique') {
+        setItems((prev) =>
+          prev.map((f) => (f.id === fee.id
+            ? { ...f, rate: form.bareme.rate, amount: form.bareme.amount, min_amount: form.bareme.minAmount, max_amount: form.bareme.maxAmount }
+            : f))
+        );
+        flash(`Nouveau barème appliqué sur ${fee.code}.`);
+      } else {
+        flash(`Changement hors marge envoyé au directeur pour ${fee.code} : rien n'est appliqué avant sa décision.`);
+      }
+      setAdjusting(null);
+    } catch (err) {
+      flash(err.message ?? "L'ajustement n'a pas pu être appliqué.");
     } finally {
       setBusy(null);
     }
@@ -475,20 +577,49 @@ function ServicesPanel({ role }) {
                 {f.basis === 'taux' ? pct(f.rate) : `${formatFCFA(f.amount)} F`}
               </td>
               <td style={{ ...td, textAlign: 'right' }}>
-                {can(role, 'catalogue.activer') && (
-                  <button
-                    onClick={() => toggleStatus(f)}
-                    disabled={busy === f.id}
-                    style={actionBtn(f.status === 'actif' ? colors.dangerPale : colors.gold, f.status === 'actif' ? colors.danger : colors.forest)}
-                  >
-                    {f.status === 'actif' ? 'Suspendre' : 'Activer'}
-                  </button>
-                )}
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  {can(role, 'catalogue.ajuster_dans_marge') && (
+                    <button
+                      onClick={() => setAdjusting(adjusting === f.id ? null : f.id)}
+                      disabled={busy === f.id}
+                      style={actionBtn(colors.forestPale, colors.forestLight)}
+                    >
+                      Ajuster
+                    </button>
+                  )}
+                  {can(role, 'catalogue.activer') && (
+                    <button
+                      onClick={() => toggleStatus(f)}
+                      disabled={busy === f.id}
+                      style={actionBtn(f.status === 'actif' ? colors.dangerPale : colors.gold, f.status === 'actif' ? colors.danger : colors.forest)}
+                    >
+                      {f.status === 'actif' ? 'Suspendre' : 'Activer'}
+                    </button>
+                  )}
+                </div>
               </td>
             </>
           )}
         />
       </Card>
+
+      {adjusting && (() => {
+        const fee = items.find((f) => f.id === adjusting);
+        if (!fee) return null;
+        return (
+          <div style={{ marginBottom: 16 }}>
+            <p style={{ margin: '0 0 8px', fontSize: 12, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
+              Ajuster le barème — {fee.name}
+            </p>
+            <FeeAdjustForm
+              fee={fee}
+              busy={busy === fee.id}
+              onCancel={() => setAdjusting(null)}
+              onSubmit={(form) => handleAdjustFee(fee, form)}
+            />
+          </div>
+        );
+      })()}
 
       {can(role, 'frais.appliquer') && (
         <Card style={{ padding: 18 }}>

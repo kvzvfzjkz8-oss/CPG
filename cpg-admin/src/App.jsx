@@ -1,8 +1,9 @@
-import React from 'react';
-import { GitCommit, Search, Bell, LogOut } from 'lucide-react';
+import React, { useState } from 'react';
+import { GitCommit, Search, Bell, LogOut, KeyRound, X } from 'lucide-react';
 import { colors, fonts } from './theme';
 import { ROLES, ROLE_LABELS, ROLE_DESCRIPTIONS } from './auth/roles';
 import { AuthProvider, useAuth } from './auth/AuthContext';
+import { changerMonMotDePasse } from './api/adminApi';
 import LoginView from './views/LoginView';
 import OperatorView from './views/OperatorView';
 import SupervisorView from './views/SupervisorView';
@@ -17,6 +18,7 @@ function initialsOf(fullName) {
 function AuthenticatedApp() {
   const { user, logout } = useAuth();
   const role = user?.role;
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: colors.bg }}>
@@ -90,6 +92,13 @@ function AuthenticatedApp() {
           </div>
           <span style={{ flex: 1, fontSize: 11, color: '#fff', fontFamily: fonts.body }}>{user?.fullName}</span>
           <button
+            onClick={() => setShowPasswordModal(true)}
+            style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: 0 }}
+            title="Sécurité — changer mon mot de passe"
+          >
+            <KeyRound size={14} color={colors.onForest} />
+          </button>
+          <button
             onClick={logout}
             style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: 0 }}
             title="Déconnexion"
@@ -98,6 +107,8 @@ function AuthenticatedApp() {
           </button>
         </div>
       </aside>
+
+      {showPasswordModal && <PasswordModal onClose={() => setShowPasswordModal(false)} />}
 
       {/* ── Zone principale ────────────────────────────────────── */}
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
@@ -147,6 +158,118 @@ function AuthenticatedApp() {
           {role !== ROLES.OPERATEUR && role !== ROLES.CAISSIER && <SupervisorView role={role} />}
         </div>
       </main>
+    </div>
+  );
+}
+
+function PasswordModal({ onClose }) {
+  const [ancien, setAncien] = useState('');
+  const [nouveau, setNouveau] = useState('');
+  const [confirmation, setConfirmation] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError('');
+    if (nouveau.length < 12) {
+      setError('Le nouveau mot de passe doit contenir au moins 12 caractères.');
+      return;
+    }
+    if (nouveau !== confirmation) {
+      setError('La confirmation ne correspond pas au nouveau mot de passe.');
+      return;
+    }
+    setBusy(true);
+    try {
+      await changerMonMotDePasse(ancien, nouveau);
+      setSuccess(true);
+    } catch (err) {
+      setError(err.message ?? 'Le changement a échoué.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(11,61,46,0.45)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{ background: '#fff', borderRadius: 16, padding: 24, width: 380, maxWidth: '90vw' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <p style={{ margin: 0, fontSize: 15, fontWeight: 600, color: colors.ink, fontFamily: fonts.display }}>
+            Sécurité — mon mot de passe
+          </p>
+          <button onClick={onClose} style={{ border: 'none', background: 'transparent', cursor: 'pointer' }}>
+            <X size={18} color={colors.muted} />
+          </button>
+        </div>
+
+        {success ? (
+          <div>
+            <p style={{ fontSize: 13, color: colors.forestLight, fontFamily: fonts.body, marginBottom: 16 }}>
+              Mot de passe changé avec succès. Vos autres sessions ouvertes ont été déconnectées par sécurité.
+            </p>
+            <button
+              onClick={onClose}
+              style={{
+                width: '100%', padding: '11px 0', borderRadius: 10, border: 'none',
+                background: colors.forest, color: '#fff', fontSize: 13, fontWeight: 600,
+                fontFamily: fonts.body, cursor: 'pointer',
+              }}
+            >
+              Fermer
+            </button>
+          </div>
+        ) : (
+          <form onSubmit={submit}>
+            <label style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>Mot de passe actuel</label>
+            <input
+              type="password" required autoFocus value={ancien}
+              onChange={(e) => setAncien(e.target.value)}
+              style={{ width: '100%', padding: '10px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.body, margin: '6px 0 14px' }}
+            />
+
+            <label style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>Nouveau mot de passe (12 caractères minimum)</label>
+            <input
+              type="password" required value={nouveau}
+              onChange={(e) => setNouveau(e.target.value)}
+              style={{ width: '100%', padding: '10px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.body, margin: '6px 0 14px' }}
+            />
+
+            <label style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>Confirmer le nouveau mot de passe</label>
+            <input
+              type="password" required value={confirmation}
+              onChange={(e) => setConfirmation(e.target.value)}
+              style={{ width: '100%', padding: '10px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.body, margin: '6px 0 16px' }}
+            />
+
+            {error && (
+              <p style={{ fontSize: 12, color: colors.danger, fontFamily: fonts.body, marginBottom: 14 }}>{error}</p>
+            )}
+
+            <button
+              type="submit"
+              disabled={busy}
+              style={{
+                width: '100%', padding: '11px 0', borderRadius: 10, border: 'none',
+                background: colors.forest, color: '#fff', fontSize: 13, fontWeight: 600,
+                fontFamily: fonts.body, cursor: 'pointer', opacity: busy ? 0.6 : 1,
+              }}
+            >
+              {busy ? 'Changement…' : 'Changer mon mot de passe'}
+            </button>
+          </form>
+        )}
+      </div>
     </div>
   );
 }

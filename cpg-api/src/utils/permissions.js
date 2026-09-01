@@ -76,6 +76,11 @@ export const PERMISSIONS = {
     'momo.superviser',
     'audit.lire',
 
+    // Simuler un crédit pour expliquer des mensualités à un client au
+    // téléphone ou au guichet — aucun enregistrement, un pur calcul,
+    // avec les vrais barèmes en vigueur.
+    'credits.simuler',
+
     // Comité de crédit : le gestionnaire programme les séances
     // (cadence hebdomadaire), dépose les dossiers validés niveau 1 en
     // les annotant, et tient la séance en enregistrant les décisions.
@@ -111,6 +116,11 @@ export const PERMISSIONS = {
     'utilisateurs.gerer',
     'momo.superviser',
     'audit.lire',
+
+    // Simuler un crédit pour expliquer des mensualités à un client au
+    // téléphone ou au guichet — aucun enregistrement, un pur calcul,
+    // avec les vrais barèmes en vigueur.
+    'credits.simuler',
 
     // Approbation finale d'un crédit — désormais réservée au directeur
     // seul, dernière étape du circuit une fois le comité et la double

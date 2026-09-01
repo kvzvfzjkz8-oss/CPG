@@ -466,4 +466,56 @@ router.get('/moi', requireAuth, (req, res) => {
   });
 });
 
+/**
+ * POST /auth/changer-mot-de-passe — self-service, personnel du
+ * back-office uniquement (les clients ont un code PIN, pas un mot de
+ * passe, et le changent via /activer-compte ou une réinitialisation
+ * du gestionnaire).
+ */
+const changePasswordSchema = z.object({
+  ancienMotDePasse: z.string().min(1),
+  nouveauMotDePasse: z.string().min(12, 'Le nouveau mot de passe doit contenir au moins 12 caractères.'),
+});
+
+router.post(
+  '/changer-mot-de-passe',
+  requireAuth,
+  validate(changePasswordSchema),
+  async (req, res, next) => {
+    try {
+      if (req.user.role === 'client') {
+        throw new ApiError(403, 'Ce compte utilise un code PIN, pas un mot de passe.');
+      }
+
+      const { rows } = await query('SELECT password_hash FROM users WHERE id = $1', [req.user.id]);
+      const valid = rows[0]?.password_hash
+        && (await bcrypt.compare(req.body.ancienMotDePasse, rows[0].password_hash));
+      if (!valid) {
+        throw new ApiError(401, 'Mot de passe actuel incorrect.');
+      }
+
+      const nouveauHash = await bcrypt.hash(req.body.nouveauMotDePasse, 12);
+      await query('UPDATE users SET password_hash = $2 WHERE id = $1', [req.user.id, nouveauHash]);
+
+      // Un mot de passe qui vient de changer révoque les sessions
+      // existantes : si le compte avait été compromis, l'ancien mot
+      // de passe ne permet plus de garder une session ouverte.
+      await query(
+        'UPDATE refresh_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL',
+        [req.user.id]
+      );
+
+      await audit(req, {
+        action: 'utilisateur.mot_de_passe_change',
+        entityType: 'user',
+        entityId: req.user.id,
+      });
+
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
 export default router;
