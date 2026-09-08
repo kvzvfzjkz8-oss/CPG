@@ -58,8 +58,15 @@ export function AuthProvider({ children }) {
     setStatus('signedOut');
   }, []);
 
+  // Après modification du nom ou de l'email depuis la modale
+  // Sécurité, met à jour l'affichage (barre latérale) sans recharger
+  // toute la session.
+  const refreshUser = useCallback((partial) => {
+    setUser((prev) => (prev ? { ...prev, ...partial } : prev));
+  }, []);
+
   return (
-    <AuthContext.Provider value={{ status, user, login, logout }}>
+    <AuthContext.Provider value={{ status, user, login, logout, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );

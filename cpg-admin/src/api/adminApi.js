@@ -586,3 +586,11 @@ export async function changerMonMotDePasse(ancienMotDePasse, nouveauMotDePasse) 
     body: { ancienMotDePasse, nouveauMotDePasse },
   });
 }
+
+/** Modifie son propre nom et/ou email de connexion — confirmé par le mot de passe actuel. */
+export async function modifierMonProfil(motDePasse, { nomComplet, email } = {}) {
+  return apiRequest('/v1/auth/mon-profil', {
+    method: 'PATCH',
+    body: { motDePasse, ...(nomComplet ? { nomComplet } : {}), ...(email ? { email } : {}) },
+  });
+}

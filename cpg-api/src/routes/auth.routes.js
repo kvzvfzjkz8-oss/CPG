@@ -518,4 +518,68 @@ router.post(
   }
 );
 
+/**
+ * PATCH /auth/mon-profil — modifier son propre nom et/ou son email de
+ * connexion. Confirmation par le mot de passe actuel exigée : changer
+ * l'email de connexion est sensible (c'est lui qui sert à se
+ * reconnecter), une simple session ouverte ne doit pas suffire.
+ */
+const updateProfileSchema = z
+  .object({
+    motDePasse: z.string().min(1, 'Confirmez avec votre mot de passe actuel.'),
+    nomComplet: z.string().min(2).max(120).optional(),
+    email: z.string().email('Adresse email invalide.').optional(),
+  })
+  .refine((b) => b.nomComplet || b.email, {
+    message: 'Renseignez au moins un champ à modifier.',
+    path: ['nomComplet'],
+  });
+
+router.patch(
+  '/mon-profil',
+  requireAuth,
+  validate(updateProfileSchema),
+  async (req, res, next) => {
+    try {
+      if (req.user.role === 'client') {
+        throw new ApiError(403, 'Les clients modifient leur profil depuis l\'application mobile.');
+      }
+
+      const { rows } = await query('SELECT password_hash FROM users WHERE id = $1', [req.user.id]);
+      const valid = rows[0]?.password_hash
+        && (await bcrypt.compare(req.body.motDePasse, rows[0].password_hash));
+      if (!valid) {
+        throw new ApiError(401, 'Mot de passe incorrect.');
+      }
+
+      const sets = [];
+      const params = [req.user.id];
+      if (req.body.nomComplet) {
+        params.push(req.body.nomComplet);
+        sets.push(`full_name = $${params.length}`);
+      }
+      if (req.body.email) {
+        params.push(req.body.email.toLowerCase());
+        sets.push(`email = $${params.length}`);
+      }
+
+      const { rows: updated } = await query(
+        `UPDATE users SET ${sets.join(', ')} WHERE id = $1 RETURNING id, full_name, email`,
+        params
+      );
+
+      await audit(req, {
+        action: 'utilisateur.profil_modifie',
+        entityType: 'user',
+        entityId: req.user.id,
+        metadata: { champs: Object.keys(req.body).filter((k) => k !== 'motDePasse') },
+      });
+
+      res.json({ fullName: updated[0].full_name, email: updated[0].email });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
 export default router;

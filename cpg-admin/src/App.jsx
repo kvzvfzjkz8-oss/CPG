@@ -3,7 +3,7 @@ import { GitCommit, Search, Bell, LogOut, KeyRound, X } from 'lucide-react';
 import { colors, fonts } from './theme';
 import { ROLES, ROLE_LABELS, ROLE_DESCRIPTIONS } from './auth/roles';
 import { AuthProvider, useAuth } from './auth/AuthContext';
-import { changerMonMotDePasse } from './api/adminApi';
+import { changerMonMotDePasse, modifierMonProfil } from './api/adminApi';
 import LoginView from './views/LoginView';
 import OperatorView from './views/OperatorView';
 import SupervisorView from './views/SupervisorView';
@@ -163,6 +163,57 @@ function AuthenticatedApp() {
 }
 
 function PasswordModal({ onClose }) {
+  const [modalTab, setModalTab] = useState('motdepasse');
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(11,61,46,0.45)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{ background: '#fff', borderRadius: 16, padding: 24, width: 380, maxWidth: '90vw' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <p style={{ margin: 0, fontSize: 15, fontWeight: 600, color: colors.ink, fontFamily: fonts.display }}>
+            Sécurité
+          </p>
+          <button onClick={onClose} style={{ border: 'none', background: 'transparent', cursor: 'pointer' }}>
+            <X size={18} color={colors.muted} />
+          </button>
+        </div>
+
+        <div style={{ display: 'flex', gap: 6, marginBottom: 18 }}>
+          {[
+            { key: 'motdepasse', label: 'Mot de passe' },
+            { key: 'profil', label: 'Nom et email' },
+          ].map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setModalTab(t.key)}
+              style={{
+                flex: 1, padding: '8px 0', borderRadius: 9, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                border: `1px solid ${modalTab === t.key ? colors.forest : colors.line}`,
+                background: modalTab === t.key ? colors.forest : 'transparent',
+                color: modalTab === t.key ? '#fff' : colors.muted,
+                fontFamily: fonts.body,
+              }}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {modalTab === 'motdepasse' ? <ChangerMotDePasseForm onClose={onClose} /> : <ModifierProfilForm onClose={onClose} />}
+      </div>
+    </div>
+  );
+}
+
+function ChangerMotDePasseForm({ onClose }) {
   const [ancien, setAncien] = useState('');
   const [nouveau, setNouveau] = useState('');
   const [confirmation, setConfirmation] = useState('');
@@ -193,26 +244,7 @@ function PasswordModal({ onClose }) {
   };
 
   return (
-    <div
-      style={{
-        position: 'fixed', inset: 0, background: 'rgba(11,61,46,0.45)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
-      }}
-      onClick={onClose}
-    >
-      <div
-        style={{ background: '#fff', borderRadius: 16, padding: 24, width: 380, maxWidth: '90vw' }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-          <p style={{ margin: 0, fontSize: 15, fontWeight: 600, color: colors.ink, fontFamily: fonts.display }}>
-            Sécurité — mon mot de passe
-          </p>
-          <button onClick={onClose} style={{ border: 'none', background: 'transparent', cursor: 'pointer' }}>
-            <X size={18} color={colors.muted} />
-          </button>
-        </div>
-
+    <>
         {success ? (
           <div>
             <p style={{ fontSize: 13, color: colors.forestLight, fontFamily: fonts.body, marginBottom: 16 }}>
@@ -269,10 +301,103 @@ function PasswordModal({ onClose }) {
             </button>
           </form>
         )}
-      </div>
-    </div>
+    </>
   );
 }
+
+function ModifierProfilForm({ onClose }) {
+  const { refreshUser } = useAuth();
+  const [motDePasse, setMotDePasse] = useState('');
+  const [nomComplet, setNomComplet] = useState('');
+  const [email, setEmail] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError('');
+    if (!nomComplet.trim() && !email.trim()) {
+      setError('Renseignez au moins le nom ou l\'email à modifier.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await modifierMonProfil(motDePasse, {
+        nomComplet: nomComplet.trim() || undefined,
+        email: email.trim() || undefined,
+      });
+      refreshUser?.(result);
+      setSuccess(true);
+    } catch (err) {
+      setError(err.message ?? 'La modification a échoué.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      {success ? (
+        <div>
+          <p style={{ fontSize: 13, color: colors.forestLight, fontFamily: fonts.body, marginBottom: 16 }}>
+            Profil mis à jour avec succès.
+          </p>
+          <button
+            onClick={onClose}
+            style={{
+              width: '100%', padding: '11px 0', borderRadius: 10, border: 'none',
+              background: colors.forest, color: '#fff', fontSize: 13, fontWeight: 600,
+              fontFamily: fonts.body, cursor: 'pointer',
+            }}
+          >
+            Fermer
+          </button>
+        </div>
+      ) : (
+        <form onSubmit={submit}>
+          <label style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>Nouveau nom complet</label>
+          <input
+            value={nomComplet} onChange={(e) => setNomComplet(e.target.value)}
+            placeholder="Laisser vide pour ne pas changer"
+            style={{ width: '100%', padding: '10px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.body, margin: '6px 0 14px' }}
+          />
+
+          <label style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>Nouvel email de connexion</label>
+          <input
+            type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+            placeholder="Laisser vide pour ne pas changer"
+            style={{ width: '100%', padding: '10px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.body, margin: '6px 0 14px' }}
+          />
+
+          <label style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>Confirmez avec votre mot de passe actuel</label>
+          <input
+            type="password" required autoFocus value={motDePasse}
+            onChange={(e) => setMotDePasse(e.target.value)}
+            style={{ width: '100%', padding: '10px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.body, margin: '6px 0 16px' }}
+          />
+
+          {error && (
+            <p style={{ fontSize: 12, color: colors.danger, fontFamily: fonts.body, marginBottom: 14 }}>{error}</p>
+          )}
+
+          <button
+            type="submit"
+            disabled={busy}
+            style={{
+              width: '100%', padding: '11px 0', borderRadius: 10, border: 'none',
+              background: colors.forest, color: '#fff', fontSize: 13, fontWeight: 600,
+              fontFamily: fonts.body, cursor: 'pointer', opacity: busy ? 0.6 : 1,
+            }}
+          >
+            {busy ? 'Modification…' : 'Enregistrer les modifications'}
+          </button>
+        </form>
+      )}
+    </>
+  );
+}
+
 
 function Root() {
   const { status } = useAuth();

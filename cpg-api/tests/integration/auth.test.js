@@ -164,4 +164,81 @@ describe('authentification', { skip: !hasTestDatabase() && 'DATABASE_URL ne poin
       assert.equal(statutNouveau, 200);
     });
   });
+
+  describe('modification de son propre profil', () => {
+    let profileToken;
+
+    // Un seul compte partagé pour tout ce bloc plutôt qu'un par test :
+    // en créer cinq d'affilée (donc cinq connexions) épuiserait le
+    // budget du limiteur anti-force-brute, partagé avec les autres
+    // tests de ce même fichier.
+    test('préparation : création du compte de test', async () => {
+      const gestionnaireToken = await loginStaff('gestionnaire');
+      const email = `profil-test-${Date.now()}@cpg.ga`;
+      const phone = `+24103${String(Math.floor(Math.random() * 900000) + 100000)}`;
+      await api('/v1/admin/utilisateurs', {
+        method: 'POST', token: gestionnaireToken,
+        body: { nomComplet: 'Profil Test', telephone: phone, email, role: 'operateur', motDePasse: 'MotDePasseDemo2026!' },
+      });
+      profileToken = await loginStaff(email);
+      assert.ok(profileToken);
+    });
+
+    test('un mauvais mot de passe de confirmation est refusé', async () => {
+      const { status } = await api('/v1/auth/mon-profil', {
+        method: 'PATCH', token: profileToken,
+        body: { motDePasse: 'FauxMotDePasse', nomComplet: 'Nouveau Nom' },
+      });
+      assert.equal(status, 401);
+    });
+
+    test('aucun champ à modifier est refusé', async () => {
+      const { status } = await api('/v1/auth/mon-profil', {
+        method: 'PATCH', token: profileToken,
+        body: { motDePasse: 'MotDePasseDemo2026!' },
+      });
+      assert.equal(status, 422);
+    });
+
+    test('changer son nom fonctionne', async () => {
+      const { status, body } = await api('/v1/auth/mon-profil', {
+        method: 'PATCH', token: profileToken,
+        body: { motDePasse: 'MotDePasseDemo2026!', nomComplet: 'Nom Modifié' },
+      });
+      assert.equal(status, 200);
+      assert.equal(body.fullName, 'Nom Modifié');
+    });
+
+    test('un email déjà utilisé par un autre compte est refusé', async () => {
+      const { status, body } = await api('/v1/auth/mon-profil', {
+        method: 'PATCH', token: profileToken,
+        body: { motDePasse: 'MotDePasseDemo2026!', email: 'sylvie@cpg.ga' },
+      });
+      assert.equal(status, 409);
+      assert.equal(body.code, 'users_email_key');
+    });
+
+    test('changer son email fonctionne et permet de se reconnecter avec le nouveau', async () => {
+      const nouvelEmail = `nouveau-${Date.now()}@cpg.ga`;
+      const { status } = await api('/v1/auth/mon-profil', {
+        method: 'PATCH', token: profileToken,
+        body: { motDePasse: 'MotDePasseDemo2026!', email: nouvelEmail },
+      });
+      assert.equal(status, 200);
+
+      const { status: statutConnexion } = await api('/v1/auth/connexion-agent', {
+        method: 'POST', body: { email: nouvelEmail, password: 'MotDePasseDemo2026!' },
+      });
+      assert.equal(statutConnexion, 200);
+    });
+
+    test('un client ne peut pas utiliser cette route', async () => {
+      const clientToken = await loginClient();
+      const { status } = await api('/v1/auth/mon-profil', {
+        method: 'PATCH', token: clientToken,
+        body: { motDePasse: 'x', nomComplet: 'Test' },
+      });
+      assert.equal(status, 403);
+    });
+  });
 });
