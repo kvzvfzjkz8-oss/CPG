@@ -1,7 +1,7 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  startTestServer, stopTestServer, api, loginStaff, hasTestDatabase,
+  startTestServer, stopTestServer, api, loginStaff, hasTestDatabase, fundCaissePrincipale,
 } from '../helpers/testServer.js';
 
 before(async () => {
@@ -113,6 +113,7 @@ describe(
       const alice = await createLevel1Credit('Alice', produitId);
       const bob = await createLevel1Credit('Bob', produitId);
       const gestionnaireToken = await loginStaff('gestionnaire');
+      const directeurToken = await loginStaff('directeur');
 
       // Réutilise la séance déjà programmée par le test précédent.
       const { body: seanceActuelle } = await api('/v1/admin/commission/seance', { token: gestionnaireToken });
@@ -129,7 +130,7 @@ describe(
       const { status: incompleteStatus, body: incompleteBody } = await api(
         `/v1/admin/commission/seance/${currentSessionId}/tenir`,
         {
-          method: 'POST', token: gestionnaireToken,
+          method: 'POST', token: directeurToken,
           body: { decisions: [{ creditId: alice.id, decision: 'valide' }] }, // bob manquant
         }
       );
@@ -139,7 +140,7 @@ describe(
       const { status: completeStatus, body: completeBody } = await api(
         `/v1/admin/commission/seance/${currentSessionId}/tenir`,
         {
-          method: 'POST', token: gestionnaireToken,
+          method: 'POST', token: directeurToken,
           body: {
             decisions: [
               { creditId: alice.id, decision: 'valide' },
@@ -254,17 +255,18 @@ async function fullyApproveCredit(clientToken, produitId, montant, duree) {
   await api(`/v1/admin/credits/${created.id}/valider-niveau1`, { method: 'POST', token: operateurToken });
 
   const gestionnaireToken = await loginStaff('gestionnaire');
+  const directeurToken = await loginStaff('directeur');
   const { body: session } = await api('/v1/admin/commission/seance', {
     method: 'POST', token: gestionnaireToken, body: { dateHeure: '2026-09-01T09:00' },
   });
   await api(`/v1/admin/commission/credits/${created.id}/deposer`, { method: 'POST', token: gestionnaireToken });
   await api(`/v1/admin/commission/seance/${session.id}/tenir`, {
-    method: 'POST', token: gestionnaireToken,
+    method: 'POST', token: directeurToken,
     body: { decisions: [{ creditId: created.id, decision: 'valide' }] },
   });
   await api(`/v1/admin/commission/credits/${created.id}/valider-double`, { method: 'POST', token: operateurToken });
 
-  const directeurToken = await loginStaff('directeur');
+  await fundCaissePrincipale();
   const { body: approved } = await api(`/v1/admin/credits/${created.id}/approuver`, {
     method: 'POST', token: directeurToken,
   });
@@ -350,7 +352,7 @@ describe(
       assert.ok(pointsAvant.points.some((p) => p.id === item.id));
 
       const { status: tenirStatus, body: tenirBody } = await api(`/v1/admin/commission/seance/${session.id}/tenir`, {
-        method: 'POST', token: gestionnaireToken,
+        method: 'POST', token: await loginStaff('directeur'),
         body: { decisions: [{ kind: 'item', itemId: item.id, decision: 'valide', note: 'Restructuration accordée' }] },
       });
       assert.equal(tenirStatus, 200);
@@ -450,13 +452,13 @@ describe(
       });
 
       const { status: incompleteStatus } = await api(`/v1/admin/commission/seance/${session.id}/tenir`, {
-        method: 'POST', token: gestionnaireToken,
+        method: 'POST', token: await loginStaff('directeur'),
         body: { decisions: [{ kind: 'credit', creditId: newCredit.id, decision: 'valide' }] }, // demande manquante
       });
       assert.equal(incompleteStatus, 422);
 
       const { status: completeStatus, body: completeBody } = await api(`/v1/admin/commission/seance/${session.id}/tenir`, {
-        method: 'POST', token: gestionnaireToken,
+        method: 'POST', token: await loginStaff('directeur'),
         body: {
           decisions: [
             { kind: 'credit', creditId: newCredit.id, decision: 'valide' },

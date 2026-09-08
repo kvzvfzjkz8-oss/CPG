@@ -95,7 +95,6 @@ export const PERMISSIONS = {
     'commission.lire',
     'commission.programmer',
     'commission.deposer',
-    'commission.tenir',
 
     // Catalogue : le gestionnaire crée les produits et services et
     // ajuste les barèmes dans la marge déléguée par la direction.
@@ -128,6 +127,7 @@ export const PERMISSIONS = {
     // l'opérateur passés. C'est elle qui débloque les fonds.
     'demandes.approuver_final',
     'commission.lire',
+    'commission.tenir',
 
     // Seul le directeur peut autoriser, au cas par cas, un client déjà
     // en crédit à repasser en commission pour un second dossier.

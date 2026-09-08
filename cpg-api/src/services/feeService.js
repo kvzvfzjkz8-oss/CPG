@@ -344,8 +344,18 @@ export async function runAgiosBatch({ periodStart, periodEnd }) {
 }
 
 /** Frais ponctuel déclenché par une opération (retrait, transfert…). */
-export async function applyTriggeredFee({ accountId, triggerOn, operationAmount }) {
-  const { rows } = await query(
+/**
+ * Calcule et applique un frais déclenché (retrait, dépôt, déblocage de
+ * crédit...). Accepte un `client` de transaction déjà ouvert — pour un
+ * déblocage de crédit notamment, le prélèvement des frais doit réussir
+ * ou échouer avec le même geste que le crédit du compte : jamais l'un
+ * sans l'autre. Sans client fourni, ouvre sa propre transaction (usage
+ * autonome, ex. lors d'un retrait au guichet).
+ */
+export async function applyTriggeredFee({ accountId, triggerOn, operationAmount, client: externalClient }) {
+  const runner = externalClient ?? { query: query };
+
+  const { rows } = await runner.query(
     `SELECT * FROM current_fee_versions WHERE trigger_on = $1 AND status = 'actif' LIMIT 1`,
     [triggerOn]
   );
@@ -366,7 +376,7 @@ export async function applyTriggeredFee({ accountId, triggerOn, operationAmount 
 
   if (amount <= 0) return { amount: 0 };
 
-  return withTransaction(async (client) => {
+  const apply = async (client) => {
     const { rows: entry } = await client.query(
       `INSERT INTO ledger_entries (account_id, type, amount, label)
        VALUES ($1, 'frais', $2, $3) RETURNING id`,
@@ -380,5 +390,7 @@ export async function applyTriggeredFee({ accountId, triggerOn, operationAmount 
     );
 
     return { amount, label: version.name };
-  });
+  };
+
+  return externalClient ? apply(externalClient) : withTransaction(apply);
 }

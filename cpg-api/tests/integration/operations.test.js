@@ -1,7 +1,7 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  startTestServer, stopTestServer, api, loginStaff, hasTestDatabase,
+  startTestServer, stopTestServer, api, loginStaff, hasTestDatabase, fundCaissePrincipale,
 } from '../helpers/testServer.js';
 
 /**
@@ -49,6 +49,7 @@ async function approveCreditFor(clientToken, produitId, montant, duree) {
   await api(`/v1/admin/credits/${created.id}/valider-niveau1`, { method: 'POST', token: operateurToken });
 
   const gestionnaireToken = await loginStaff('gestionnaire');
+  const directeurToken = await loginStaff('directeur');
 
   // Comité de crédit : programme une séance dédiée, dépose le dossier,
   // puis la tient aussitôt — un cycle complet par appel, pour ne
@@ -63,7 +64,7 @@ async function approveCreditFor(clientToken, produitId, montant, duree) {
     method: 'POST', token: gestionnaireToken, body: { note: 'Dossier de test' },
   });
   await api(`/v1/admin/commission/seance/${session.id}/tenir`, {
-    method: 'POST', token: gestionnaireToken,
+    method: 'POST', token: directeurToken,
     body: { decisions: [{ creditId: created.id, decision: 'valide' }] },
   });
 
@@ -71,7 +72,7 @@ async function approveCreditFor(clientToken, produitId, montant, duree) {
     method: 'POST', token: operateurToken,
   });
 
-  const directeurToken = await loginStaff('directeur');
+  await fundCaissePrincipale();
   const { body: approved } = await api(`/v1/admin/credits/${created.id}/approuver`, {
     method: 'POST', token: directeurToken,
   });

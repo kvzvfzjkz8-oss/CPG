@@ -27,7 +27,7 @@ export default function SupervisorView({ role }) {
   const tabs = [
     { key: 'vue', label: "Vue d'ensemble", icon: LayoutDashboard },
   ];
-  if (can(role, 'commission.programmer')) {
+  if (can(role, 'commission.lire')) {
     tabs.push({ key: 'commission', label: 'Commission', icon: Gavel });
   }
   if (can(role, 'credits.simuler')) {
@@ -62,7 +62,7 @@ export default function SupervisorView({ role }) {
         options={tabs}
       />
       {tab === 'vue' && <Overview />}
-      {tab === 'commission' && <CommissionView />}
+      {tab === 'commission' && <CommissionView role={role} />}
       {tab === 'simulation' && <SimulationPanel />}
       {tab === 'validation' && <FinalValidation />}
       {tab === 'catalogue' && <CatalogView role={role} />}

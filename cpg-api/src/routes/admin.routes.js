@@ -5,7 +5,8 @@ import { query, withTransaction } from '../db/index.js';
 import { requireAuth, requirePermission } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { ApiError } from '../middleware/errorHandler.js';
-import { computeSchedule, buildInstallments } from '../services/creditService.js';
+import { computeSchedule, buildInstallments, computeFileFee } from '../services/creditService.js';
+import { applyTriggeredFee } from '../services/feeService.js';
 import { notifyUser } from '../services/pushService.js';
 import { audit } from '../services/auditService.js';
 
@@ -186,6 +187,21 @@ router.post(
           );
         }
 
+        // C'est la caisse principale de l'entreprise qui finance
+        // chaque déblocage — jamais plus que ce qu'elle contient
+        // réellement, exactement comme pour un réapprovisionnement de
+        // caissière.
+        const { rows: principale } = await client.query(
+          'SELECT solde FROM caisse_principale_solde'
+        );
+        const soldePrincipale = principale[0]?.solde ?? 0;
+        if (soldePrincipale < credit.amount) {
+          throw new ApiError(
+            422,
+            `La caisse principale ne contient que ${soldePrincipale} FCFA — insuffisant pour débloquer ${credit.amount} FCFA. Alimentez-la d'abord.`
+          );
+        }
+
         const { monthlyPayment, totalDue } = computeSchedule(
           credit.amount,
           credit.duration_months,
@@ -205,11 +221,32 @@ router.post(
         );
         if (!account[0]) throw new ApiError(422, 'Le client n’a pas de compte pour recevoir les fonds.');
 
-        // Déblocage des fonds : écriture positive au journal.
+        // Déblocage des fonds : écriture positive au journal. Le
+        // client reçoit d'abord 100 % du montant demandé et validé —
+        // c'est seulement l'écriture suivante, séparée et immédiate,
+        // qui prélève la commission crédit configurée (1 % par
+        // défaut, ajustable depuis Catalogue → Services & agios sans
+        // toucher au code).
         await client.query(
           `INSERT INTO ledger_entries (account_id, type, amount, label, reference, created_by)
            VALUES ($1, 'deblocage_credit', $2, $3, $4, $5)`,
           [account[0].id, credit.amount, `Déblocage crédit ${credit.reference}`, credit.reference, req.user.id]
+        );
+
+        const fraisApplique = await applyTriggeredFee({
+          accountId: account[0].id,
+          triggerOn: 'deblocage_credit',
+          operationAmount: credit.amount,
+          client,
+        });
+
+        // Le débit correspondant dans la caisse principale — c'est
+        // elle qui a financé ce déblocage, au même titre qu'un
+        // réapprovisionnement de caissière.
+        await client.query(
+          `INSERT INTO caisse_principale_mouvements (type, montant, motif, cree_par)
+           VALUES ('deblocage_credit', $1, $2, $3)`,
+          [credit.amount, `Déblocage crédit ${credit.reference}`, req.user.id]
         );
 
         // Génération de l'échéancier.
@@ -228,14 +265,14 @@ router.post(
           );
         }
 
-        return { credit: updated[0], userId: credit.user_id };
+        return { credit: updated[0], userId: credit.user_id, fraisPreleves: fraisApplique.amount };
       });
 
       await audit(req, {
         action: 'credit.approuve',
         entityType: 'credit_request',
         entityId: result.credit.id,
-        metadata: { montant: result.credit.amount },
+        metadata: { montant: result.credit.amount, fraisPreleves: result.fraisPreleves },
       });
 
       // La notification part après la transaction : si l'envoi échoue,
@@ -245,7 +282,7 @@ router.post(
         reference: result.credit.reference,
       });
 
-      res.json(result.credit);
+      res.json({ ...result.credit, fraisPreleves: result.fraisPreleves });
     } catch (error) {
       next(error);
     }

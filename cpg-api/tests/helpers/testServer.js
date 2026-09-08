@@ -164,3 +164,17 @@ export async function loginClient(phone = '+24106000001', pin = '1234') {
 export function hasTestDatabase() {
   return Boolean(process.env.DATABASE_URL && process.env.DATABASE_URL.includes('test'));
 }
+
+/**
+ * Alimente largement la caisse principale, comme le ferait le
+ * directeur — nécessaire avant tout appel à /credits/:id/approuver
+ * depuis que le déblocage est financé par elle et bloqué si
+ * insuffisante.
+ */
+export async function fundCaissePrincipale(montant = 5000000) {
+  const directeurToken = await loginStaff('directeur');
+  await api('/v1/caisse/principale/alimenter', {
+    method: 'POST', token: directeurToken,
+    body: { montant, motif: 'Fonds de test' },
+  });
+}

@@ -113,6 +113,9 @@ async function seed() {
        'pourcentage', 'retrait', 0, 0.005000, 200, 5000, 10000],
       ['COMM_MOMO', 'Commission transfert Mobile Money', 'Commission sur transfert sortant.',
        'pourcentage', 'transfert_momo', 0, 0.010000, 100, 3000, 2000],
+      ['COMM_CREDIT', 'Commission crédit',
+       'Prélevée automatiquement sur le compte du client au moment du déblocage — le client reçoit 100 % du montant approuvé, puis cette commission est débitée.',
+       'pourcentage', 'deblocage_credit', 0, 0.010000, 0, null, 0],
     ];
 
     for (const [code, name, description, basis, trigger, amount, rate, minA, maxA, exempt] of services) {

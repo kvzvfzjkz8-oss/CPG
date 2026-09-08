@@ -1,7 +1,7 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  startTestServer, stopTestServer, api, loginStaff, loginClient, hasTestDatabase,
+  startTestServer, stopTestServer, api, loginStaff, loginClient, hasTestDatabase, fundCaissePrincipale,
 } from '../helpers/testServer.js';
 
 /**
@@ -192,18 +192,27 @@ describe(
     });
 
     test('tenir la séance sans aucune décision est refusé', async () => {
-      const gestionnaireToken = await loginStaff('gestionnaire');
+      const directeurToken = await loginStaff('directeur');
       const { status } = await api(`/v1/admin/commission/seance/${sessionId}/tenir`, {
-        method: 'POST', token: gestionnaireToken,
+        method: 'POST', token: directeurToken,
         body: { decisions: [] },
       });
       assert.equal(status, 422);
     });
 
-    test('le gestionnaire tient la séance : le dossier est validé', async () => {
+    test('un gestionnaire ne peut pas tenir la séance — la décision revient au directeur', async () => {
       const gestionnaireToken = await loginStaff('gestionnaire');
-      const { status, body } = await api(`/v1/admin/commission/seance/${sessionId}/tenir`, {
+      const { status } = await api(`/v1/admin/commission/seance/${sessionId}/tenir`, {
         method: 'POST', token: gestionnaireToken,
+        body: { decisions: [{ creditId, decision: 'valide' }] },
+      });
+      assert.equal(status, 403);
+    });
+
+    test('le directeur tient la séance : le dossier est validé', async () => {
+      const directeurToken = await loginStaff('directeur');
+      const { status, body } = await api(`/v1/admin/commission/seance/${sessionId}/tenir`, {
+        method: 'POST', token: directeurToken,
         body: { decisions: [{ creditId, decision: 'valide', note: 'Accord du comité' }] },
       });
       assert.equal(status, 200);
@@ -246,6 +255,7 @@ describe(
 
     test('le directeur approuve et débloque les fonds', async () => {
       const directeurToken = await loginStaff('directeur');
+      await fundCaissePrincipale();
       const { status, body } = await api(`/v1/admin/credits/${creditId}/approuver`, {
         method: 'POST', token: directeurToken,
       });
@@ -262,9 +272,10 @@ describe(
       assert.equal(active.paidMonths, 0);
     });
 
-    test('le solde du compte reflète le déblocage des fonds', async () => {
+    test('le solde du compte reflète le déblocage des fonds, net de la commission crédit (1 %)', async () => {
       const { body } = await api('/v1/client/compte', { token: clientToken });
-      assert.ok(body.account.balance >= 300000);
+      // 300 000 débloqués moins 1 % de commission crédit (3 000) = 297 000 net minimum.
+      assert.ok(body.account.balance >= 297000);
     });
 
     let secondCreditId;
@@ -338,7 +349,7 @@ describe(
       // Referme la séance pour ne pas bloquer les fichiers de tests
       // suivants, qui partagent la même base.
       await api(`/v1/admin/commission/seance/${session.id}/tenir`, {
-        method: 'POST', token: gestionnaireToken,
+        method: 'POST', token: directeurToken,
         body: { decisions: [{ creditId: created.id, decision: 'rejete', note: 'Clôture de test' }] },
       });
     });

@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, Tabs, SectionTitle } from '../components/UI';
+import { can } from '../auth/roles';
 import {
   fetchCommissionSession, scheduleCommissionSession, cancelCommissionSession,
   fetchLevel1Credits, depositCreditToCommission,
@@ -38,7 +39,7 @@ function Toast({ text }) {
   );
 }
 
-export default function CommissionView() {
+export default function CommissionView({ role }) {
   const [tab, setTab] = useState('seance');
   const [session, setSession] = useState(null);
   const [loadingSession, setLoadingSession] = useState(true);
@@ -69,13 +70,13 @@ export default function CommissionView() {
         ]}
       />
       {tab === 'seance' && (
-        <SessionPanel session={session} loading={loadingSession} onChange={loadSession} />
+        <SessionPanel session={session} loading={loadingSession} onChange={loadSession} role={role} />
       )}
       {tab === 'deposer' && (
-        <DepositPanel hasOpenSession={hasOpenSession} />
+        <DepositPanel hasOpenSession={hasOpenSession} role={role} />
       )}
       {tab === 'tenir' && (
-        <HoldSessionPanel session={session} onHeld={loadSession} />
+        <HoldSessionPanel session={session} onHeld={loadSession} role={role} />
       )}
     </div>
   );
@@ -85,7 +86,8 @@ export default function CommissionView() {
    SÉANCE — programmer, annuler
    ═══════════════════════════════════════════════════════════════════ */
 
-function SessionPanel({ session, loading, onChange }) {
+function SessionPanel({ session, loading, onChange, role }) {
+  const peutProgrammer = can(role, 'commission.programmer');
   const [dateHeure, setDateHeure] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -152,9 +154,11 @@ function SessionPanel({ session, loading, onChange }) {
             Programmée par {session.scheduledBy}. Déposez les dossiers dans l'onglet « Déposer », puis tenez la
             séance dans l'onglet « Tenir la séance » une fois l'ordre du jour complet.
           </p>
-          <button onClick={cancel} disabled={busy} style={actionBtn(colors.dangerPale, colors.danger)}>
-            <X size={13} /> Annuler la séance
-          </button>
+          {peutProgrammer && (
+            <button onClick={cancel} disabled={busy} style={actionBtn(colors.dangerPale, colors.danger)}>
+              <X size={13} /> Annuler la séance
+            </button>
+          )}
         </Card>
       ) : (
         <Card style={{ padding: 20 }}>
@@ -165,15 +169,21 @@ function SessionPanel({ session, loading, onChange }) {
             Une commission doit se tenir chaque semaine. Aucun dossier ne peut être déposé tant qu'aucune
             séance n'est programmée.
           </p>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-            <div style={{ flex: 1 }}>
-              <label style={label}>Date et heure</label>
-              <input style={input} type="datetime-local" value={dateHeure} onChange={(e) => setDateHeure(e.target.value)} />
+          {peutProgrammer ? (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+              <div style={{ flex: 1 }}>
+                <label style={label}>Date et heure</label>
+                <input style={input} type="datetime-local" value={dateHeure} onChange={(e) => setDateHeure(e.target.value)} />
+              </div>
+              <button onClick={schedule} disabled={!dateHeure || busy} style={actionBtn(colors.forest, '#fff')}>
+                <CalendarPlus size={13} /> Programmer
+              </button>
             </div>
-            <button onClick={schedule} disabled={!dateHeure || busy} style={actionBtn(colors.forest, '#fff')}>
-              <CalendarPlus size={13} /> Programmer
-            </button>
-          </div>
+          ) : (
+            <p style={{ margin: 0, fontSize: 12, color: colors.muted, fontFamily: fonts.body, fontStyle: 'italic' }}>
+              Aucune séance programmée pour le moment.
+            </p>
+          )}
         </Card>
       )}
     </div>
@@ -184,8 +194,19 @@ function SessionPanel({ session, loading, onChange }) {
    DÉPOSER — nouveaux dossiers, difficultés, demandes exceptionnelles
    ═══════════════════════════════════════════════════════════════════ */
 
-function DepositPanel({ hasOpenSession }) {
+function DepositPanel({ hasOpenSession, role }) {
   const [sub, setSub] = useState('nouveaux');
+
+  if (!can(role, 'commission.deposer')) {
+    return (
+      <Card style={{ padding: 24, textAlign: 'center' }}>
+        <p style={{ margin: 0, fontSize: 13, color: colors.muted, fontFamily: fonts.body }}>
+          Le dépôt des dossiers en commission revient au gestionnaire. Consultez l'onglet « Tenir la séance »
+          pour voir les dossiers déjà déposés et leur décision.
+        </p>
+      </Card>
+    );
+  }
 
   return (
     <div>
@@ -281,7 +302,7 @@ function NewCreditsDeposit({ hasOpenSession }) {
                 {c.client} · {c.id}
               </p>
               <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
-                {c.poste} · {formatFCFA(c.montant)} F sur {c.duree} mois
+                {c.job_title ?? c.employer ?? '—'} · {formatFCFA(c.amount)} F sur {c.duration_months} mois
               </p>
             </div>
             <button
@@ -428,7 +449,8 @@ function ExceptionalDeposit({ hasOpenSession }) {
    TENIR LA SÉANCE — décisions par point
    ═══════════════════════════════════════════════════════════════════ */
 
-function HoldSessionPanel({ session, onHeld }) {
+function HoldSessionPanel({ session, onHeld, role }) {
+  const peutTenir = can(role, 'commission.tenir');
   const [agenda, setAgenda] = useState({ credits: [], points: [] });
   const [loading, setLoading] = useState(true);
   const [decisions, setDecisions] = useState({});
@@ -521,12 +543,13 @@ function HoldSessionPanel({ session, onHeld }) {
               <AgendaRow
                 key={`credit:${c.id}`}
                 titre={`${c.client} · ${c.id}`}
-                sousTitre={`${c.poste} · ${formatFCFA(c.montant)} F sur ${c.duree} mois${c.commissionNote ? ` — ${c.commissionNote}` : ''}`}
+                sousTitre={`${c.job_title ?? c.employer ?? '—'} · ${formatFCFA(c.amount)} F sur ${c.duration_months} mois${c.commission_note ? ` — ${c.commission_note}` : ''}`}
                 badge="Nouveau crédit"
                 decision={decisions[`credit:${c.id}`]}
                 onDecision={(d) => setDecision('credit', c.id, d)}
                 note={notes[`credit:${c.id}`] ?? ''}
                 onNote={(v) => setNotes((prev) => ({ ...prev, [`credit:${c.id}`]: v }))}
+                readOnly={!peutTenir}
               />
             ))}
             {agenda.points.map((p) => (
@@ -540,25 +563,28 @@ function HoldSessionPanel({ session, onHeld }) {
                 onDecision={(d) => setDecision('item', p.id, d)}
                 note={notes[`item:${p.id}`] ?? ''}
                 onNote={(v) => setNotes((prev) => ({ ...prev, [`item:${p.id}`]: v }))}
+                readOnly={!peutTenir}
               />
             ))}
           </Card>
 
-          <button
-            onClick={submit}
-            disabled={decidedCount < totalPoints || busy}
-            style={{ ...actionBtn(colors.forest, '#fff'), opacity: decidedCount < totalPoints ? 0.5 : 1 }}
-          >
-            <ListChecks size={13} />
-            {busy ? 'Enregistrement…' : `Clore la séance (${decidedCount}/${totalPoints} tranchés)`}
-          </button>
+          {peutTenir && (
+            <button
+              onClick={submit}
+              disabled={decidedCount < totalPoints || busy}
+              style={{ ...actionBtn(colors.forest, '#fff'), opacity: decidedCount < totalPoints ? 0.5 : 1 }}
+            >
+              <ListChecks size={13} />
+              {busy ? 'Enregistrement…' : `Clore la séance (${decidedCount}/${totalPoints} tranchés)`}
+            </button>
+          )}
         </>
       )}
     </div>
   );
 }
 
-function AgendaRow({ titre, sousTitre, badge, badgeTone = 'neutral', decision, onDecision, note, onNote }) {
+function AgendaRow({ titre, sousTitre, badge, badgeTone = 'neutral', decision, onDecision, note, onNote, readOnly }) {
   return (
     <div style={{ padding: '14px 20px', borderBottom: `1px solid ${colors.line}` }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, marginBottom: 8 }}>
@@ -571,22 +597,24 @@ function AgendaRow({ titre, sousTitre, badge, badgeTone = 'neutral', decision, o
             <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>{sousTitre}</p>
           )}
         </div>
-        <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-          <button
-            onClick={() => onDecision('valide')}
-            style={actionBtn(decision === 'valide' ? colors.forest : colors.forestPale, decision === 'valide' ? '#fff' : colors.forestLight)}
-          >
-            <Check size={12} /> Valider
-          </button>
-          <button
-            onClick={() => onDecision('rejete')}
-            style={actionBtn(decision === 'rejete' ? colors.danger : colors.dangerPale, decision === 'rejete' ? '#fff' : colors.danger)}
-          >
-            <X size={12} /> Rejeter
-          </button>
-        </div>
+        {!readOnly && (
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+            <button
+              onClick={() => onDecision('valide')}
+              style={actionBtn(decision === 'valide' ? colors.forest : colors.forestPale, decision === 'valide' ? '#fff' : colors.forestLight)}
+            >
+              <Check size={12} /> Valider
+            </button>
+            <button
+              onClick={() => onDecision('rejete')}
+              style={actionBtn(decision === 'rejete' ? colors.danger : colors.dangerPale, decision === 'rejete' ? '#fff' : colors.danger)}
+            >
+              <X size={12} /> Rejeter
+            </button>
+          </div>
+        )}
       </div>
-      {decision && (
+      {decision && !readOnly && (
         <input
           style={input} placeholder="Note de décision (optionnel)"
           value={note} onChange={(e) => onNote(e.target.value)}

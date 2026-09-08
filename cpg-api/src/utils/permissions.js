@@ -90,7 +90,6 @@ export const PERMISSIONS = {
     'commission.lire',
     'commission.programmer',
     'commission.deposer',
-    'commission.tenir',
 
     // Catalogue : le gestionnaire crée les produits et services et
     // ajuste les barèmes dans la marge déléguée par la direction.
@@ -129,6 +128,11 @@ export const PERMISSIONS = {
     // avec le gestionnaire avant le comité, a disparu avec lui.
     'demandes.approuver_final',
     'commission.lire',
+
+    // La décision elle-même, pendant la séance, revient au directeur —
+    // le gestionnaire prépare la commission (programme, dépose les
+    // dossiers) mais ne peut pas trancher à sa place.
+    'commission.tenir',
 
     // Seul le directeur peut autoriser, au cas par cas, un client déjà
     // en crédit à repasser en commission pour un second dossier.

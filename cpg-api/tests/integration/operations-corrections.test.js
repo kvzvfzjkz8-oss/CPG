@@ -1,7 +1,7 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  startTestServer, stopTestServer, api, apiUpload, loginStaff, hasTestDatabase,
+  startTestServer, stopTestServer, api, apiUpload, loginStaff, hasTestDatabase, fundCaissePrincipale,
 } from '../helpers/testServer.js';
 
 /**
@@ -41,6 +41,7 @@ async function approveCreditFor(clientToken, produitId, montant, duree) {
   await api(`/v1/admin/credits/${created.id}/valider-niveau1`, { method: 'POST', token: operateurToken });
 
   const gestionnaireToken = await loginStaff('gestionnaire');
+  const directeurToken = await loginStaff('directeur');
   const { body: session } = await api('/v1/admin/commission/seance', {
     method: 'POST', token: gestionnaireToken, body: { dateHeure: '2026-09-01T09:00' },
   });
@@ -48,14 +49,14 @@ async function approveCreditFor(clientToken, produitId, montant, duree) {
     method: 'POST', token: gestionnaireToken, body: { note: 'Dossier de test' },
   });
   await api(`/v1/admin/commission/seance/${session.id}/tenir`, {
-    method: 'POST', token: gestionnaireToken,
+    method: 'POST', token: directeurToken,
     body: { decisions: [{ creditId: created.id, decision: 'valide' }] },
   });
   await api(`/v1/admin/commission/credits/${created.id}/valider-double`, {
     method: 'POST', token: operateurToken,
   });
 
-  const directeurToken = await loginStaff('directeur');
+  await fundCaissePrincipale();
   const { body: approved } = await api(`/v1/admin/credits/${created.id}/approuver`, {
     method: 'POST', token: directeurToken,
   });
