@@ -232,6 +232,72 @@ router.post(
   }
 );
 
+/**
+ * PATCH /client/credits/:id — le client modifie sa propre demande,
+ * tant qu'elle n'est pas encore passée en commission. Toute
+ * modification remet la demande à « en_verification » : une
+ * validation niveau 1 déjà faite sur l'ancien montant ne doit jamais
+ * couvrir silencieusement un nouveau montant plus élevé.
+ */
+router.patch(
+  '/credits/:id',
+  requirePermission('credits.demander'),
+  validate(requestSchema),
+  async (req, res, next) => {
+    try {
+      const { montant, duree, motif, produitId } = req.body;
+
+      const { rows: existing } = await query(
+        `SELECT id, status FROM credit_requests WHERE id = $1 AND user_id = $2`,
+        [req.params.id, req.user.id]
+      );
+      if (!existing[0]) throw new ApiError(404, 'Demande introuvable.');
+      if (!['en_verification', 'valide_niveau1'].includes(existing[0].status)) {
+        throw new ApiError(
+          409,
+          'Cette demande est déjà passée en commission — elle ne peut plus être modifiée.'
+        );
+      }
+
+      let scale = null;
+      if (produitId) {
+        scale = await getActiveScale(produitId);
+        if (!scale) throw new ApiError(404, 'Produit indisponible.');
+        validateAgainstScale(montant, duree, scale);
+      }
+
+      const rate = scale ? Number(scale.monthly_rate) : DEFAULT_MONTHLY_RATE;
+      const fileFee = scale
+        ? computeFileFee(montant, {
+            fileFeeFixed: Number(scale.file_fee_fixed),
+            fileFeeRate: Number(scale.file_fee_rate),
+          })
+        : 0;
+
+      const { rows } = await query(
+        `UPDATE credit_requests
+         SET amount = $2, duration_months = $3, monthly_rate = $4, purpose = $5,
+             product_version_id = $6, file_fee = $7, status = 'en_verification',
+             level1_by = NULL, level1_at = NULL
+         WHERE id = $1
+         RETURNING id, reference, amount, duration_months, status, file_fee, created_at`,
+        [req.params.id, montant, duree, rate, motif ?? null, scale?.version_id ?? null, fileFee]
+      );
+
+      await audit(req, {
+        action: 'credit.modifie_par_client',
+        entityType: 'credit_request',
+        entityId: rows[0].id,
+        metadata: { montant, duree },
+      });
+
+      res.json(rows[0]);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
 /** GET /client/credits — crédits du client, avec échéancier */
 router.get('/credits', requirePermission('credits.lire_les_siens'), async (req, res, next) => {
   try {

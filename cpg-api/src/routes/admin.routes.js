@@ -5,7 +5,9 @@ import { query, withTransaction } from '../db/index.js';
 import { requireAuth, requirePermission } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { ApiError } from '../middleware/errorHandler.js';
-import { computeSchedule, buildInstallments, computeFileFee } from '../services/creditService.js';
+import { computeSchedule, buildInstallments, computeFileFee, generateReference, DEFAULT_MONTHLY_RATE } from '../services/creditService.js';
+import { getActiveScale } from '../services/productService.js';
+import { validateAgainstScale } from '../utils/rateVersioning.js';
 import { applyTriggeredFee } from '../services/feeService.js';
 import { notifyUser } from '../services/pushService.js';
 import { audit } from '../services/auditService.js';
@@ -104,6 +106,85 @@ router.get('/credits/:id', requirePermission('demandes.lire'), async (req, res, 
     next(error);
   }
 });
+
+/**
+ * POST /admin/credits — un opérateur ou gestionnaire dépose une
+ * demande au nom d'un client (au guichet, par téléphone...) — mêmes
+ * règles exactement que si le client l'avait soumise lui-même depuis
+ * l'application : une seule demande en cours à la fois, barème figé
+ * à la version active du produit choisi.
+ */
+const creerCreditSchema = z.object({
+  clientId: z.string().uuid(),
+  montant: z.number().int().min(10000).max(20000000),
+  duree: z.number().int().min(1).max(60),
+  motif: z.string().max(500).optional(),
+  produitId: z.string().uuid().optional(),
+});
+
+router.post(
+  '/credits',
+  requirePermission('credits.creer_pour_client'),
+  validate(creerCreditSchema),
+  async (req, res, next) => {
+    try {
+      const { clientId, montant, duree, motif, produitId } = req.body;
+
+      const { rows: clientRows } = await query(
+        `SELECT id FROM users WHERE id = $1 AND role = 'client'`,
+        [clientId]
+      );
+      if (!clientRows[0]) throw new ApiError(404, 'Client introuvable.');
+
+      const { rows: pending } = await query(
+        `SELECT 1 FROM credit_requests
+         WHERE user_id = $1 AND status IN ('en_verification', 'valide_niveau1')`,
+        [clientId]
+      );
+      if (pending.length > 0) {
+        throw new ApiError(409, 'Ce client a déjà une demande en cours de traitement.');
+      }
+
+      let scale = null;
+      if (produitId) {
+        scale = await getActiveScale(produitId);
+        if (!scale) throw new ApiError(404, 'Produit indisponible.');
+        validateAgainstScale(montant, duree, scale);
+      }
+
+      const rate = scale ? Number(scale.monthly_rate) : DEFAULT_MONTHLY_RATE;
+      const fileFee = scale
+        ? computeFileFee(montant, {
+            fileFeeFixed: Number(scale.file_fee_fixed),
+            fileFeeRate: Number(scale.file_fee_rate),
+          })
+        : 0;
+
+      const { rows } = await query(
+        `INSERT INTO credit_requests
+           (reference, user_id, amount, duration_months, monthly_rate, purpose,
+            product_version_id, file_fee)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING id, reference, amount, duration_months, status, file_fee, created_at`,
+        [
+          generateReference(), clientId, montant, duree, rate, motif ?? null,
+          scale?.version_id ?? null, fileFee,
+        ]
+      );
+
+      await audit(req, {
+        action: 'credit.demande_pour_client',
+        entityType: 'credit_request',
+        entityId: rows[0].id,
+        metadata: { clientId, montant, duree },
+      });
+
+      res.status(201).json(rows[0]);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 /* ── Validation de premier niveau — Opérateur ──────────────────────── */
 router.post(

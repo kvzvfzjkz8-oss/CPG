@@ -47,6 +47,11 @@ export const PERMISSIONS = {
     'messagerie.repondre',
     'catalogue.lire_public',
 
+    // Déposer une demande au nom d'un client, au guichet ou par
+    // téléphone — mêmes règles que si le client l'avait soumise
+    // lui-même depuis l'application.
+    'credits.creer_pour_client',
+
     // Double validation après le comité de crédit : le dossier doit
     // avoir été validé en commission avant que l'opérateur puisse la
     // faire, et c'est encore une étape différente de l'approbation
@@ -75,6 +80,7 @@ export const PERMISSIONS = {
     'utilisateurs.gerer',
     'momo.superviser',
     'audit.lire',
+    'credits.creer_pour_client',
 
     // Simuler un crédit pour expliquer des mensualités à un client au
     // téléphone ou au guichet — aucun enregistrement, un pur calcul,

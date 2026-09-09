@@ -353,5 +353,95 @@ describe(
         body: { decisions: [{ creditId: created.id, decision: 'rejete', note: 'Clôture de test' }] },
       });
     });
+
+    describe('modification dune demande par le client', () => {
+    // Un client frais par test : la règle « une seule demande en cours »
+    // empêcherait sinon le test suivant de créer la sienne, puisque le
+    // test précédent laisse toujours une demande active derrière lui.
+    async function freshClient() {
+      const gestionnaireToken = await loginStaff('gestionnaire');
+      const phone = `+24108${String(Math.floor(Math.random() * 900000) + 100000)}`;
+      const { body: client } = await api('/v1/admin/utilisateurs', {
+        method: 'POST', token: gestionnaireToken,
+        body: { nomComplet: 'Client Modif Test', telephone: phone, role: 'client' },
+      });
+      await api('/v1/auth/activer-compte', {
+        method: 'POST',
+        body: { phone, clientNumber: client.client_number, nouveauPin: '1234' },
+      });
+      return loginClient(phone, '1234');
+    }
+
+    test('modifier avant toute validation fonctionne', async () => {
+      const clientToken = await freshClient();
+      const { body: created } = await api('/v1/client/credits', {
+        method: 'POST', token: clientToken, body: { montant: 100000, duree: 3 },
+      });
+      const { status, body } = await api(`/v1/client/credits/${created.id}`, {
+        method: 'PATCH', token: clientToken, body: { montant: 150000, duree: 6 },
+      });
+      assert.equal(status, 200);
+      assert.equal(body.amount, 150000);
+      assert.equal(body.status, 'en_verification');
+    });
+
+    test('modifier après validation niveau 1 remet la demande en vérification', async () => {
+      const clientToken = await freshClient();
+      const { body: created } = await api('/v1/client/credits', {
+        method: 'POST', token: clientToken, body: { montant: 100000, duree: 3 },
+      });
+      const operateurToken = await loginStaff('operateur');
+      await api(`/v1/admin/credits/${created.id}/valider-niveau1`, { method: 'POST', token: operateurToken });
+
+      const { body: modified } = await api(`/v1/client/credits/${created.id}`, {
+        method: 'PATCH', token: clientToken, body: { montant: 300000, duree: 12 },
+      });
+      assert.equal(modified.status, 'en_verification');
+      assert.equal(modified.amount, 300000);
+    });
+
+    test('impossible de modifier une fois en commission', async () => {
+      const clientToken = await freshClient();
+      const { body: created } = await api('/v1/client/credits', {
+        method: 'POST', token: clientToken, body: { montant: 100000, duree: 3 },
+      });
+      const operateurToken = await loginStaff('operateur');
+      const gestionnaireToken = await loginStaff('gestionnaire');
+      await api(`/v1/admin/credits/${created.id}/valider-niveau1`, { method: 'POST', token: operateurToken });
+
+      // S'assure qu'une séance existe avant de tenter le dépôt — sans
+      // ça, un dépôt refusé laisserait le dossier en « valide_niveau1 »
+      // (encore modifiable), et le test échouerait pour une tout autre
+      // raison que celle qu'il vérifie.
+      const { body: seanceActuelle } = await api('/v1/admin/commission/seance', { token: gestionnaireToken });
+      if (!seanceActuelle.seance) {
+        await api('/v1/admin/commission/seance', {
+          method: 'POST', token: gestionnaireToken, body: { dateHeure: '2026-09-15T09:00' },
+        });
+      }
+      const { status: depositStatus } = await api(`/v1/admin/commission/credits/${created.id}/deposer`, {
+        method: 'POST', token: gestionnaireToken,
+      });
+      assert.equal(depositStatus, 201);
+
+      const { status, body } = await api(`/v1/client/credits/${created.id}`, {
+        method: 'PATCH', token: clientToken, body: { montant: 500000, duree: 12 },
+      });
+      assert.equal(status, 409);
+      assert.match(body.error, /commission/);
+    });
+
+    test('un client ne peut pas modifier la demande dun autre', async () => {
+      const clientToken = await freshClient();
+      const { body: created } = await api('/v1/client/credits', {
+        method: 'POST', token: clientToken, body: { montant: 100000, duree: 3 },
+      });
+      const autreClientToken = await freshClient();
+      const { status } = await api(`/v1/client/credits/${created.id}`, {
+        method: 'PATCH', token: autreClientToken, body: { montant: 500000, duree: 12 },
+      });
+      assert.equal(status, 404);
+    });
+  });
   }
 );
