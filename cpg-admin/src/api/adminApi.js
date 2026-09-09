@@ -594,3 +594,11 @@ export async function modifierMonProfil(motDePasse, { nomComplet, email } = {}) 
     body: { motDePasse, ...(nomComplet ? { nomComplet } : {}), ...(email ? { email } : {}) },
   });
 }
+
+/** Dépose une demande de crédit au nom d'un client (guichet, téléphone...). */
+export async function creerDemandePourClient({ clientId, montant, duree, motif, produitId }) {
+  return apiRequest('/v1/admin/credits', {
+    method: 'POST',
+    body: { clientId, montant, duree, motif, produitId },
+  });
+}

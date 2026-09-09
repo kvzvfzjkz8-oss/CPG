@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Inbox, ShieldCheck, MessageCircle, Check, X, Eye, Filter, Send, CalendarClock, Gavel,
+  Inbox, ShieldCheck, MessageCircle, Check, X, Eye, Filter, Send, CalendarClock, Gavel, Plus,
 } from 'lucide-react';
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, Tabs, SectionTitle } from '../components/UI';
@@ -8,6 +8,7 @@ import {
   validateLevel1, rejectCredit, sendAdvisorReply,
   fetchDoubleValidationQueue, doubleValidateCredit,
   fetchCreditRequests, fetchCreditDetail, fetchConversations, fetchConversationMessages,
+  searchCaisseClient, creerDemandePourClient,
 } from '../api/adminApi';
 import OperationsView from './OperationsView';
 
@@ -151,6 +152,13 @@ function IncomingRequests({ onSelect }) {
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(null);
+  const [showNew, setShowNew] = useState(false);
+  const [toast, setToast] = useState('');
+
+  const flash = (text) => {
+    setToast(text);
+    setTimeout(() => setToast(''), 6000);
+  };
 
   const load = () => {
     setLoading(true);
@@ -172,15 +180,39 @@ function IncomingRequests({ onSelect }) {
 
   return (
     <Card style={{ padding: 0, overflow: 'hidden' }}>
+      {toast && (
+        <div style={{
+          background: colors.goldPale, borderBottom: `1px solid ${colors.gold}`,
+          padding: '11px 20px', fontSize: 12, color: colors.goldDark, fontFamily: fonts.body,
+        }}>
+          {toast}
+        </div>
+      )}
       <SectionTitle
         right={
-          <button style={iconBtnStyle}>
-            <Filter size={13} /> Filtrer
-          </button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={() => setShowNew(true)} style={{ ...iconBtnStyle, background: colors.forest, color: '#fff', border: 'none' }}>
+              <Plus size={13} /> Nouvelle demande
+            </button>
+            <button style={iconBtnStyle}>
+              <Filter size={13} /> Filtrer
+            </button>
+          </div>
         }
       >
         {loading ? 'Chargement…' : `${requests.length} demande${requests.length > 1 ? 's' : ''} à traiter`}
       </SectionTitle>
+
+      {showNew && (
+        <NewRequestForm
+          onCancel={() => setShowNew(false)}
+          onCreated={(ref) => {
+            setShowNew(false);
+            flash(`Demande ${ref} créée — en attente de validation niveau 1.`);
+            load();
+          }}
+        />
+      )}
 
       {!loading && requests.length === 0 && (
         <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
@@ -241,6 +273,126 @@ function IncomingRequests({ onSelect }) {
         </div>
       ))}
     </Card>
+  );
+}
+
+function NewRequestForm({ onCancel, onCreated }) {
+  const [query, setQuery] = useState('');
+  const [resultats, setResultats] = useState([]);
+  const [client, setClient] = useState(null);
+  const [montant, setMontant] = useState('');
+  const [duree, setDuree] = useState('');
+  const [motif, setMotif] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (query.trim().length < 2) {
+      setResultats([]);
+      return;
+    }
+    const timeout = setTimeout(() => {
+      searchCaisseClient(query.trim()).then(setResultats).catch(() => setResultats([]));
+    }, 300);
+    return () => clearTimeout(timeout);
+  }, [query]);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      const result = await creerDemandePourClient({
+        clientId: client.id, montant: Number(montant), duree: Number(duree), motif: motif || undefined,
+      });
+      onCreated(result.reference);
+    } catch (err) {
+      setError(err.message ?? 'La création a échoué.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ padding: 20, borderBottom: `1px solid ${colors.line}`, background: colors.bg }}>
+      <p style={{ margin: '0 0 14px', fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
+        Nouvelle demande au nom d'un client
+      </p>
+
+      {!client ? (
+        <>
+          <input
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Nom du client ou numéro de compte (CPG-...)"
+            style={{ width: '100%', padding: '10px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.body }}
+          />
+          {resultats.length > 0 && (
+            <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {resultats.map((r) => (
+                <button
+                  key={r.id}
+                  onClick={() => { setClient(r); setResultats([]); setQuery(''); }}
+                  style={{
+                    display: 'flex', justifyContent: 'space-between', padding: '9px 12px',
+                    borderRadius: 9, border: `1px solid ${colors.line}`, background: '#fff',
+                    cursor: 'pointer', textAlign: 'left',
+                  }}
+                >
+                  <span style={{ fontSize: 13, color: colors.ink, fontFamily: fonts.body }}>{r.full_name}</span>
+                  <span style={{ fontSize: 12, fontFamily: fonts.mono, color: colors.muted }}>{r.client_number}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          <button onClick={onCancel} style={{ marginTop: 10, border: 'none', background: 'transparent', color: colors.muted, fontSize: 12, fontFamily: fonts.body, cursor: 'pointer' }}>
+            Annuler
+          </button>
+        </>
+      ) : (
+        <form onSubmit={submit}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: colors.forestPale, borderRadius: 9, padding: '9px 12px', marginBottom: 12 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: colors.forest, fontFamily: fonts.body }}>{client.full_name} · {client.client_number}</span>
+            <button type="button" onClick={() => setClient(null)} style={{ border: 'none', background: 'transparent', color: colors.forestLight, fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: fonts.body }}>
+              Changer
+            </button>
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
+            <input
+              type="number" required min="10000" value={montant} onChange={(e) => setMontant(e.target.value)}
+              placeholder="Montant (FCFA)"
+              style={{ flex: 1, padding: '10px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.mono }}
+            />
+            <input
+              type="number" required min="1" max="60" value={duree} onChange={(e) => setDuree(e.target.value)}
+              placeholder="Durée (mois)"
+              style={{ width: 140, padding: '10px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.mono }}
+            />
+          </div>
+          <input
+            value={motif} onChange={(e) => setMotif(e.target.value)}
+            placeholder="Motif (optionnel)"
+            style={{ width: '100%', padding: '10px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.body, marginBottom: 12 }}
+          />
+
+          {error && <p style={{ fontSize: 12, color: colors.danger, fontFamily: fonts.body, marginBottom: 12 }}>{error}</p>}
+
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="submit" disabled={busy}
+              style={{ padding: '9px 18px', borderRadius: 9, border: 'none', background: colors.forest, color: '#fff', fontSize: 12, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer' }}
+            >
+              {busy ? 'Création…' : 'Créer la demande'}
+            </button>
+            <button type="button" onClick={onCancel} style={{ padding: '9px 18px', borderRadius: 9, border: 'none', background: 'transparent', color: colors.muted, fontSize: 12, fontFamily: fonts.body, cursor: 'pointer' }}>
+              Annuler
+            </button>
+          </div>
+        </form>
+      )}
+    </div>
   );
 }
 

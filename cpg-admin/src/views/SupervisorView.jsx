@@ -15,7 +15,7 @@ import {
   fetchFinalApprovalQueue, grantExceptionAuthorization, fetchExceptionAuthorizations,
   fetchDemandesCaisseEnAttente, validerOperationCaisse, rejeterOperationCaisse,
   fetchAuditLog, fetchCaissePrincipale, alimenterCaissePrincipale,
-  simulateCredit, fetchProducts,
+  simulateCredit, fetchProducts, creerDemandePourClient, searchCaisseClient,
 } from '../api/adminApi';
 import { can } from '../auth/roles';
 import CatalogView from './CatalogView';
@@ -544,8 +544,97 @@ function SimulationPanel() {
           <p style={{ margin: '16px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body, fontStyle: 'italic' }}>
             {result.avertissement}
           </p>
+
+          <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px solid ${colors.line}` }}>
+            <CreateFromSimulation montant={Number(montant)} duree={Number(duree)} produitId={productId || undefined} />
+          </div>
         </Card>
       )}
+    </div>
+  );
+}
+
+function CreateFromSimulation({ montant, duree, produitId }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [resultats, setResultats] = useState([]);
+  const [client, setClient] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (query.trim().length < 2) { setResultats([]); return; }
+    const t = setTimeout(() => {
+      searchCaisseClient(query.trim()).then(setResultats).catch(() => setResultats([]));
+    }, 300);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const create = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      const r = await creerDemandePourClient({ clientId: client.id, montant, duree, produitId });
+      setDone(r.reference);
+    } catch (err) {
+      setError(err.message ?? 'La création a échoué.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (done) {
+    return (
+      <p style={{ margin: 0, fontSize: 12, color: colors.forestLight, fontFamily: fonts.body, fontWeight: 600 }}>
+        Demande {done} créée pour {client.full_name} — en attente de validation niveau 1.
+      </p>
+    );
+  }
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        style={{ padding: '9px 16px', borderRadius: 9, border: 'none', background: colors.forest, color: '#fff', fontSize: 12, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer' }}
+      >
+        Créer cette demande pour un client
+      </button>
+    );
+  }
+
+  return (
+    <div>
+      {!client ? (
+        <>
+          <input
+            autoFocus value={query} onChange={(e) => setQuery(e.target.value)}
+            placeholder="Nom du client ou numéro de compte"
+            style={{ width: '100%', padding: '9px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.body }}
+          />
+          {resultats.map((r) => (
+            <button
+              key={r.id}
+              onClick={() => { setClient(r); setResultats([]); setQuery(''); }}
+              style={{ display: 'flex', justifyContent: 'space-between', width: '100%', padding: '8px 12px', marginTop: 6, borderRadius: 8, border: `1px solid ${colors.line}`, background: colors.bg, cursor: 'pointer', textAlign: 'left' }}
+            >
+              <span style={{ fontSize: 12, fontFamily: fonts.body }}>{r.full_name}</span>
+              <span style={{ fontSize: 11, fontFamily: fonts.mono, color: colors.muted }}>{r.client_number}</span>
+            </button>
+          ))}
+        </>
+      ) : (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: colors.forest, fontFamily: fonts.body }}>{client.full_name}</span>
+          <button onClick={create} disabled={busy} style={{ padding: '8px 14px', borderRadius: 8, border: 'none', background: colors.forest, color: '#fff', fontSize: 12, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer' }}>
+            {busy ? 'Création…' : 'Confirmer'}
+          </button>
+          <button onClick={() => setClient(null)} style={{ border: 'none', background: 'transparent', color: colors.muted, fontSize: 11, fontFamily: fonts.body, cursor: 'pointer' }}>
+            Changer
+          </button>
+        </div>
+      )}
+      {error && <p style={{ fontSize: 12, color: colors.danger, fontFamily: fonts.body, marginTop: 8 }}>{error}</p>}
     </div>
   );
 }
