@@ -13,6 +13,7 @@ import { validateAgainstScale } from '../utils/rateVersioning.js';
 import { initiateTransaction } from '../services/mobileMoneyService.js';
 import { notifyUser } from '../services/pushService.js';
 import { audit } from '../services/auditService.js';
+import { genererContratPDF } from '../services/contractService.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -54,6 +55,9 @@ router.get('/compte', requirePermission('compte.lire_le_sien'), async (req, res,
 const historyQuery = z.object({
   limite: z.coerce.number().int().min(1).max(100).default(20),
   avant: z.string().datetime().optional(), // pagination par curseur
+  type: z.enum([
+    'depot', 'retrait', 'paiement_credit', 'deblocage_credit', 'frais', 'ajustement',
+  ]).optional(),
 });
 
 router.get(
@@ -62,7 +66,7 @@ router.get(
   validate(historyQuery, 'query'),
   async (req, res, next) => {
     try {
-      const { limite, avant } = req.query;
+      const { limite, avant, type } = req.query;
 
       // Pagination par curseur et non par OFFSET : avec OFFSET, une
       // nouvelle transaction pendant que l'utilisateur fait défiler
@@ -73,9 +77,10 @@ router.get(
          JOIN accounts a ON a.id = le.account_id
          WHERE a.user_id = $1
            AND ($2::timestamptz IS NULL OR le.created_at < $2)
+           AND ($4::entry_type IS NULL OR le.type = $4)
          ORDER BY le.created_at DESC
          LIMIT $3`,
-        [req.user.id, avant ?? null, limite]
+        [req.user.id, avant ?? null, limite, type ?? null]
       );
 
       res.json({
@@ -330,6 +335,50 @@ router.get('/credits', requirePermission('credits.lire_les_siens'), async (req, 
         ? { ...active, installments, paidMonths: paid, remainingAmount: remaining }
         : null,
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /client/credits/:id/contrat — le client télécharge le contrat
+ * de son propre crédit approuvé. Même moteur que côté back-office,
+ * mais vérifie explicitement que le dossier lui appartient bien —
+ * jamais celui d'un autre client via un identifiant deviné.
+ */
+router.get('/credits/:id/contrat', requirePermission('credits.lire_les_siens'), async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      `SELECT c.*, u.full_name, u.phone, u.job_title, u.employer, u.client_number
+       FROM credit_requests c
+       JOIN users u ON u.id = c.user_id
+       WHERE c.id = $1 AND c.user_id = $2`,
+      [req.params.id, req.user.id]
+    );
+    if (!rows[0]) throw new ApiError(404, 'Dossier introuvable.');
+    const credit = rows[0];
+
+    if (credit.status !== 'approuve') {
+      throw new ApiError(409, 'Le contrat n\'est disponible qu\'une fois le crédit approuvé.');
+    }
+
+    const { rows: installments } = await query(
+      `SELECT sequence, due_date, amount, status FROM installments WHERE credit_id = $1 ORDER BY sequence`,
+      [req.params.id]
+    );
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="Contrat-${credit.reference}.pdf"`);
+
+    const doc = genererContratPDF({
+      credit,
+      client: {
+        full_name: credit.full_name, client_number: credit.client_number,
+        job_title: credit.job_title, employer: credit.employer,
+      },
+      installments,
+    });
+    doc.pipe(res);
   } catch (error) {
     next(error);
   }
