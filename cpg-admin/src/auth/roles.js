@@ -50,6 +50,7 @@ export const ROLE_DESCRIPTIONS = {
 /** Capacités accordées à chaque rôle. */
 export const PERMISSIONS = {
   [ROLES.OPERATEUR]: [
+    'messagerie_interne.acceder',
     'demandes.lire',
     'demandes.valider_niveau1',
     'demandes.rejeter',
@@ -77,6 +78,7 @@ export const PERMISSIONS = {
     'operations.modifier_echeance',
   ],
   [ROLES.SUPERVISEUR]: [
+    'messagerie_interne.acceder',
     'statistiques.lire',
     'demandes.lire',
     'demandes.rejeter',
@@ -114,6 +116,7 @@ export const PERMISSIONS = {
   // fixer un taux hors marge, trancher les propositions du gestionnaire,
   // et seul à pouvoir toucher aux plafonds réglementaires.
   [ROLES.DIRECTEUR]: [
+    'messagerie_interne.acceder',
     'statistiques.lire',
     'demandes.lire',
     'demandes.rejeter',
@@ -127,6 +130,7 @@ export const PERMISSIONS = {
     // l'opérateur passés. C'est elle qui débloque les fonds.
     'demandes.approuver_final',
     'commission.lire',
+    'commission.programmer',
     'commission.tenir',
 
     // Seul le directeur peut autoriser, au cas par cas, un client déjà
@@ -165,6 +169,7 @@ export const PERMISSIONS = {
   // budget en espèces. Elle ne voit ni les dossiers de crédit ni la
   // gestion des utilisateurs — uniquement solde, retrait et RIB.
   [ROLES.CAISSIER]: [
+    'messagerie_interne.acceder',
     'caisse.consulter_solde_client',
     'caisse.demander_retrait',
     'caisse.demander_appro',

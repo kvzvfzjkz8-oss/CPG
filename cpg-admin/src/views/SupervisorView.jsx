@@ -10,12 +10,13 @@ import {
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, Tabs, KpiCard, SectionTitle, DataTable, td } from '../components/UI';
 import {
-  approveCredit, setUserStatus, fetchUsers, createUser, resetClientPin, fetchStatistics, fetchMomoTransactions,
+  approveCredit, setUserStatus, fetchUsers, createUser, updateUser, resetClientPin, fetchStatistics, fetchMomoTransactions,
   fetchPendingInstallmentAdjustments, decideInstallmentAdjustment,
   fetchFinalApprovalQueue, grantExceptionAuthorization, fetchExceptionAuthorizations,
   fetchDemandesCaisseEnAttente, validerOperationCaisse, rejeterOperationCaisse,
   fetchAuditLog, fetchCaissePrincipale, alimenterCaissePrincipale,
   simulateCredit, fetchProducts, creerDemandePourClient, searchClientPourDemande,
+  fetchCreditApprouvePourClient, ouvrirContratCredit,
 } from '../api/adminApi';
 import { can } from '../auth/roles';
 import CatalogView from './CatalogView';
@@ -997,6 +998,10 @@ function UserManagement() {
   const [confirmingResetId, setConfirmingResetId] = useState(null);
   const [resetBusy, setResetBusy] = useState(null);
   const [toast, setToast] = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({});
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState('');
 
   const flash = (text) => {
     setToast(text);
@@ -1009,6 +1014,52 @@ function UserManagement() {
   };
 
   useEffect(() => { load(); }, []);
+
+  const startEdit = (u) => {
+    setEditingId(u.id);
+    setEditError('');
+    setEditForm({
+      nomComplet: u.full_name ?? '',
+      telephone: u.phone ?? '',
+      email: u.email ?? '',
+      poste: u.job_title ?? '',
+      employeur: u.employer ?? '',
+    });
+  };
+
+  const saveEdit = async () => {
+    setEditBusy(true);
+    setEditError('');
+    try {
+      const updated = await updateUser(editingId, editForm);
+      setList((prev) => prev.map((u) => (u.id === editingId
+        ? { ...u, full_name: updated.full_name, phone: updated.phone, email: updated.email, job_title: updated.job_title, employer: updated.employer }
+        : u)));
+      setEditingId(null);
+      flash('Informations mises à jour.');
+    } catch (err) {
+      setEditError(err.message ?? 'La modification a échoué.');
+    } finally {
+      setEditBusy(false);
+    }
+  };
+
+  const [contratBusyId, setContratBusyId] = useState(null);
+  const genererContrat = async (u) => {
+    setContratBusyId(u.id);
+    try {
+      const credit = await fetchCreditApprouvePourClient(u.client_number);
+      if (!credit) {
+        flash(`${u.full_name} n'a aucun crédit approuvé pour le moment.`);
+        return;
+      }
+      await ouvrirContratCredit(credit.id, credit.reference);
+    } catch (err) {
+      flash(err.message ?? 'Le contrat n\'a pas pu être généré.');
+    } finally {
+      setContratBusyId(null);
+    }
+  };
 
   const toggle = async (u) => {
     const next = u.status === 'actif' ? 'suspendu' : 'actif';
@@ -1140,61 +1191,120 @@ function UserManagement() {
         </SectionTitle>
 
         <DataTable
-          columns={['Nom', 'Numéro client', 'Rôle', 'Type', 'Statut', '']}
+          columns={['Nom', 'Numéro client', 'Employeur', 'Rôle', 'Type', 'Statut', '']}
           rows={list}
           renderCell={(u) => (
-            <>
-              <td style={{ ...td, fontWeight: 500 }}>{u.full_name}</td>
-              <td style={{ ...td, color: colors.muted, fontFamily: fonts.mono }}>{u.client_number ?? '—'}</td>
-              <td style={{ ...td, color: colors.muted }}>{u.role}</td>
-              <td style={td}>
-                <Badge>{u.role === 'client' ? 'Client' : 'Employé'}</Badge>
-              </td>
-              <td style={td}>
-                <Badge tone={u.status === 'suspendu' ? 'danger' : 'neutral'}>
-                  {u.status === 'actif' ? 'Actif' : u.status === 'suspendu' ? 'Suspendu' : 'Fermé'}
-                </Badge>
-              </td>
-              <td style={{ ...td, textAlign: 'right' }}>
-                <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', alignItems: 'center' }}>
-                  {u.role === 'client' && (
-                    confirmingResetId === u.id ? (
-                      <>
-                        <span style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>Confirmer ?</span>
-                        <button
-                          onClick={() => doResetPin(u)}
-                          disabled={resetBusy === u.id}
-                          style={{ ...actionBtn(colors.danger, '#fff'), padding: '5px 10px' }}
-                        >
-                          Oui
-                        </button>
-                        <button
-                          onClick={() => setConfirmingResetId(null)}
-                          style={{ border: 'none', background: 'transparent', color: colors.muted, fontSize: 11, cursor: 'pointer', fontFamily: fonts.body }}
-                        >
-                          Annuler
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        onClick={() => setConfirmingResetId(u.id)}
-                        title="Réinitialiser le code PIN du client"
-                        style={{ border: 'none', background: 'transparent', color: colors.forestLight, fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: fonts.body }}
-                      >
-                        Réinitialiser le PIN
-                      </button>
-                    )
+            editingId === u.id ? (
+              <td colSpan={7} style={{ ...td, background: colors.bg }}>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <input
+                    placeholder="Nom complet" value={editForm.nomComplet}
+                    onChange={(e) => setEditForm((f) => ({ ...f, nomComplet: e.target.value }))}
+                    style={{ padding: '8px 10px', borderRadius: 8, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body, width: 160 }}
+                  />
+                  <input
+                    placeholder="Téléphone" value={editForm.telephone}
+                    onChange={(e) => setEditForm((f) => ({ ...f, telephone: e.target.value }))}
+                    style={{ padding: '8px 10px', borderRadius: 8, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body, width: 130 }}
+                  />
+                  {u.role !== 'client' && (
+                    <input
+                      placeholder="Email" value={editForm.email}
+                      onChange={(e) => setEditForm((f) => ({ ...f, email: e.target.value }))}
+                      style={{ padding: '8px 10px', borderRadius: 8, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body, width: 160 }}
+                    />
                   )}
-                  <button
-                    onClick={() => toggle(u)}
-                    title={u.status === 'actif' ? 'Suspendre' : 'Réactiver'}
-                    style={{ border: 'none', background: 'transparent', cursor: 'pointer' }}
-                  >
-                    <UserCog size={15} color={colors.muted} />
+                  <input
+                    placeholder="Poste" value={editForm.poste}
+                    onChange={(e) => setEditForm((f) => ({ ...f, poste: e.target.value }))}
+                    style={{ padding: '8px 10px', borderRadius: 8, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body, width: 130 }}
+                  />
+                  <input
+                    placeholder="Employeur" value={editForm.employeur}
+                    onChange={(e) => setEditForm((f) => ({ ...f, employeur: e.target.value }))}
+                    style={{ padding: '8px 10px', borderRadius: 8, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body, width: 150 }}
+                  />
+                  <button onClick={saveEdit} disabled={editBusy} style={{ ...actionBtn(colors.forest, '#fff'), padding: '7px 14px' }}>
+                    {editBusy ? 'Enregistrement…' : 'Enregistrer'}
                   </button>
+                  <button onClick={() => setEditingId(null)} style={{ border: 'none', background: 'transparent', color: colors.muted, fontSize: 12, cursor: 'pointer', fontFamily: fonts.body }}>
+                    Annuler
+                  </button>
+                  {editError && <span style={{ fontSize: 11, color: colors.danger, fontFamily: fonts.body, width: '100%' }}>{editError}</span>}
                 </div>
               </td>
-            </>
+            ) : (
+              <>
+                <td style={{ ...td, fontWeight: 500 }}>{u.full_name}</td>
+                <td style={{ ...td, color: colors.muted, fontFamily: fonts.mono }}>{u.client_number ?? '—'}</td>
+                <td style={{ ...td, color: colors.muted }}>{u.employer ?? '—'}</td>
+                <td style={{ ...td, color: colors.muted }}>{u.role}</td>
+                <td style={td}>
+                  <Badge>{u.role === 'client' ? 'Client' : 'Employé'}</Badge>
+                </td>
+                <td style={td}>
+                  <Badge tone={u.status === 'suspendu' ? 'danger' : 'neutral'}>
+                    {u.status === 'actif' ? 'Actif' : u.status === 'suspendu' ? 'Suspendu' : 'Fermé'}
+                  </Badge>
+                </td>
+                <td style={{ ...td, textAlign: 'right' }}>
+                  <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', alignItems: 'center' }}>
+                    <button
+                      onClick={() => startEdit(u)}
+                      title="Modifier les informations"
+                      style={{ border: 'none', background: 'transparent', color: colors.forestLight, fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: fonts.body }}
+                    >
+                      Modifier
+                    </button>
+                    {u.role === 'client' && (
+                      <button
+                        onClick={() => genererContrat(u)}
+                        disabled={contratBusyId === u.id}
+                        title="Générer le contrat de prêt (si un crédit est approuvé)"
+                        style={{ border: 'none', background: 'transparent', color: colors.forestLight, fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: fonts.body }}
+                      >
+                        {contratBusyId === u.id ? '…' : 'Contrat'}
+                      </button>
+                    )}
+                    {u.role === 'client' && (
+                      confirmingResetId === u.id ? (
+                        <>
+                          <span style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>Confirmer ?</span>
+                          <button
+                            onClick={() => doResetPin(u)}
+                            disabled={resetBusy === u.id}
+                            style={{ ...actionBtn(colors.danger, '#fff'), padding: '5px 10px' }}
+                          >
+                            Oui
+                          </button>
+                          <button
+                            onClick={() => setConfirmingResetId(null)}
+                            style={{ border: 'none', background: 'transparent', color: colors.muted, fontSize: 11, cursor: 'pointer', fontFamily: fonts.body }}
+                          >
+                            Annuler
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          onClick={() => setConfirmingResetId(u.id)}
+                          title="Réinitialiser le code PIN du client"
+                          style={{ border: 'none', background: 'transparent', color: colors.forestLight, fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: fonts.body }}
+                        >
+                          Réinitialiser le PIN
+                        </button>
+                      )
+                    )}
+                    <button
+                      onClick={() => toggle(u)}
+                      title={u.status === 'actif' ? 'Suspendre' : 'Réactiver'}
+                      style={{ border: 'none', background: 'transparent', cursor: 'pointer' }}
+                    >
+                      <UserCog size={15} color={colors.muted} />
+                    </button>
+                  </div>
+                </td>
+              </>
+            )
           )}
         />
       </Card>

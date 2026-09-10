@@ -9,7 +9,7 @@
  * (cpg-api/src/routes/*.routes.js) au moment de l'écriture.
  */
 
-import { apiRequest } from './client.js';
+import { apiRequest, apiRequestBlob } from './client.js';
 
 export { API_BASE_URL } from './client.js';
 
@@ -24,6 +24,25 @@ export async function fetchCreditRequests(statut) {
   const params = statut ? `?statut=${encodeURIComponent(statut)}` : '';
   const { credits } = await apiRequest(`/v1/admin/credits${params}`);
   return credits;
+}
+
+/** Trouve le crédit actif (approuvé) d'un client, s'il en a un. */
+export async function fetchCreditApprouvePourClient(clientNumber) {
+  const { credits } = await apiRequest('/v1/admin/credits?statut=approuve&limite=100');
+  return credits.find((c) => c.client_number === clientNumber) ?? null;
+}
+
+/** Télécharge le contrat de prêt (PDF) d'un crédit approuvé. */
+export async function ouvrirContratCredit(creditId, reference) {
+  const blob = await apiRequestBlob(`/v1/admin/credits/${creditId}/contrat`);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Contrat-${reference ?? creditId}.pdf`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
 /** Dossier complet, avec pièces justificatives et échéancier. */
@@ -84,6 +103,20 @@ export async function createUser({ nomComplet, telephone, email, role, motDePass
 /** Suspension ou réactivation d'un compte. */
 export async function setUserStatus(userId, statut) {
   return apiRequest(`/v1/admin/utilisateurs/${userId}/statut`, { method: 'PATCH', body: { statut } });
+}
+
+/** Modifie les informations d'un utilisateur (nom, téléphone, poste, employeur...). */
+export async function updateUser(userId, { nomComplet, telephone, email, poste, employeur }) {
+  return apiRequest(`/v1/admin/utilisateurs/${userId}`, {
+    method: 'PATCH',
+    body: {
+      ...(nomComplet ? { nomComplet } : {}),
+      ...(telephone ? { telephone } : {}),
+      ...(email ? { email } : {}),
+      ...(poste ? { poste } : {}),
+      ...(employeur ? { employeur } : {}),
+    },
+  });
 }
 
 /**
@@ -397,6 +430,11 @@ export async function cancelCommissionSession(sessionId) {
   return apiRequest(`/v1/admin/commission/seance/${sessionId}`, { method: 'DELETE' });
 }
 
+/** Modifie la date d'une séance déjà programmée. */
+export async function rescheduleCommissionSession(sessionId, dateHeure) {
+  return apiRequest(`/v1/admin/commission/seance/${sessionId}`, { method: 'PATCH', body: { dateHeure } });
+}
+
 /** Dossiers validés niveau 1, prêts à être déposés en commission. */
 export async function fetchLevel1Credits() {
   const { credits } = await apiRequest('/v1/admin/credits?statut=valide_niveau1');
@@ -586,6 +624,16 @@ export async function cloturerCaisse() {
 }
 
 /** Changement du mot de passe de son propre compte (personnel uniquement). */
+/** Messagerie interne — un canal partagé pour tout le personnel. */
+export async function fetchMessagesInternes() {
+  const { messages } = await apiRequest('/v1/admin/messages-internes');
+  return messages;
+}
+
+export async function envoyerMessageInterne(body) {
+  return apiRequest('/v1/admin/messages-internes', { method: 'POST', body: { body } });
+}
+
 export async function changerMonMotDePasse(ancienMotDePasse, nouveauMotDePasse) {
   return apiRequest('/v1/auth/changer-mot-de-passe', {
     method: 'POST',

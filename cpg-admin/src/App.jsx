@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
-import { GitCommit, Search, Bell, LogOut, KeyRound, X } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { GitCommit, Search, Bell, LogOut, KeyRound, X, MessageSquare, Send } from 'lucide-react';
 import { colors, fonts } from './theme';
 import { ROLES, ROLE_LABELS, ROLE_DESCRIPTIONS } from './auth/roles';
 import { AuthProvider, useAuth } from './auth/AuthContext';
-import { changerMonMotDePasse, modifierMonProfil } from './api/adminApi';
+import { changerMonMotDePasse, modifierMonProfil, fetchMessagesInternes, envoyerMessageInterne } from './api/adminApi';
 import LoginView from './views/LoginView';
 import OperatorView from './views/OperatorView';
 import SupervisorView from './views/SupervisorView';
@@ -19,6 +19,7 @@ function AuthenticatedApp() {
   const { user, logout } = useAuth();
   const role = user?.role;
   const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [showMessagerie, setShowMessagerie] = useState(false);
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: colors.bg }}>
@@ -92,6 +93,13 @@ function AuthenticatedApp() {
           </div>
           <span style={{ flex: 1, fontSize: 11, color: '#fff', fontFamily: fonts.body }}>{user?.fullName}</span>
           <button
+            onClick={() => setShowMessagerie(true)}
+            style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: 0 }}
+            title="Messagerie interne — équipe"
+          >
+            <MessageSquare size={14} color={colors.onForest} />
+          </button>
+          <button
             onClick={() => setShowPasswordModal(true)}
             style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: 0 }}
             title="Sécurité — changer mon mot de passe"
@@ -109,6 +117,7 @@ function AuthenticatedApp() {
       </aside>
 
       {showPasswordModal && <PasswordModal onClose={() => setShowPasswordModal(false)} />}
+      {showMessagerie && <MessagerieInterneModal onClose={() => setShowMessagerie(false)} currentUserId={user?.id} />}
 
       {/* ── Zone principale ────────────────────────────────────── */}
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
@@ -158,6 +167,133 @@ function AuthenticatedApp() {
           {role !== ROLES.OPERATEUR && role !== ROLES.CAISSIER && <SupervisorView role={role} />}
         </div>
       </main>
+    </div>
+  );
+}
+
+function MessagerieInterneModal({ onClose, currentUserId }) {
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [texte, setTexte] = useState('');
+  const [envoi, setEnvoi] = useState(false);
+  const listRef = useRef(null);
+
+  const scrollToBottom = () => {
+    requestAnimationFrame(() => {
+      if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+    });
+  };
+
+  const load = (premierChargement) => {
+    fetchMessagesInternes()
+      .then((data) => {
+        setMessages(data);
+        if (premierChargement) scrollToBottom();
+      })
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    load(true);
+    const interval = setInterval(() => load(false), 8000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const envoyer = async (e) => {
+    e.preventDefault();
+    const body = texte.trim();
+    if (!body) return;
+    setEnvoi(true);
+    setTexte('');
+    try {
+      const message = await envoyerMessageInterne(body);
+      setMessages((prev) => [...prev, message]);
+      scrollToBottom();
+    } finally {
+      setEnvoi(false);
+    }
+  };
+
+  const roleLabel = { operateur: 'Opérateur', superviseur: 'Gestionnaire', directeur: 'Directeur', caissier: 'Caissière' };
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(11,61,46,0.45)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{ background: '#fff', borderRadius: 16, width: 440, maxWidth: '92vw', height: 560, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: `1px solid ${colors.line}` }}>
+          <p style={{ margin: 0, fontSize: 15, fontWeight: 600, color: colors.ink, fontFamily: fonts.display }}>
+            Messagerie interne
+          </p>
+          <button onClick={onClose} style={{ border: 'none', background: 'transparent', cursor: 'pointer' }}>
+            <X size={18} color={colors.muted} />
+          </button>
+        </div>
+
+        <div ref={listRef} style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {loading ? (
+            <p style={{ fontSize: 12, color: colors.muted, fontFamily: fonts.body, textAlign: 'center' }}>Chargement…</p>
+          ) : messages.length === 0 ? (
+            <p style={{ fontSize: 12, color: colors.muted, fontFamily: fonts.body, textAlign: 'center' }}>
+              Aucun message pour le moment — écrivez au reste de l'équipe.
+            </p>
+          ) : (
+            messages.map((m) => {
+              const soi = m.sender_id === currentUserId;
+              return (
+                <div key={m.id} style={{ alignSelf: soi ? 'flex-end' : 'flex-start', maxWidth: '78%' }}>
+                  {!soi && (
+                    <p style={{ margin: '0 0 3px 2px', fontSize: 10, fontWeight: 600, color: colors.forestLight, fontFamily: fonts.body }}>
+                      {m.expediteur} · {roleLabel[m.expediteur_role] ?? m.expediteur_role}
+                    </p>
+                  )}
+                  <div style={{
+                    background: soi ? colors.forest : colors.bg,
+                    color: soi ? '#fff' : colors.ink,
+                    borderRadius: 12,
+                    padding: '9px 13px',
+                    fontSize: 13,
+                    fontFamily: fonts.body,
+                    wordBreak: 'break-word',
+                  }}>
+                    {m.body}
+                  </div>
+                  <p style={{ margin: '3px 2px 0', fontSize: 9, color: colors.muted, fontFamily: fonts.body, textAlign: soi ? 'right' : 'left' }}>
+                    {new Date(m.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                  </p>
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        <form onSubmit={envoyer} style={{ display: 'flex', gap: 8, padding: 14, borderTop: `1px solid ${colors.line}` }}>
+          <input
+            value={texte}
+            onChange={(e) => setTexte(e.target.value)}
+            placeholder="Écrire à l'équipe…"
+            style={{ flex: 1, padding: '10px 12px', borderRadius: 20, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.body }}
+          />
+          <button
+            type="submit"
+            disabled={envoi || !texte.trim()}
+            style={{
+              width: 38, height: 38, borderRadius: '50%', border: 'none', background: colors.forest,
+              color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              opacity: !texte.trim() ? 0.5 : 1,
+            }}
+          >
+            <Send size={15} />
+          </button>
+        </form>
+      </div>
     </div>
   );
 }

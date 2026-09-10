@@ -405,7 +405,7 @@ function RateAdjustForm({ current, onSubmit, onCancel, busy }) {
    ═══════════════════════════════════════════════════════════════════ */
 
 function FeeAdjustForm({ fee, onSubmit, onCancel, busy }) {
-  const isTaux = fee.basis === 'taux';
+  const isTaux = fee.basis !== 'fixe';
   const [form, setForm] = useState({
     rate: isTaux ? (fee.rate * 100).toFixed(3) : '',
     amount: !isTaux ? fee.amount : '',
@@ -571,10 +571,10 @@ function ServicesPanel({ role }) {
                   {f.status === 'actif' ? 'Actif' : 'Brouillon'}
                 </Badge>
               </td>
-              <td style={{ ...td, color: colors.muted }}>{f.basis === 'taux' ? 'Taux' : 'Montant fixe'}</td>
+              <td style={{ ...td, color: colors.muted }}>{f.basis === 'fixe' ? 'Montant fixe' : f.basis === 'journalier_solde' ? 'Taux journalier' : 'Pourcentage'}</td>
               <td style={{ ...td, color: colors.muted }}>{f.trigger_on}</td>
               <td style={{ ...td, fontFamily: fonts.mono }}>
-                {f.basis === 'taux' ? pct(f.rate) : `${formatFCFA(f.amount)} F`}
+                {f.basis === 'fixe' ? `${formatFCFA(f.amount)} F` : pct(f.rate)}
               </td>
               <td style={{ ...td, textAlign: 'right' }}>
                 <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>

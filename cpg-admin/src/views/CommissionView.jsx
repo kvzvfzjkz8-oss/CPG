@@ -6,7 +6,7 @@ import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, Tabs, SectionTitle } from '../components/UI';
 import { can } from '../auth/roles';
 import {
-  fetchCommissionSession, scheduleCommissionSession, cancelCommissionSession,
+  fetchCommissionSession, scheduleCommissionSession, cancelCommissionSession, rescheduleCommissionSession,
   fetchLevel1Credits, depositCreditToCommission,
   fetchCommissionAgenda, depositDifficultyCase, depositExceptionalRequest,
   holdCommissionSession,
@@ -89,6 +89,8 @@ export default function CommissionView({ role }) {
 function SessionPanel({ session, loading, onChange, role }) {
   const peutProgrammer = can(role, 'commission.programmer');
   const [dateHeure, setDateHeure] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [nouvelleDate, setNouvelleDate] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
@@ -114,6 +116,23 @@ function SessionPanel({ session, loading, onChange, role }) {
     }
   };
 
+  const reschedule = async () => {
+    if (!nouvelleDate) return;
+    setBusy(true);
+    setError('');
+    try {
+      await rescheduleCommissionSession(session.id, nouvelleDate);
+      flash('Date de la commission modifiée.');
+      setEditing(false);
+      setNouvelleDate('');
+      onChange();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const cancel = async () => {
     setBusy(true);
     setError('');
@@ -130,6 +149,8 @@ function SessionPanel({ session, loading, onChange, role }) {
 
   if (loading) return <Card style={{ padding: 20 }}>Chargement…</Card>;
 
+  const dateValide = session?.scheduled_for && !Number.isNaN(new Date(session.scheduled_for).getTime());
+
   return (
     <div>
       <Toast text={toast} />
@@ -145,26 +166,50 @@ function SessionPanel({ session, loading, onChange, role }) {
       {session?.status === 'planifiee' ? (
         <Card style={{ padding: 20 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-            <Badge tone="gold">Programmée</Badge>
+            <Badge tone="gold">Commission programmée</Badge>
             <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
-              {new Date(session.scheduledFor).toLocaleString('fr-FR', { dateStyle: 'full', timeStyle: 'short' })}
+              {dateValide
+                ? new Date(session.scheduled_for).toLocaleString('fr-FR', { dateStyle: 'full', timeStyle: 'short' })
+                : 'Date à confirmer'}
             </p>
           </div>
           <p style={{ margin: '0 0 16px', fontSize: 12, color: colors.muted, fontFamily: fonts.body }}>
-            Programmée par {session.scheduledBy}. Déposez les dossiers dans l'onglet « Déposer », puis tenez la
+            {session.scheduled_by_name ? `Programmée par ${session.scheduled_by_name}. ` : ''}
+            Déposez les dossiers dans l'onglet « Déposer », puis tenez la
             séance dans l'onglet « Tenir la séance » une fois l'ordre du jour complet.
           </p>
-          {peutProgrammer && (
-            <button onClick={cancel} disabled={busy} style={actionBtn(colors.dangerPale, colors.danger)}>
-              <X size={13} /> Annuler la séance
-            </button>
+
+          {peutProgrammer && !editing && (
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => setEditing(true)} disabled={busy} style={actionBtn(colors.forestPale, colors.forestLight)}>
+                <CalendarPlus size={13} /> Modifier la date
+              </button>
+              <button onClick={cancel} disabled={busy} style={actionBtn(colors.dangerPale, colors.danger)}>
+                <X size={13} /> Annuler la séance
+              </button>
+            </div>
+          )}
+
+          {peutProgrammer && editing && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+              <div style={{ flex: 1 }}>
+                <label style={label}>Nouvelle date et heure</label>
+                <input style={input} type="datetime-local" value={nouvelleDate} onChange={(e) => setNouvelleDate(e.target.value)} />
+              </div>
+              <button onClick={reschedule} disabled={!nouvelleDate || busy} style={actionBtn(colors.forest, '#fff')}>
+                Confirmer
+              </button>
+              <button onClick={() => setEditing(false)} disabled={busy} style={actionBtn('transparent', colors.muted)}>
+                Annuler
+              </button>
+            </div>
           )}
         </Card>
       ) : (
         <Card style={{ padding: 20 }}>
-          <p style={{ margin: '0 0 4px', fontSize: 14, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
-            Programmer la commission
-          </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <Badge tone="neutral">Aucune commission en cours</Badge>
+          </div>
           <p style={{ margin: '0 0 16px', fontSize: 12, color: colors.muted, fontFamily: fonts.body }}>
             Une commission doit se tenir chaque semaine. Aucun dossier ne peut être déposé tant qu'aucune
             séance n'est programmée.

@@ -102,3 +102,33 @@ export async function apiRequest(path, { method = 'GET', body, skipAuth = false,
   }
   return payload;
 }
+
+/**
+ * Comme apiRequest, mais pour une réponse binaire (PDF...) plutôt que
+ * du JSON — le contrat de prêt notamment. Même jeton, même
+ * rafraîchissement automatique en cas d'expiration.
+ */
+export async function apiRequestBlob(path) {
+  const headers = {};
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, { headers });
+  } catch {
+    throw new ApiError(0, 'Impossible de joindre le serveur CPG. Vérifiez votre connexion.');
+  }
+
+  if (response.status === 401) {
+    await refreshSession();
+    return apiRequestBlob(path);
+  }
+
+  if (!response.ok) {
+    const text = await response.text();
+    const payload = text ? JSON.parse(text) : null;
+    throw new ApiError(response.status, payload?.error ?? 'Une erreur est survenue.', payload?.code);
+  }
+
+  return response.blob();
+}
