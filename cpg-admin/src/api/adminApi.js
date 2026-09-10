@@ -498,6 +498,12 @@ export async function searchCaisseClient(q) {
   return resultats;
 }
 
+/** Recherche un client pour lui créer une demande de crédit — accessible au gestionnaire et à l'opérateur. */
+export async function searchClientPourDemande(q) {
+  const { resultats } = await apiRequest(`/v1/admin/clients/rechercher?q=${encodeURIComponent(q)}`);
+  return resultats;
+}
+
 /** Solde courant de la caisse de l'agent connecté, et bilan du jour. */
 export async function fetchMaCaisse() {
   return apiRequest('/v1/caisse/ma-caisse');

@@ -8,7 +8,7 @@ import {
   validateLevel1, rejectCredit, sendAdvisorReply,
   fetchDoubleValidationQueue, doubleValidateCredit,
   fetchCreditRequests, fetchCreditDetail, fetchConversations, fetchConversationMessages,
-  searchCaisseClient, creerDemandePourClient,
+  searchClientPourDemande, creerDemandePourClient,
 } from '../api/adminApi';
 import OperationsView from './OperationsView';
 
@@ -292,7 +292,7 @@ function NewRequestForm({ onCancel, onCreated }) {
       return;
     }
     const timeout = setTimeout(() => {
-      searchCaisseClient(query.trim()).then(setResultats).catch(() => setResultats([]));
+      searchClientPourDemande(query.trim()).then(setResultats).catch(() => setResultats([]));
     }, 300);
     return () => clearTimeout(timeout);
   }, [query]);

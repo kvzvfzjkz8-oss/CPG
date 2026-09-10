@@ -122,6 +122,36 @@ const creerCreditSchema = z.object({
   produitId: z.string().uuid().optional(),
 });
 
+/**
+ * GET /admin/clients/rechercher?q=... — trouver un client pour lui
+ * créer une demande de crédit (guichet, téléphone...). Route dédiée,
+ * distincte de /caisse/rechercher-client : un gestionnaire ou un
+ * opérateur qui dépose une demande n'a pas besoin de voir le solde
+ * du compte, seulement de retrouver le client par son nom.
+ */
+router.get(
+  '/clients/rechercher',
+  requirePermission('credits.creer_pour_client'),
+  async (req, res, next) => {
+    try {
+      const q = String(req.query.q ?? '').trim();
+      if (q.length < 2) return res.json({ resultats: [] });
+
+      const { rows } = await query(
+        `SELECT id, full_name, client_number, phone
+         FROM users
+         WHERE role = 'client' AND (full_name ILIKE $1 OR client_number ILIKE $1)
+         ORDER BY full_name
+         LIMIT 10`,
+        [`%${q}%`]
+      );
+      res.json({ resultats: rows });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
 router.post(
   '/credits',
   requirePermission('credits.creer_pour_client'),
@@ -268,21 +298,6 @@ router.post(
           );
         }
 
-        // C'est la caisse principale de l'entreprise qui finance
-        // chaque déblocage — jamais plus que ce qu'elle contient
-        // réellement, exactement comme pour un réapprovisionnement de
-        // caissière.
-        const { rows: principale } = await client.query(
-          'SELECT solde FROM caisse_principale_solde'
-        );
-        const soldePrincipale = principale[0]?.solde ?? 0;
-        if (soldePrincipale < credit.amount) {
-          throw new ApiError(
-            422,
-            `La caisse principale ne contient que ${soldePrincipale} FCFA — insuffisant pour débloquer ${credit.amount} FCFA. Alimentez-la d'abord.`
-          );
-        }
-
         const { monthlyPayment, totalDue } = computeSchedule(
           credit.amount,
           credit.duration_months,
@@ -321,14 +336,14 @@ router.post(
           client,
         });
 
-        // Le débit correspondant dans la caisse principale — c'est
-        // elle qui a financé ce déblocage, au même titre qu'un
-        // réapprovisionnement de caissière.
-        await client.query(
-          `INSERT INTO caisse_principale_mouvements (type, montant, motif, cree_par)
-           VALUES ('deblocage_credit', $1, $2, $3)`,
-          [credit.amount, `Déblocage crédit ${credit.reference}`, req.user.id]
-        );
+        // Aucun mouvement de caisse principale ici : à ce stade,
+        // aucun argent physique ne bouge encore — le client a
+        // seulement un solde plus élevé sur son compte, comme pour
+        // n'importe quel crédit bancaire. C'est seulement quand il
+        // viendra retirer du cash au guichet que de l'argent quittera
+        // réellement CPG, via la caisse de la caissière qui le sert
+        // (« Paiement à un client », déjà en place) — jamais les deux
+        // à la fois.
 
         // Génération de l'échéancier.
         const installments = buildInstallments(

@@ -15,7 +15,7 @@ import {
   fetchFinalApprovalQueue, grantExceptionAuthorization, fetchExceptionAuthorizations,
   fetchDemandesCaisseEnAttente, validerOperationCaisse, rejeterOperationCaisse,
   fetchAuditLog, fetchCaissePrincipale, alimenterCaissePrincipale,
-  simulateCredit, fetchProducts, creerDemandePourClient, searchCaisseClient,
+  simulateCredit, fetchProducts, creerDemandePourClient, searchClientPourDemande,
 } from '../api/adminApi';
 import { can } from '../auth/roles';
 import CatalogView from './CatalogView';
@@ -566,7 +566,7 @@ function CreateFromSimulation({ montant, duree, produitId }) {
   useEffect(() => {
     if (query.trim().length < 2) { setResultats([]); return; }
     const t = setTimeout(() => {
-      searchCaisseClient(query.trim()).then(setResultats).catch(() => setResultats([]));
+      searchClientPourDemande(query.trim()).then(setResultats).catch(() => setResultats([]));
     }, 300);
     return () => clearTimeout(t);
   }, [query]);
