@@ -60,11 +60,26 @@ export async function cancelSession({ sessionId }) {
   return rows[0];
 }
 
+/** Change la date d'une séance déjà programmée, sans avoir à l'annuler puis en reprogrammer une autre. */
+export async function rescheduleSession({ sessionId, scheduledFor }) {
+  const { rows } = await query(
+    `UPDATE commission_sessions SET scheduled_for = $2
+     WHERE id = $1 AND status = 'planifiee'
+     RETURNING id, scheduled_for, status`,
+    [sessionId, scheduledFor]
+  );
+  if (!rows[0]) throw new ApiError(409, 'Cette séance ne peut plus être modifiée (déjà tenue ou introuvable).');
+  return rows[0];
+}
+
 /** La séance actuellement programmée, s'il y en a une. */
 export async function fetchPlannedSession() {
   const { rows } = await query(
-    `SELECT id, scheduled_for, status, scheduled_by, note, created_at
-     FROM commission_sessions WHERE status = 'planifiee' LIMIT 1`
+    `SELECT s.id, s.scheduled_for, s.status, s.scheduled_by, u.full_name AS scheduled_by_name,
+            s.note, s.created_at
+     FROM commission_sessions s
+     LEFT JOIN users u ON u.id = s.scheduled_by
+     WHERE s.status = 'planifiee' LIMIT 1`
   );
   return rows[0] ?? null;
 }

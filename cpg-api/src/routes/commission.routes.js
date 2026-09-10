@@ -4,7 +4,7 @@ import { requireAuth, requirePermission } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { audit } from '../services/auditService.js';
 import {
-  scheduleSession, cancelSession, fetchPlannedSession, depositToCommission,
+  scheduleSession, cancelSession, rescheduleSession, fetchPlannedSession, depositToCommission,
   withdrawFromCommission, fetchCommissionQueue, holdSession, doubleValidateCredit,
   grantExceptionAuthorization, fetchUnusedExceptionAuthorizations,
   depositDifficultyCase, depositExceptionalRequest, withdrawCommissionItem, fetchCommissionItems,
@@ -53,6 +53,24 @@ router.delete(
     try {
       const session = await cancelSession({ sessionId: req.params.id });
       await audit(req, { action: 'commission.annulee', entityType: 'commission_session', entityId: session.id });
+      res.json(session);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/** PATCH /admin/commission/seance/:id — change la date d'une séance déjà programmée. */
+router.patch(
+  '/seance/:id',
+  requirePermission('commission.programmer'),
+  validate(z.object({
+    dateHeure: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/, 'Format attendu : AAAA-MM-JJTHH:MM'),
+  })),
+  async (req, res, next) => {
+    try {
+      const session = await rescheduleSession({ sessionId: req.params.id, scheduledFor: req.body.dateHeure });
+      await audit(req, { action: 'commission.reprogrammee', entityType: 'commission_session', entityId: session.id });
       res.json(session);
     } catch (error) {
       next(error);

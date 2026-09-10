@@ -6,6 +6,7 @@ import { requireAuth, requirePermission } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { ApiError } from '../middleware/errorHandler.js';
 import { computeSchedule, buildInstallments, computeFileFee, generateReference, DEFAULT_MONTHLY_RATE } from '../services/creditService.js';
+import { genererContratPDF } from '../services/contractService.js';
 import { getActiveScale } from '../services/productService.js';
 import { validateAgainstScale } from '../utils/rateVersioning.js';
 import { applyTriggeredFee } from '../services/feeService.js';
@@ -102,6 +103,52 @@ router.get('/credits/:id', requirePermission('demandes.lire'), async (req, res, 
     });
 
     res.json({ credit: rows[0], documents, installments });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /admin/credits/:id/contrat — génère le contrat de prêt en PDF,
+ * avec les conditions accordées et l'échéancier réel du crédit.
+ * Uniquement pour un crédit déjà approuvé — un dossier encore en
+ * cours d'instruction n'a pas de conditions définitives à imprimer.
+ */
+router.get('/credits/:id/contrat', requirePermission('demandes.lire'), async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      `SELECT c.*, u.full_name, u.phone, u.job_title, u.employer, u.client_number
+       FROM credit_requests c
+       JOIN users u ON u.id = c.user_id
+       WHERE c.id = $1`,
+      [req.params.id]
+    );
+    if (!rows[0]) throw new ApiError(404, 'Dossier introuvable.');
+    const credit = rows[0];
+
+    if (credit.status !== 'approuve') {
+      throw new ApiError(409, 'Le contrat ne peut être généré qu\'une fois le crédit définitivement approuvé.');
+    }
+
+    const { rows: installments } = await query(
+      `SELECT sequence, due_date, amount, status FROM installments WHERE credit_id = $1 ORDER BY sequence`,
+      [req.params.id]
+    );
+
+    await audit(req, { action: 'credit.contrat_genere', entityType: 'credit_request', entityId: credit.id });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="Contrat-${credit.reference}.pdf"`);
+
+    const doc = genererContratPDF({
+      credit,
+      client: {
+        full_name: credit.full_name, client_number: credit.client_number,
+        job_title: credit.job_title, employer: credit.employer,
+      },
+      installments,
+    });
+    doc.pipe(res);
   } catch (error) {
     next(error);
   }
@@ -517,7 +564,7 @@ router.get('/utilisateurs', requirePermission('utilisateurs.gerer'), async (req,
       `SELECT id, full_name, phone, email, role, status, client_number, job_title, employer, created_at,
               (pin_hash IS NOT NULL AND role <> 'client') AS pin_backoffice_defini,
               pin_updated_at
-       FROM users ORDER BY created_at DESC LIMIT 200`
+       FROM users ORDER BY full_name LIMIT 200`
     );
     res.json({ utilisateurs: rows });
   } catch (error) {
@@ -604,6 +651,58 @@ router.post(
       });
 
       res.status(201).json(created);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * PATCH /admin/utilisateurs/:id — modifie les informations d'un
+ * utilisateur (nom, téléphone, poste, employeur...) — jamais le rôle
+ * ni le statut, qui ont leurs propres routes dédiées avec leurs
+ * propres garde-fous.
+ */
+const updateUserSchema = z.object({
+  nomComplet: z.string().min(2).max(120).optional(),
+  telephone: z.string().min(8).max(20).optional(),
+  email: z.string().email().optional(),
+  employeur: z.string().max(120).optional(),
+  poste: z.string().max(120).optional(),
+}).refine((b) => Object.keys(b).length > 0, { message: 'Renseignez au moins un champ à modifier.' });
+
+router.patch(
+  '/utilisateurs/:id',
+  requirePermission('utilisateurs.gerer'),
+  validate(updateUserSchema),
+  async (req, res, next) => {
+    try {
+      const b = req.body;
+      const sets = [];
+      const params = [req.params.id];
+      const push = (col, val) => { params.push(val); sets.push(`${col} = $${params.length}`); };
+
+      if (b.nomComplet !== undefined) push('full_name', b.nomComplet);
+      if (b.telephone !== undefined) push('phone', b.telephone);
+      if (b.email !== undefined) push('email', b.email.toLowerCase());
+      if (b.employeur !== undefined) push('employer', b.employeur);
+      if (b.poste !== undefined) push('job_title', b.poste);
+
+      const { rows } = await query(
+        `UPDATE users SET ${sets.join(', ')} WHERE id = $1
+         RETURNING id, full_name, phone, email, role, employer, job_title`,
+        params
+      );
+      if (!rows[0]) throw new ApiError(404, 'Utilisateur introuvable.');
+
+      await audit(req, {
+        action: 'utilisateur.modifie',
+        entityType: 'user',
+        entityId: rows[0].id,
+        metadata: { champs: Object.keys(b) },
+      });
+
+      res.json(rows[0]);
     } catch (error) {
       next(error);
     }
@@ -869,5 +968,42 @@ router.get('/audit', requirePermission('audit.lire'), async (req, res, next) => 
     next(error);
   }
 });
+
+/* ═══════════════════════════════════════════════════════════════════
+   MESSAGERIE INTERNE — un canal partagé pour tout le personnel
+   ═══════════════════════════════════════════════════════════════════ */
+
+router.get('/messages-internes', requirePermission('messagerie_interne.acceder'), async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      `SELECT m.id, m.body, m.created_at, m.sender_id, u.full_name AS expediteur, u.role AS expediteur_role
+       FROM staff_messages m
+       JOIN users u ON u.id = m.sender_id
+       ORDER BY m.created_at DESC
+       LIMIT 100`
+    );
+    res.json({ messages: rows.reverse() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post(
+  '/messages-internes',
+  requirePermission('messagerie_interne.acceder'),
+  validate(z.object({ body: z.string().min(1).max(2000) })),
+  async (req, res, next) => {
+    try {
+      const { rows } = await query(
+        `INSERT INTO staff_messages (sender_id, body) VALUES ($1, $2)
+         RETURNING id, body, created_at, sender_id`,
+        [req.user.id, req.body.body]
+      );
+      res.status(201).json({ ...rows[0], expediteur: req.user.full_name, expediteur_role: req.user.role });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 export default router;

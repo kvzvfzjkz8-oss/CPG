@@ -40,6 +40,7 @@ export const PERMISSIONS = {
   ],
 
   [ROLES.OPERATEUR]: [
+    'messagerie_interne.acceder',
     'demandes.lire',
     'demandes.valider_niveau1',
     'demandes.rejeter',
@@ -74,6 +75,7 @@ export const PERMISSIONS = {
   ],
 
   [ROLES.SUPERVISEUR]: [
+    'messagerie_interne.acceder',
     'statistiques.lire',
     'demandes.lire',
     'demandes.rejeter',
@@ -115,6 +117,7 @@ export const PERMISSIONS = {
   // Le directeur ajoute l'autorité de barème : activer un produit,
   // fixer un taux hors marge, trancher les propositions du gestionnaire.
   [ROLES.DIRECTEUR]: [
+    'messagerie_interne.acceder',
     'statistiques.lire',
     'demandes.lire',
     'demandes.rejeter',
@@ -134,6 +137,11 @@ export const PERMISSIONS = {
     // avec le gestionnaire avant le comité, a disparu avec lui.
     'demandes.approuver_final',
     'commission.lire',
+
+    // Le directeur peut aussi reprogrammer la date de la prochaine
+    // commission (en plus du gestionnaire) — utile s'il doit décaler
+    // une séance sans attendre que le gestionnaire s'en charge.
+    'commission.programmer',
 
     // La décision elle-même, pendant la séance, revient au directeur —
     // le gestionnaire prépare la commission (programme, dépose les
@@ -178,6 +186,7 @@ export const PERMISSIONS = {
   // budget en espèces. Elle ne peut ni créer de compte, ni consulter
   // les dossiers de crédit : uniquement solde, retrait et RIB.
   [ROLES.CAISSIER]: [
+    'messagerie_interne.acceder',
     'caisse.consulter_solde_client',
     'caisse.demander_retrait',
     'caisse.demander_appro',
