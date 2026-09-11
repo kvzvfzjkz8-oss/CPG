@@ -45,6 +45,19 @@ export async function ouvrirContratCredit(creditId, reference) {
   setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
+/** Télécharge le brouillard de caisse (PDF) d'une caissière pour un jour donné. */
+export async function ouvrirBrouillardCaisse(caissierId, date, nomCaissiere) {
+  const blob = await apiRequestBlob(`/v1/caisse/brouillard?caissierId=${caissierId}&date=${date}`);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Brouillard-${nomCaissiere}-${date}.pdf`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
 /** Dossier complet, avec pièces justificatives et échéancier. */
 export async function fetchCreditDetail(creditId) {
   return apiRequest(`/v1/admin/credits/${creditId}`);
@@ -624,14 +637,24 @@ export async function cloturerCaisse() {
 }
 
 /** Changement du mot de passe de son propre compte (personnel uniquement). */
-/** Messagerie interne — un canal partagé pour tout le personnel. */
-export async function fetchMessagesInternes() {
-  const { messages } = await apiRequest('/v1/admin/messages-internes');
+/** Messagerie interne — canal d'équipe (avec=undefined) ou fil privé avec une personne précise. */
+export async function fetchMessagesInternes(avec) {
+  const params = avec ? `?avec=${encodeURIComponent(avec)}` : '';
+  const { messages } = await apiRequest(`/v1/admin/messages-internes${params}`);
   return messages;
 }
 
-export async function envoyerMessageInterne(body) {
-  return apiRequest('/v1/admin/messages-internes', { method: 'POST', body: { body } });
+export async function envoyerMessageInterne(body, recipientId) {
+  return apiRequest('/v1/admin/messages-internes', {
+    method: 'POST',
+    body: { body, ...(recipientId ? { recipientId } : {}) },
+  });
+}
+
+/** Liste du personnel avec présence en ligne, pour la messagerie ciblée. */
+export async function fetchPersonnel() {
+  const { personnel } = await apiRequest('/v1/admin/personnel');
+  return personnel;
 }
 
 export async function changerMonMotDePasse(ancienMotDePasse, nouveauMotDePasse) {

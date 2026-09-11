@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { GitCommit, Search, Bell, LogOut, KeyRound, X, MessageSquare, Send } from 'lucide-react';
+import { GitCommit, Search, Bell, LogOut, KeyRound, X, MessageSquare, Send, Users } from 'lucide-react';
 import { colors, fonts } from './theme';
 import { ROLES, ROLE_LABELS, ROLE_DESCRIPTIONS } from './auth/roles';
 import { AuthProvider, useAuth } from './auth/AuthContext';
-import { changerMonMotDePasse, modifierMonProfil, fetchMessagesInternes, envoyerMessageInterne } from './api/adminApi';
+import { changerMonMotDePasse, modifierMonProfil, fetchMessagesInternes, envoyerMessageInterne, fetchPersonnel } from './api/adminApi';
 import LoginView from './views/LoginView';
 import OperatorView from './views/OperatorView';
 import SupervisorView from './views/SupervisorView';
@@ -172,6 +172,8 @@ function AuthenticatedApp() {
 }
 
 function MessagerieInterneModal({ onClose, currentUserId }) {
+  const [personnel, setPersonnel] = useState([]);
+  const [destinataire, setDestinataire] = useState(null); // null = canal d'équipe
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
   const [texte, setTexte] = useState('');
@@ -185,7 +187,7 @@ function MessagerieInterneModal({ onClose, currentUserId }) {
   };
 
   const load = (premierChargement) => {
-    fetchMessagesInternes()
+    fetchMessagesInternes(destinataire?.id)
       .then((data) => {
         setMessages(data);
         if (premierChargement) scrollToBottom();
@@ -193,11 +195,22 @@ function MessagerieInterneModal({ onClose, currentUserId }) {
       .finally(() => setLoading(false));
   };
 
+  // Rafraîchit aussi la liste du personnel à chaque tour, pour que le
+  // point vert de présence reste à jour sans que quiconque ait besoin
+  // de rouvrir la messagerie.
   useEffect(() => {
-    load(true);
-    const interval = setInterval(() => load(false), 8000);
-    return () => clearInterval(interval);
+    fetchPersonnel().then(setPersonnel);
+    const presenceInterval = setInterval(() => fetchPersonnel().then(setPersonnel), 15000);
+    return () => clearInterval(presenceInterval);
   }, []);
+
+  useEffect(() => {
+    setLoading(true);
+    load(true);
+    const interval = setInterval(() => load(false), 6000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [destinataire]);
 
   const envoyer = async (e) => {
     e.preventDefault();
@@ -206,7 +219,7 @@ function MessagerieInterneModal({ onClose, currentUserId }) {
     setEnvoi(true);
     setTexte('');
     try {
-      const message = await envoyerMessageInterne(body);
+      const message = await envoyerMessageInterne(body, destinataire?.id);
       setMessages((prev) => [...prev, message]);
       scrollToBottom();
     } finally {
@@ -215,6 +228,7 @@ function MessagerieInterneModal({ onClose, currentUserId }) {
   };
 
   const roleLabel = { operateur: 'Opérateur', superviseur: 'Gestionnaire', directeur: 'Directeur', caissier: 'Caissière' };
+  const initiales = (nom) => nom.trim().split(/\s+/).slice(0, 2).map((p) => p[0]).join('').toUpperCase();
 
   return (
     <div
@@ -225,16 +239,66 @@ function MessagerieInterneModal({ onClose, currentUserId }) {
       onClick={onClose}
     >
       <div
-        style={{ background: '#fff', borderRadius: 16, width: 440, maxWidth: '92vw', height: 560, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+        style={{ background: '#fff', borderRadius: 16, width: 460, maxWidth: '92vw', height: 600, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: `1px solid ${colors.line}` }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px 12px' }}>
           <p style={{ margin: 0, fontSize: 15, fontWeight: 600, color: colors.ink, fontFamily: fonts.display }}>
-            Messagerie interne
+            {destinataire ? destinataire.full_name : 'Messagerie interne'}
           </p>
           <button onClick={onClose} style={{ border: 'none', background: 'transparent', cursor: 'pointer' }}>
             <X size={18} color={colors.muted} />
           </button>
+        </div>
+
+        {/* Sélecteur de contact : toute l'équipe, ou une personne précise */}
+        <div style={{ display: 'flex', gap: 10, padding: '0 20px 14px', overflowX: 'auto', borderBottom: `1px solid ${colors.line}` }}>
+          <button
+            onClick={() => setDestinataire(null)}
+            style={{ border: 'none', background: 'transparent', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, flexShrink: 0 }}
+            title="Toute l'équipe"
+          >
+            <div style={{
+              width: 40, height: 40, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: !destinataire ? colors.forest : colors.forestPale,
+              border: !destinataire ? `2px solid ${colors.gold}` : '2px solid transparent',
+            }}>
+              <Users size={17} color={!destinataire ? '#fff' : colors.forestLight} />
+            </div>
+            <span style={{ fontSize: 9, color: !destinataire ? colors.ink : colors.muted, fontFamily: fonts.body, fontWeight: !destinataire ? 600 : 400 }}>
+              Équipe
+            </span>
+          </button>
+
+          {personnel.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => setDestinataire(p)}
+              style={{ border: 'none', background: 'transparent', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, flexShrink: 0 }}
+              title={`${p.full_name}${p.en_ligne ? ' — en ligne' : ''}`}
+            >
+              <div style={{ position: 'relative' }}>
+                <div style={{
+                  width: 40, height: 40, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: destinataire?.id === p.id ? colors.forest : colors.forestPale,
+                  border: destinataire?.id === p.id ? `2px solid ${colors.gold}` : '2px solid transparent',
+                }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: destinataire?.id === p.id ? '#fff' : colors.forestLight, fontFamily: fonts.body }}>
+                    {initiales(p.full_name)}
+                  </span>
+                </div>
+                {p.en_ligne && (
+                  <div style={{
+                    position: 'absolute', bottom: 0, right: 0, width: 11, height: 11, borderRadius: '50%',
+                    background: '#3CB371', border: '2px solid #fff',
+                  }} />
+                )}
+              </div>
+              <span style={{ fontSize: 9, color: destinataire?.id === p.id ? colors.ink : colors.muted, fontFamily: fonts.body, fontWeight: destinataire?.id === p.id ? 600 : 400, maxWidth: 48, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {p.full_name.split(' ')[0]}
+              </span>
+            </button>
+          ))}
         </div>
 
         <div ref={listRef} style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -242,7 +306,7 @@ function MessagerieInterneModal({ onClose, currentUserId }) {
             <p style={{ fontSize: 12, color: colors.muted, fontFamily: fonts.body, textAlign: 'center' }}>Chargement…</p>
           ) : messages.length === 0 ? (
             <p style={{ fontSize: 12, color: colors.muted, fontFamily: fonts.body, textAlign: 'center' }}>
-              Aucun message pour le moment — écrivez au reste de l'équipe.
+              {destinataire ? `Aucun message avec ${destinataire.full_name} pour le moment.` : "Aucun message pour le moment — écrivez au reste de l'équipe."}
             </p>
           ) : (
             messages.map((m) => {
@@ -278,7 +342,7 @@ function MessagerieInterneModal({ onClose, currentUserId }) {
           <input
             value={texte}
             onChange={(e) => setTexte(e.target.value)}
-            placeholder="Écrire à l'équipe…"
+            placeholder={destinataire ? `Écrire à ${destinataire.full_name.split(' ')[0]}…` : "Écrire à l'équipe…"}
             style={{ flex: 1, padding: '10px 12px', borderRadius: 20, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.body }}
           />
           <button

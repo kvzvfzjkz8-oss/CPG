@@ -29,7 +29,7 @@ export async function requireAuth(req, _res, next) {
     }
 
     const { rows } = await query(
-      'SELECT id, full_name, role, status, client_number, job_title, created_at FROM users WHERE id = $1',
+      'SELECT id, full_name, role, status, client_number, job_title, created_at, last_active_at FROM users WHERE id = $1',
       [payload.sub]
     );
     const user = rows[0];
@@ -37,6 +37,20 @@ export async function requireAuth(req, _res, next) {
     if (!user) throw new ApiError(401, 'Compte introuvable.');
     if (user.status !== 'actif') {
       throw new ApiError(403, 'Ce compte est suspendu. Contactez votre agence.');
+    }
+
+    // Présence pour la messagerie interne — seulement le personnel, et
+    // au plus une écriture toutes les 30 secondes : la mettre à jour à
+    // chaque requête ferait beaucoup d'écritures inutiles pour un
+    // indicateur qui n'a besoin d'être précis qu'à la minute près.
+    // Fire-and-forget : une requête plus lente sur ce point n'a aucune
+    // raison de ralentir la réponse au client.
+    if (user.role !== 'client') {
+      const dejaRecent = user.last_active_at
+        && Date.now() - new Date(user.last_active_at).getTime() < 30000;
+      if (!dejaRecent) {
+        query('UPDATE users SET last_active_at = now() WHERE id = $1', [user.id]).catch(() => {});
+      }
     }
 
     req.user = user;

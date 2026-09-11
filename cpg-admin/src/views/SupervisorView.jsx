@@ -16,7 +16,7 @@ import {
   fetchDemandesCaisseEnAttente, validerOperationCaisse, rejeterOperationCaisse,
   fetchAuditLog, fetchCaissePrincipale, alimenterCaissePrincipale,
   simulateCredit, fetchProducts, creerDemandePourClient, searchClientPourDemande,
-  fetchCreditApprouvePourClient, ouvrirContratCredit,
+  fetchCreditApprouvePourClient, ouvrirContratCredit, ouvrirBrouillardCaisse,
 } from '../api/adminApi';
 import { can } from '../auth/roles';
 import CatalogView from './CatalogView';
@@ -767,6 +767,72 @@ function CaissePrincipalePanel() {
   );
 }
 
+function BrouillardPanel() {
+  const [caissieres, setCaissieres] = useState([]);
+  const [caissierId, setCaissierId] = useState('');
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    fetchUsers().then((list) => setCaissieres(list.filter((u) => u.role === 'caissier')));
+  }, []);
+
+  const generer = async () => {
+    if (!caissierId) return;
+    setBusy(true);
+    setError('');
+    try {
+      const nom = caissieres.find((c) => c.id === caissierId)?.full_name ?? 'caissiere';
+      await ouvrirBrouillardCaisse(caissierId, date, nom.replace(/\s+/g, '-'));
+    } catch (err) {
+      setError(err.message ?? 'Le brouillard n\'a pas pu être généré.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card style={{ padding: 20, marginBottom: 16 }}>
+      <p style={{ margin: '0 0 4px', fontSize: 14, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
+        Brouillard de caisse
+      </p>
+      <p style={{ margin: '0 0 16px', fontSize: 12, color: colors.muted, fontFamily: fonts.body }}>
+        Relevé quotidien d'une caissière, pour archive — à générer et imprimer chaque soir.
+      </p>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: 200 }}>
+          <label style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>Caissière</label>
+          <select
+            value={caissierId} onChange={(e) => setCaissierId(e.target.value)}
+            style={{ width: '100%', padding: '10px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.body, marginTop: 6 }}
+          >
+            <option value="">Choisir…</option>
+            {caissieres.map((c) => (
+              <option key={c.id} value={c.id}>{c.full_name}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>Date</label>
+          <input
+            type="date" value={date} onChange={(e) => setDate(e.target.value)}
+            style={{ padding: '10px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.body, marginTop: 6 }}
+          />
+        </div>
+        <button
+          onClick={generer}
+          disabled={!caissierId || busy}
+          style={{ ...actionBtn(colors.forest, '#fff'), opacity: !caissierId ? 0.5 : 1 }}
+        >
+          {busy ? 'Génération…' : 'Générer le brouillard'}
+        </button>
+      </div>
+      {error && <p style={{ margin: '10px 0 0', fontSize: 12, color: colors.danger, fontFamily: fonts.body }}>{error}</p>}
+    </Card>
+  );
+}
+
 function CaisseValidation() {
   const [demandes, setDemandes] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -818,6 +884,7 @@ function CaisseValidation() {
   return (
     <div>
       <CaissePrincipalePanel />
+      <BrouillardPanel />
 
       {toast && (
         <div style={{

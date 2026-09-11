@@ -970,17 +970,59 @@ router.get('/audit', requirePermission('audit.lire'), async (req, res, next) => 
 });
 
 /* ═══════════════════════════════════════════════════════════════════
-   MESSAGERIE INTERNE — un canal partagé pour tout le personnel
+   MESSAGERIE INTERNE — canal d'équipe, ou message ciblé à une personne
    ═══════════════════════════════════════════════════════════════════ */
 
-router.get('/messages-internes', requirePermission('messagerie_interne.acceder'), async (req, res, next) => {
+/**
+ * GET /admin/personnel — liste du personnel pour la messagerie, avec
+ * présence en ligne (actif dans les deux dernières minutes). Exclut
+ * la personne connectée : elle n'a pas besoin de se voir dans sa
+ * propre liste de contacts.
+ */
+router.get('/personnel', requirePermission('messagerie_interne.acceder'), async (req, res, next) => {
   try {
     const { rows } = await query(
-      `SELECT m.id, m.body, m.created_at, m.sender_id, u.full_name AS expediteur, u.role AS expediteur_role
-       FROM staff_messages m
-       JOIN users u ON u.id = m.sender_id
-       ORDER BY m.created_at DESC
-       LIMIT 100`
+      `SELECT id, full_name, role,
+              (last_active_at IS NOT NULL AND last_active_at > now() - interval '2 minutes') AS en_ligne
+       FROM users
+       WHERE role <> 'client' AND status = 'actif' AND id <> $1
+       ORDER BY en_ligne DESC, full_name`,
+      [req.user.id]
+    );
+    res.json({ personnel: rows });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /admin/messages-internes?avec=<userId> — sans le paramètre,
+ * les 100 derniers messages du canal d'équipe. Avec, les 100 derniers
+ * messages du fil privé entre la personne connectée et ce
+ * destinataire précis — jamais mélangés entre eux.
+ */
+router.get('/messages-internes', requirePermission('messagerie_interne.acceder'), async (req, res, next) => {
+  try {
+    const avec = req.query.avec ? String(req.query.avec) : null;
+
+    const { rows } = await query(
+      avec
+        ? `SELECT m.id, m.body, m.created_at, m.sender_id, m.recipient_id,
+                  u.full_name AS expediteur, u.role AS expediteur_role
+           FROM staff_messages m
+           JOIN users u ON u.id = m.sender_id
+           WHERE (m.sender_id = $1 AND m.recipient_id = $2)
+              OR (m.sender_id = $2 AND m.recipient_id = $1)
+           ORDER BY m.created_at DESC
+           LIMIT 100`
+        : `SELECT m.id, m.body, m.created_at, m.sender_id, m.recipient_id,
+                  u.full_name AS expediteur, u.role AS expediteur_role
+           FROM staff_messages m
+           JOIN users u ON u.id = m.sender_id
+           WHERE m.recipient_id IS NULL
+           ORDER BY m.created_at DESC
+           LIMIT 100`,
+      avec ? [req.user.id, avec] : []
     );
     res.json({ messages: rows.reverse() });
   } catch (error) {
@@ -991,14 +1033,18 @@ router.get('/messages-internes', requirePermission('messagerie_interne.acceder')
 router.post(
   '/messages-internes',
   requirePermission('messagerie_interne.acceder'),
-  validate(z.object({ body: z.string().min(1).max(2000) })),
+  validate(z.object({
+    body: z.string().min(1).max(2000),
+    recipientId: z.string().uuid().optional(),
+  })),
   async (req, res, next) => {
     try {
       const { rows } = await query(
-        `INSERT INTO staff_messages (sender_id, body) VALUES ($1, $2)
-         RETURNING id, body, created_at, sender_id`,
-        [req.user.id, req.body.body]
+        `INSERT INTO staff_messages (sender_id, recipient_id, body) VALUES ($1, $2, $3)
+         RETURNING id, body, created_at, sender_id, recipient_id`,
+        [req.user.id, req.body.recipientId ?? null, req.body.body]
       );
+
       res.status(201).json({ ...rows[0], expediteur: req.user.full_name, expediteur_role: req.user.role });
     } catch (error) {
       next(error);

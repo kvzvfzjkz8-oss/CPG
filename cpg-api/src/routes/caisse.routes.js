@@ -6,6 +6,7 @@ import { validate } from '../middleware/validate.js';
 import { ApiError } from '../middleware/errorHandler.js';
 import { notifyUser } from '../services/pushService.js';
 import { audit } from '../services/auditService.js';
+import { genererBrouillardPDF } from '../services/brouillardService.js';
 
 /**
  * ═══════════════════════════════════════════════════════════════════
@@ -655,6 +656,72 @@ router.post(
       });
 
       res.json(rows[0]);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * GET /caisse/brouillard?caissierId=...&date=AAAA-MM-JJ — relevé
+ * quotidien d'une caissière en PDF, pour archive. Réservé au
+ * directeur : c'est lui qui vérifie et conserve l'historique de
+ * chaque caisse, jour après jour.
+ */
+router.get(
+  '/brouillard',
+  requirePermission('caisse.gerer_principale'),
+  validate(z.object({
+    caissierId: z.string().uuid(),
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Format attendu : AAAA-MM-JJ'),
+  }), 'query'),
+  async (req, res, next) => {
+    try {
+      const { caissierId, date } = req.query;
+
+      const { rows: caissiereRows } = await query(
+        `SELECT full_name FROM users WHERE id = $1 AND role = 'caissier'`,
+        [caissierId]
+      );
+      if (!caissiereRows[0]) throw new ApiError(404, 'Caissière introuvable.');
+
+      // Solde juste avant le premier mouvement du jour demandé —
+      // c'est le solde d'ouverture du brouillard.
+      const { rows: ouvertureRows } = await query(
+        `SELECT COALESCE(SUM(CASE WHEN type IN ('appro', 'encaissement_client') THEN montant ELSE 0 END), 0)
+                - COALESCE(SUM(CASE WHEN type IN ('retrait_client', 'depense', 'retour_excedent') THEN montant ELSE 0 END), 0)
+                AS solde
+         FROM caisse_operations
+         WHERE caissier_id = $1 AND statut = 'validee' AND demandee_le::date < $2::date`,
+        [caissierId, date]
+      );
+      const soldeOuverture = Number(ouvertureRows[0]?.solde ?? 0);
+
+      const { rows: operations } = await query(
+        `SELECT type, montant, demandee_le, decidee_le
+         FROM caisse_operations
+         WHERE caissier_id = $1 AND statut = 'validee' AND demandee_le::date = $2::date
+         ORDER BY demandee_le`,
+        [caissierId, date]
+      );
+
+      await audit(req, {
+        action: 'caisse.brouillard_genere',
+        entityType: 'user',
+        entityId: caissierId,
+        metadata: { date },
+      });
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="Brouillard-${date}.pdf"`);
+
+      const doc = genererBrouillardPDF({
+        caissiere: caissiereRows[0].full_name,
+        date,
+        soldeOuverture,
+        operations,
+      });
+      doc.pipe(res);
     } catch (error) {
       next(error);
     }
