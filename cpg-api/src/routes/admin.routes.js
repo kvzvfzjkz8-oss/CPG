@@ -885,6 +885,48 @@ router.post(
   }
 );
 
+/**
+ * POST /admin/utilisateurs/:id/reinitialiser-mot-de-passe — remet le
+ * mot de passe standard de démonstration pour un employé qui a
+ * changé le sien et l'a oublié. Révoque aussi ses sessions en cours,
+ * comme pour le PIN client — pas de session valide qui continuerait
+ * à tourner avec l'ancien mot de passe après coup.
+ */
+router.post(
+  '/utilisateurs/:id/reinitialiser-mot-de-passe',
+  requirePermission('utilisateurs.gerer'),
+  async (req, res, next) => {
+    try {
+      const nouveauMotDePasse = 'MotDePasseDemo2026!';
+      const passwordHash = await bcrypt.hash(nouveauMotDePasse, 12);
+
+      const { rows } = await query(
+        `UPDATE users
+         SET password_hash = $2
+         WHERE id = $1 AND role <> 'client'
+         RETURNING id, full_name, email`,
+        [req.params.id, passwordHash]
+      );
+      if (!rows[0]) throw new ApiError(404, 'Employé introuvable.');
+
+      await query(
+        'UPDATE refresh_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL',
+        [req.params.id]
+      );
+
+      await audit(req, {
+        action: 'utilisateur.mot_de_passe_reinitialise',
+        entityType: 'user',
+        entityId: rows[0].id,
+      });
+
+      res.json({ id: rows[0].id, fullName: rows[0].full_name, email: rows[0].email });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
 /* ═══════════════════════════════════════════════════════════════════
    SUPERVISION MOBILE MONEY
    ═══════════════════════════════════════════════════════════════════ */

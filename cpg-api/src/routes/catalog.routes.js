@@ -11,7 +11,7 @@ import {
 } from '../services/productService.js';
 import {
   listAllFees, listActiveFees, getFeeHistory, createFee,
-  requestFeeScaleChange, applyFeeVersion, setFeeStatus, runAgiosBatch,
+  requestFeeScaleChange, applyFeeVersion, setFeeStatus, runAgiosBatch, runTenueCompteBatch,
 } from '../services/feeService.js';
 
 const router = Router();
@@ -476,5 +476,77 @@ router.get('/frais-preleves', requirePermission('catalogue.lire'), async (req, r
     next(error);
   }
 });
+
+/**
+ * GET /catalogue/agios/compte — le "compte agios" : total cumulé de
+ * tous les agios jamais prélevés sur solde débiteur, tous clients
+ * confondus, depuis le début. Un compteur d'entreprise, pas un solde
+ * client — distinct de la caisse principale et des comptes clients.
+ */
+router.get('/agios/compte', requirePermission('frais.appliquer'), async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      `SELECT COALESCE(SUM(af.amount), 0) AS total, COUNT(*) AS nombre_prelevements
+       FROM applied_fees af
+       JOIN fee_versions fv ON fv.id = af.fee_version_id
+       JOIN fee_definitions f ON f.id = fv.fee_id
+       WHERE f.code = 'AGIOS_DECOUVERT'`
+    );
+    res.json({ total: Number(rows[0].total), nombrePrelevements: Number(rows[0].nombre_prelevements) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+   PRÉLÈVEMENT DES FRAIS DE TENUE DE COMPTE
+   ═══════════════════════════════════════════════════════════════════ */
+
+router.post(
+  '/tenue-compte/executer',
+  requirePermission('frais.appliquer'),
+  validate(
+    z.object({
+      debut: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      fin: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    })
+  ),
+  async (req, res, next) => {
+    try {
+      const result = await runTenueCompteBatch({
+        periodStart: req.body.debut,
+        periodEnd: req.body.fin,
+      });
+
+      await audit(req, {
+        action: 'tenue_compte.prelevee',
+        entityType: 'periode',
+        entityId: `${req.body.debut}_${req.body.fin}`,
+        metadata: { comptes: result.applied, total: result.total },
+      });
+
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/** Le "compte frais de tenue" — total cumulé, tous clients confondus, depuis toujours. */
+router.get('/tenue-compte/compte', requirePermission('frais.appliquer'), async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      `SELECT COALESCE(SUM(af.amount), 0) AS total, COUNT(*) AS nombre_prelevements
+       FROM applied_fees af
+       JOIN fee_versions fv ON fv.id = af.fee_version_id
+       JOIN fee_definitions f ON f.id = fv.fee_id
+       WHERE f.code = 'FRAIS_TENUE'`
+    );
+    res.json({ total: Number(rows[0].total), nombrePrelevements: Number(rows[0].nombre_prelevements) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 
 export default router;

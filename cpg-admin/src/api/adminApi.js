@@ -58,6 +58,19 @@ export async function ouvrirBrouillardCaisse(caissierId, date, nomCaissiere) {
   setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
+/** Télécharge le justificatif joint à une demande de caisse. */
+export async function ouvrirJustificatifCaisse(operationId) {
+  const blob = await apiRequestBlob(`/v1/caisse/operations/${operationId}/justificatif`);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Justificatif-${operationId}`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
 /** Dossier complet, avec pièces justificatives et échéancier. */
 export async function fetchCreditDetail(creditId) {
   return apiRequest(`/v1/admin/credits/${creditId}`);
@@ -293,6 +306,21 @@ export async function runAgiosBatch(debut, fin) {
 export async function fetchAppliedFees() {
   const { operations } = await apiRequest('/v1/admin/catalogue/frais-preleves');
   return operations;
+}
+
+/** Le "compte agios" — total cumulé de tous les agios jamais prélevés, tous clients confondus. */
+export async function fetchCompteAgios() {
+  return apiRequest('/v1/admin/catalogue/agios/compte');
+}
+
+/** Lancement du prélèvement des frais de tenue de compte sur une période donnée. */
+export async function runTenueCompteBatch(debut, fin) {
+  return apiRequest('/v1/admin/catalogue/tenue-compte/executer', { method: 'POST', body: { debut, fin } });
+}
+
+/** Le "compte frais de tenue" — total cumulé, tous clients confondus. */
+export async function fetchCompteTenue() {
+  return apiRequest('/v1/admin/catalogue/tenue-compte/compte');
 }
 
 /**
@@ -567,16 +595,26 @@ export async function fetchMesOperationsCaisse() {
 }
 
 /** Dépose une demande de retrait guichet pour un client. */
-export async function demanderRetraitCaisse(clientId, montant, motif, modePaiement = 'especes', telephonePaiement) {
-  return apiRequest('/v1/caisse/retraits', {
-    method: 'POST',
-    body: { clientId, montant, motif, modePaiement, telephonePaiement },
-  });
+export async function demanderRetraitCaisse(clientId, montant, motif, modePaiement = 'especes', telephonePaiement, justifie = false, fichier = null) {
+  const form = new FormData();
+  form.append('clientId', clientId);
+  form.append('montant', montant);
+  if (motif) form.append('motif', motif);
+  form.append('modePaiement', modePaiement);
+  if (telephonePaiement) form.append('telephonePaiement', telephonePaiement);
+  form.append('justifie', justifie);
+  if (fichier) form.append('justificatif', fichier);
+  return apiRequest('/v1/caisse/retraits', { method: 'POST', body: form, isFormData: true });
 }
 
 /** Demande un réapprovisionnement de sa caisse. */
-export async function demanderApproCaisse(montant, motif) {
-  return apiRequest('/v1/caisse/appro', { method: 'POST', body: { montant, motif } });
+export async function demanderApproCaisse(montant, motif, justifie = false, fichier = null) {
+  const form = new FormData();
+  form.append('montant', montant);
+  if (motif) form.append('motif', motif);
+  form.append('justifie', justifie);
+  if (fichier) form.append('justificatif', fichier);
+  return apiRequest('/v1/caisse/appro', { method: 'POST', body: form, isFormData: true });
 }
 
 /** RIB imprimable : nom, numéro de compte, gestionnaire. */
@@ -617,13 +655,24 @@ export async function alimenterCaissePrincipale(montant, motif) {
 }
 
 /** Caissière : dépense de fonctionnement (pas un client), soumise à validation. */
-export async function demanderDepenseCaisse(montant, motif) {
-  return apiRequest('/v1/caisse/depenses', { method: 'POST', body: { montant, motif } });
+export async function demanderDepenseCaisse(montant, motif, justifie = false, fichier = null) {
+  const form = new FormData();
+  form.append('montant', montant);
+  form.append('motif', motif);
+  form.append('justifie', justifie);
+  if (fichier) form.append('justificatif', fichier);
+  return apiRequest('/v1/caisse/depenses', { method: 'POST', body: form, isFormData: true });
 }
 
 /** Caissière : un client dépose des espèces — appliqué immédiatement. */
-export async function encaisserClient(clientId, montant, motif) {
-  return apiRequest('/v1/caisse/encaissements', { method: 'POST', body: { clientId, montant, motif } });
+export async function encaisserClient(clientId, montant, motif, justifie = false, fichier = null) {
+  const form = new FormData();
+  form.append('clientId', clientId);
+  form.append('montant', montant);
+  if (motif) form.append('motif', motif);
+  form.append('justifie', justifie);
+  if (fichier) form.append('justificatif', fichier);
+  return apiRequest('/v1/caisse/encaissements', { method: 'POST', body: form, isFormData: true });
 }
 
 /** Caissière : consulte si elle a déjà clôturé aujourd'hui, et le montant de base attendu. */

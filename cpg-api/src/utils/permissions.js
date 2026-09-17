@@ -48,6 +48,12 @@ export const PERMISSIONS = {
     'messagerie.repondre',
     'catalogue.lire_public',
 
+    // Récupération des agios sur solde débiteur — l'opérateur programme
+    // le prélèvement pour tous les clients actifs, avec ou sans fonds
+    // disponibles : l'agio est dû dès qu'il est constaté, le compte se
+    // rétablit dès qu'un dépôt arrive ensuite.
+    'frais.appliquer',
+
     // Déposer une demande au nom d'un client, au guichet ou par
     // téléphone — mêmes règles que si le client l'avait soumise
     // lui-même depuis l'application.

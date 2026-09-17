@@ -16,7 +16,7 @@ import {
   fetchDemandesCaisseEnAttente, validerOperationCaisse, rejeterOperationCaisse,
   fetchAuditLog, fetchCaissePrincipale, alimenterCaissePrincipale,
   simulateCredit, fetchProducts, creerDemandePourClient, searchClientPourDemande,
-  fetchCreditApprouvePourClient, ouvrirContratCredit, ouvrirBrouillardCaisse,
+  fetchCreditApprouvePourClient, ouvrirContratCredit, ouvrirBrouillardCaisse, ouvrirJustificatifCaisse,
 } from '../api/adminApi';
 import { can } from '../auth/roles';
 import CatalogView from './CatalogView';
@@ -911,12 +911,28 @@ function CaisseValidation() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-                  <Badge tone={d.type === 'appro' ? 'gold' : 'neutral'}>
-                    {d.type === 'appro' ? 'Réapprovisionnement' : 'Retrait guichet'}
+                  <Badge tone={d.type === 'appro' ? 'gold' : d.type === 'depense' ? 'danger' : 'neutral'}>
+                    {d.type === 'appro' ? 'Réapprovisionnement' : d.type === 'depense' ? 'Dépense' : 'Retrait guichet'}
                   </Badge>
                   <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>
                     {d.caissier}
                   </p>
+                  {d.justifie && d.a_un_fichier ? (
+                    <button
+                      onClick={() => ouvrirJustificatifCaisse(d.id)}
+                      style={{ border: 'none', background: colors.forestPale, color: colors.forestLight, borderRadius: 6, padding: '2px 8px', fontSize: 10, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer' }}
+                    >
+                      📎 Justificatif
+                    </button>
+                  ) : d.justifie ? (
+                    <span style={{ fontSize: 10, color: colors.muted, fontFamily: fonts.body, fontStyle: 'italic' }}>
+                      Justifiée (sans fichier)
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: 10, color: colors.danger, fontFamily: fonts.body, fontStyle: 'italic' }}>
+                      Non justifiée
+                    </span>
+                  )}
                 </div>
                 {d.client && (
                   <p style={{ margin: 0, fontSize: 12, color: colors.muted, fontFamily: fonts.body }}>

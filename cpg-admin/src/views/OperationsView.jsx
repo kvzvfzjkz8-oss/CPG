@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Upload, ShieldCheck, CalendarClock, FileWarning, Check, X, Undo2, Search, Pencil, Clock,
 } from 'lucide-react';
@@ -7,7 +7,7 @@ import { Card, Badge, Tabs, SectionTitle } from '../components/UI';
 import {
   previewSalaryImport, confirmSalaryImport, fetchMonthlyReport, fetchTransactions,
   reverseLedgerTransaction, fetchInstallmentsByReference, proposeInstallmentAdjustment,
-  fetchSchedulerStatus,
+  fetchSchedulerStatus, runAgiosBatch, fetchCompteAgios, runTenueCompteBatch, fetchCompteTenue,
 } from '../api/adminApi';
 
 const input = {
@@ -412,6 +412,8 @@ function Verification() {
       </Card>
 
       {scheduler && <SchedulerStatus scheduler={scheduler} />}
+      <AgiosManualPanel />
+      <TenueCompteManualPanel />
 
       {report && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
@@ -497,6 +499,217 @@ function Verification() {
 }
 
 /**
+ * Récupération manuelle des agios, à la demande de l'opérateur —
+ * en plus de la collecte automatique du 30 du mois. Prélève, avec ou
+ * sans fonds disponibles sur le compte : l'agio est dû dès qu'il est
+ * constaté, le compte se rétablit dès qu'un dépôt arrive ensuite.
+ * Affiche aussi le « compte agios » : le cumul, depuis toujours, de
+ * tous les agios prélevés, tous clients confondus.
+ */
+function AgiosManualPanel() {
+  const [compte, setCompte] = useState(null);
+  const [debut, setDebut] = useState('');
+  const [fin, setFin] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [resultat, setResultat] = useState('');
+  const [error, setError] = useState('');
+
+  const chargerCompte = () => {
+    fetchCompteAgios().then(setCompte).catch(() => {});
+  };
+
+  useEffect(() => { chargerCompte(); }, []);
+
+  const executer = async () => {
+    if (!debut || !fin) return;
+    setBusy(true);
+    setError('');
+    setResultat('');
+    try {
+      const res = await runAgiosBatch(debut, fin);
+      setResultat(
+        res.applied > 0
+          ? `${res.applied} compte${res.applied > 1 ? 's' : ''} prélevé${res.applied > 1 ? 's' : ''} — ${formatFCFA(res.total)} F au total.`
+          : res.message ?? 'Aucun compte débiteur sur cette période.'
+      );
+      chargerCompte();
+    } catch (err) {
+      setError(err.message ?? 'La récupération a échoué.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card style={{ padding: 20, marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 16 }}>
+        <div>
+          <p style={{ margin: '0 0 4px', fontSize: 14, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
+            Récupération des agios
+          </p>
+          <p style={{ margin: 0, fontSize: 12, color: colors.muted, fontFamily: fonts.body, maxWidth: 420 }}>
+            Prélève les agios de tous les comptes débiteurs sur la période choisie, avec ou sans fonds
+            disponibles — le compte se rétablit dès qu'un dépôt arrive.
+          </p>
+        </div>
+        {compte && (
+          <div style={{ textAlign: 'right' }}>
+            <p style={{ margin: 0, fontSize: 10, color: colors.muted, fontFamily: fonts.body, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+              Compte agios — cumul total
+            </p>
+            <p style={{ margin: '3px 0 0', fontSize: 20, fontWeight: 700, color: colors.forest, fontFamily: fonts.mono }}>
+              {formatFCFA(compte.total)} F
+            </p>
+            <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+              {compte.nombrePrelevements} prélèvement{compte.nombrePrelevements > 1 ? 's' : ''} depuis toujours
+            </p>
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', marginTop: 16 }}>
+        <div>
+          <label style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>Début de période</label>
+          <input
+            type="date" value={debut} onChange={(e) => setDebut(e.target.value)}
+            style={{ display: 'block', padding: '9px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.body, marginTop: 6 }}
+          />
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>Fin de période</label>
+          <input
+            type="date" value={fin} onChange={(e) => setFin(e.target.value)}
+            style={{ display: 'block', padding: '9px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.body, marginTop: 6 }}
+          />
+        </div>
+        <button
+          onClick={executer}
+          disabled={!debut || !fin || busy}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6, padding: '10px 16px', borderRadius: 9, border: 'none',
+            background: colors.forest, color: '#fff', fontSize: 12, fontWeight: 600, fontFamily: fonts.body,
+            cursor: 'pointer', opacity: !debut || !fin ? 0.5 : 1,
+          }}
+        >
+          {busy ? 'Récupération…' : 'Récupérer les agios'}
+        </button>
+      </div>
+
+      {resultat && (
+        <p style={{ margin: '12px 0 0', fontSize: 12, color: colors.forestLight, fontFamily: fonts.body }}>{resultat}</p>
+      )}
+      {error && (
+        <p style={{ margin: '12px 0 0', fontSize: 12, color: colors.danger, fontFamily: fonts.body }}>{error}</p>
+      )}
+    </Card>
+  );
+}
+
+/**
+ * Récupération manuelle des frais de tenue de compte — même principe
+ * que les agios : prélevé même sans fonds suffisants, la période sert
+ * uniquement à empêcher un double prélèvement le même mois.
+ */
+function TenueCompteManualPanel() {
+  const [compte, setCompte] = useState(null);
+  const [debut, setDebut] = useState('');
+  const [fin, setFin] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [resultat, setResultat] = useState('');
+  const [error, setError] = useState('');
+
+  const chargerCompte = () => {
+    fetchCompteTenue().then(setCompte).catch(() => {});
+  };
+
+  useEffect(() => { chargerCompte(); }, []);
+
+  const executer = async () => {
+    if (!debut || !fin) return;
+    setBusy(true);
+    setError('');
+    setResultat('');
+    try {
+      const res = await runTenueCompteBatch(debut, fin);
+      setResultat(
+        res.applied > 0
+          ? `${res.applied} compte${res.applied > 1 ? 's' : ''} prélevé${res.applied > 1 ? 's' : ''} — ${formatFCFA(res.total)} F au total.`
+          : res.message ?? 'Tous les comptes ont déjà été prélevés sur cette période.'
+      );
+      chargerCompte();
+    } catch (err) {
+      setError(err.message ?? 'La récupération a échoué.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card style={{ padding: 20, marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 16 }}>
+        <div>
+          <p style={{ margin: '0 0 4px', fontSize: 14, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
+            Frais de tenue de compte
+          </p>
+          <p style={{ margin: 0, fontSize: 12, color: colors.muted, fontFamily: fonts.body, maxWidth: 420 }}>
+            Prélève le forfait mensuel de tous les clients actifs sur la période choisie, avec ou sans fonds
+            disponibles — un compte n'est jamais prélevé deux fois sur la même période.
+          </p>
+        </div>
+        {compte && (
+          <div style={{ textAlign: 'right' }}>
+            <p style={{ margin: 0, fontSize: 10, color: colors.muted, fontFamily: fonts.body, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+              Compte frais de tenue — cumul total
+            </p>
+            <p style={{ margin: '3px 0 0', fontSize: 20, fontWeight: 700, color: colors.forest, fontFamily: fonts.mono }}>
+              {formatFCFA(compte.total)} F
+            </p>
+            <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+              {compte.nombrePrelevements} prélèvement{compte.nombrePrelevements > 1 ? 's' : ''} depuis toujours
+            </p>
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', marginTop: 16 }}>
+        <div>
+          <label style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>Début de période</label>
+          <input
+            type="date" value={debut} onChange={(e) => setDebut(e.target.value)}
+            style={{ display: 'block', padding: '9px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.body, marginTop: 6 }}
+          />
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>Fin de période</label>
+          <input
+            type="date" value={fin} onChange={(e) => setFin(e.target.value)}
+            style={{ display: 'block', padding: '9px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.body, marginTop: 6 }}
+          />
+        </div>
+        <button
+          onClick={executer}
+          disabled={!debut || !fin || busy}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6, padding: '10px 16px', borderRadius: 9, border: 'none',
+            background: colors.forest, color: '#fff', fontSize: 12, fontWeight: 600, fontFamily: fonts.body,
+            cursor: 'pointer', opacity: !debut || !fin ? 0.5 : 1,
+          }}
+        >
+          {busy ? 'Récupération…' : 'Récupérer les frais de tenue'}
+        </button>
+      </div>
+
+      {resultat && (
+        <p style={{ margin: '12px 0 0', fontSize: 12, color: colors.forestLight, fontFamily: fonts.body }}>{resultat}</p>
+      )}
+      {error && (
+        <p style={{ margin: '12px 0 0', fontSize: 12, color: colors.danger, fontFamily: fonts.body }}>{error}</p>
+      )}
+    </Card>
+  );
+}
+
+/**
  * Indicateur de ce que le logiciel a fait tout seul : dernière collecte
  * automatique des échéances (chaque jour) et des agios (le 30 du mois).
  * C'est ce qui permet à l'opérateur de vérifier d'un coup d'œil que
@@ -511,7 +724,7 @@ function SchedulerStatus({ scheduler }) {
   };
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 16 }}>
       <Card style={{ padding: 14, display: 'flex', alignItems: 'center', gap: 12 }}>
         <div style={{
           width: 34, height: 34, borderRadius: 17, background: colors.forestPale,
@@ -552,6 +765,28 @@ function SchedulerStatus({ scheduler }) {
           {scheduler.agios?.derniereExecution && (
             <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
               {scheduler.agios.comptes ?? 0} compte{(scheduler.agios.comptes ?? 0) > 1 ? 's' : ''} · {formatFCFA(scheduler.agios.total ?? 0)} F
+            </p>
+          )}
+        </div>
+      </Card>
+
+      <Card style={{ padding: 14, display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{
+          width: 34, height: 34, borderRadius: 17, background: colors.forestPale,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+        }}>
+          <Clock size={16} color={colors.forestLight} />
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <p style={{ margin: 0, fontSize: 10, color: colors.muted, fontFamily: fonts.body, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+            Frais de tenue — prélèvement mensuel (le 1er, 3h)
+          </p>
+          <p style={{ margin: '3px 0 0', fontSize: 12, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
+            Dernière exécution : {formatWhen(scheduler.tenueCompte?.derniereExecution)}
+          </p>
+          {scheduler.tenueCompte?.derniereExecution && (
+            <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+              {scheduler.tenueCompte.comptes ?? 0} compte{(scheduler.tenueCompte.comptes ?? 0) > 1 ? 's' : ''} · {formatFCFA(scheduler.tenueCompte.total ?? 0)} F
             </p>
           )}
         </div>

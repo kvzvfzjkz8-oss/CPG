@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import multer from 'multer';
 import { z } from 'zod';
 import { query, withTransaction } from '../db/index.js';
 import { requireAuth, requirePermission } from '../middleware/auth.js';
@@ -7,6 +8,35 @@ import { ApiError } from '../middleware/errorHandler.js';
 import { notifyUser } from '../services/pushService.js';
 import { audit } from '../services/auditService.js';
 import { genererBrouillardPDF } from '../services/brouillardService.js';
+
+// Justificatif joint à une demande de caisse (reçu, facture...) —
+// gardé en mémoire puis stocké directement en base (bytea), jamais
+// sur le disque du serveur : Railway l'efface à chaque redéploiement.
+const uploadJustificatif = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const autorises = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+    if (!autorises.includes(file.mimetype)) {
+      return cb(new ApiError(422, 'Le justificatif doit être une image (JPEG, PNG, WEBP) ou un PDF.'));
+    }
+    cb(null, true);
+  },
+});
+
+/**
+ * Les champs texte d'une demande de caisse, une fois passés par
+ * multer (multipart/form-data) : tout arrive en chaîne de caractères,
+ * y compris les nombres et les booléens — jamais déjà typé comme
+ * avec un corps JSON classique. Cette fonction ramène le strict
+ * nécessaire (justifie) au bon type avant la validation zod du reste.
+ */
+function lireJustification(req) {
+  const fichier = req.file
+    ? { nom: req.file.originalname, type: req.file.mimetype, donnees: req.file.buffer }
+    : null;
+  return { justifie: Boolean(req.body.justifie), fichier };
+}
 
 /**
  * ═══════════════════════════════════════════════════════════════════
@@ -299,10 +329,11 @@ router.post(
 const retraitSchema = z
   .object({
     clientId: z.string().uuid(),
-    montant: z.number().int().min(500).max(5000000),
+    montant: z.coerce.number().int().min(500).max(5000000),
     motif: z.string().max(500).optional(),
     modePaiement: z.enum(['especes', 'airtel', 'moov']).default('especes'),
     telephonePaiement: z.string().min(8).max(20).optional(),
+    justifie: z.coerce.boolean().optional().default(false),
   })
   .refine((b) => b.modePaiement === 'especes' || Boolean(b.telephonePaiement), {
     message: 'Le numéro de téléphone est requis pour un paiement Mobile Money.',
@@ -313,9 +344,11 @@ const retraitSchema = z
 router.post(
   '/retraits',
   requirePermission('caisse.demander_retrait'),
+  uploadJustificatif.single('justificatif'),
   validate(retraitSchema),
   async (req, res, next) => {
     try {
+      const { justifie, fichier } = lireJustification(req);
       const { rows: client } = await query(
         `SELECT b.balance FROM users u
          JOIN accounts a ON a.user_id = u.id
@@ -330,12 +363,14 @@ router.post(
 
       const { rows } = await query(
         `INSERT INTO caisse_operations
-           (caissier_id, type, montant, client_id, motif, mode_paiement, telephone_paiement)
-         VALUES ($1, 'retrait_client', $2, $3, $4, $5, $6)
-         RETURNING id, montant, statut, demandee_le, mode_paiement`,
+           (caissier_id, type, montant, client_id, motif, mode_paiement, telephone_paiement,
+            justifie, justificatif_nom, justificatif_type, justificatif_donnees)
+         VALUES ($1, 'retrait_client', $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         RETURNING id, montant, statut, demandee_le, mode_paiement, justifie`,
         [
           req.user.id, req.body.montant, req.body.clientId, req.body.motif ?? null,
           req.body.modePaiement, req.body.telephonePaiement ?? null,
+          justifie, fichier?.nom ?? null, fichier?.type ?? null, fichier?.donnees ?? null,
         ]
       );
 
@@ -354,8 +389,9 @@ router.post(
 );
 
 const depenseSchema = z.object({
-  montant: z.number().int().min(500).max(2000000),
+  montant: z.coerce.number().int().min(500).max(2000000),
   motif: z.string().min(1).max(500),
+  justifie: z.coerce.boolean().optional().default(false),
 });
 
 /**
@@ -367,14 +403,20 @@ const depenseSchema = z.object({
 router.post(
   '/depenses',
   requirePermission('caisse.demander_depense'),
+  uploadJustificatif.single('justificatif'),
   validate(depenseSchema),
   async (req, res, next) => {
     try {
+      const { justifie, fichier } = lireJustification(req);
       const { rows } = await query(
-        `INSERT INTO caisse_operations (caissier_id, type, montant, motif)
-         VALUES ($1, 'depense', $2, $3)
-         RETURNING id, montant, statut, demandee_le`,
-        [req.user.id, req.body.montant, req.body.motif]
+        `INSERT INTO caisse_operations
+           (caissier_id, type, montant, motif, justifie, justificatif_nom, justificatif_type, justificatif_donnees)
+         VALUES ($1, 'depense', $2, $3, $4, $5, $6, $7)
+         RETURNING id, montant, statut, demandee_le, justifie`,
+        [
+          req.user.id, req.body.montant, req.body.motif,
+          justifie, fichier?.nom ?? null, fichier?.type ?? null, fichier?.donnees ?? null,
+        ]
       );
 
       await audit(req, {
@@ -393,8 +435,9 @@ router.post(
 
 const encaissementSchema = z.object({
   clientId: z.string().uuid(),
-  montant: z.number().int().min(500).max(5000000),
+  montant: z.coerce.number().int().min(500).max(5000000),
   motif: z.string().max(500).optional(),
+  justifie: z.coerce.boolean().optional().default(false),
 });
 
 /**
@@ -408,9 +451,11 @@ const encaissementSchema = z.object({
 router.post(
   '/encaissements',
   requirePermission('caisse.encaisser_client'),
+  uploadJustificatif.single('justificatif'),
   validate(encaissementSchema),
   async (req, res, next) => {
     try {
+      const { justifie, fichier } = lireJustification(req);
       const result = await withTransaction(async (client) => {
         const { rows: compte } = await client.query(
           `SELECT a.id AS account_id FROM users u
@@ -429,10 +474,14 @@ router.post(
 
         const { rows: operation } = await client.query(
           `INSERT INTO caisse_operations
-             (caissier_id, type, montant, client_id, motif, statut, decidee_le, decidee_par, ledger_entry_id)
-           VALUES ($1, 'encaissement_client', $2, $3, $4, 'validee', now(), $1, $5)
-           RETURNING id, montant, statut, demandee_le`,
-          [req.user.id, req.body.montant, req.body.clientId, req.body.motif ?? null, entry[0].id]
+             (caissier_id, type, montant, client_id, motif, statut, decidee_le, decidee_par, ledger_entry_id,
+              justifie, justificatif_nom, justificatif_type, justificatif_donnees)
+           VALUES ($1, 'encaissement_client', $2, $3, $4, 'validee', now(), $1, $5, $6, $7, $8, $9)
+           RETURNING id, montant, statut, demandee_le, justifie`,
+          [
+            req.user.id, req.body.montant, req.body.clientId, req.body.motif ?? null, entry[0].id,
+            justifie, fichier?.nom ?? null, fichier?.type ?? null, fichier?.donnees ?? null,
+          ]
         );
 
         return operation[0];
@@ -453,22 +502,29 @@ router.post(
 );
 
 const approSchema = z.object({
-  montant: z.number().int().min(1000).max(20000000),
+  montant: z.coerce.number().int().min(1000).max(20000000),
   motif: z.string().max(500).optional(),
+  justifie: z.coerce.boolean().optional().default(false),
 });
 
 /** POST /caisse/appro — demande de réapprovisionnement de sa caisse. */
 router.post(
   '/appro',
   requirePermission('caisse.demander_appro'),
+  uploadJustificatif.single('justificatif'),
   validate(approSchema),
   async (req, res, next) => {
     try {
+      const { justifie, fichier } = lireJustification(req);
       const { rows } = await query(
-        `INSERT INTO caisse_operations (caissier_id, type, montant, motif)
-         VALUES ($1, 'appro', $2, $3)
-         RETURNING id, montant, statut, demandee_le`,
-        [req.user.id, req.body.montant, req.body.motif ?? null]
+        `INSERT INTO caisse_operations
+           (caissier_id, type, montant, motif, justifie, justificatif_nom, justificatif_type, justificatif_donnees)
+         VALUES ($1, 'appro', $2, $3, $4, $5, $6, $7)
+         RETURNING id, montant, statut, demandee_le, justifie`,
+        [
+          req.user.id, req.body.montant, req.body.motif ?? null,
+          justifie, fichier?.nom ?? null, fichier?.type ?? null, fichier?.donnees ?? null,
+        ]
       );
 
       await audit(req, {
@@ -496,7 +552,8 @@ router.get(
   async (req, res, next) => {
     try {
       const { rows } = await query(
-        `SELECT co.id, co.type, co.montant, co.motif, co.demandee_le,
+        `SELECT co.id, co.type, co.montant, co.motif, co.demandee_le, co.justifie,
+                (co.justificatif_donnees IS NOT NULL) AS a_un_fichier,
                 ca.full_name AS caissier,
                 cl.full_name AS client, cl.client_number
          FROM caisse_operations co
@@ -506,6 +563,28 @@ router.get(
          ORDER BY co.demandee_le ASC`
       );
       res.json({ demandes: rows });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/** GET /caisse/operations/:id/justificatif — le fichier joint à une demande. */
+router.get(
+  '/operations/:id/justificatif',
+  requirePermission('caisse.valider'),
+  async (req, res, next) => {
+    try {
+      const { rows } = await query(
+        `SELECT justificatif_nom, justificatif_type, justificatif_donnees
+         FROM caisse_operations WHERE id = $1`,
+        [req.params.id]
+      );
+      if (!rows[0]?.justificatif_donnees) throw new ApiError(404, 'Aucun justificatif pour cette opération.');
+
+      res.setHeader('Content-Type', rows[0].justificatif_type);
+      res.setHeader('Content-Disposition', `inline; filename="${rows[0].justificatif_nom}"`);
+      res.send(rows[0].justificatif_donnees);
     } catch (error) {
       next(error);
     }

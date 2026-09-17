@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import { query } from '../db/index.js';
 import { runInstallmentCollection } from '../services/operationsService.js';
-import { runAgiosBatch } from '../services/feeService.js';
+import { runAgiosBatch, runTenueCompteBatch } from '../services/feeService.js';
 import { auditAutomated } from '../services/auditService.js';
 
 /**
@@ -86,6 +86,33 @@ async function collectAgios() {
   }
 }
 
+async function collectTenueCompte() {
+  const actor = await getSystemActor();
+  if (!actor) {
+    console.error('[planifié] Aucun compte technique (rôle admin) trouvé : collecte des frais de tenue annulée.');
+    return;
+  }
+
+  const now = new Date();
+  const periodStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+  const periodEnd = now.toISOString().slice(0, 10);
+
+  try {
+    const result = await runTenueCompteBatch({ periodStart, periodEnd });
+    await auditAutomated({
+      actorId: actor.id,
+      actorRole: actor.role,
+      action: 'operations.tenue_compte_preleve_auto',
+      entityType: 'periode',
+      entityId: `${periodStart}_${periodEnd}`,
+      metadata: { comptes: result.applied, total: result.total },
+    });
+    console.log(`[planifié] Frais de tenue : ${result.applied} compte(s), ${result.total} FCFA prélevés.`);
+  } catch (error) {
+    console.error('[planifié] Échec du prélèvement automatique des frais de tenue :', error.message);
+  }
+}
+
 /**
  * Démarre les tâches planifiées. Appelé une fois au lancement du
  * serveur (src/server.js) — jamais pendant les tests, qui utilisent
@@ -102,10 +129,14 @@ export function startScheduler() {
   // du mois », c'est ici qu'il faudra ajuster l'expression cron.
   cron.schedule('0 3 30 * *', collectAgios);
 
-  console.log('Tâches planifiées démarrées : échéances (quotidien, 6h) · agios (le 30, 3h).');
+  // Le 1er de chaque mois à 3h — un forfait dû dès le début du mois,
+  // contrairement aux agios qui se constatent en fin de période.
+  cron.schedule('0 3 1 * *', collectTenueCompte);
+
+  console.log('Tâches planifiées démarrées : échéances (quotidien, 6h) · agios (le 30, 3h) · frais de tenue (le 1er, 3h).');
 }
 
 // Exportées pour permettre un déclenchement manuel de secours (route
 // /admin/operations/echeances/executer et l'équivalent agios déjà en
 // place) sans dupliquer la logique de résolution de l'acteur système.
-export { collectInstallments, collectAgios, getSystemActor };
+export { collectInstallments, collectAgios, collectTenueCompte, getSystemActor };

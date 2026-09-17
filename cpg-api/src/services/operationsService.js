@@ -366,12 +366,13 @@ export async function fetchSchedulerStatus() {
   const { rows } = await query(
     `SELECT DISTINCT ON (action) action, created_at, metadata
      FROM audit_log
-     WHERE action IN ('operations.echeances_prelevees_auto', 'operations.agios_preleves_auto')
+     WHERE action IN ('operations.echeances_prelevees_auto', 'operations.agios_preleves_auto', 'operations.tenue_compte_preleve_auto')
      ORDER BY action, created_at DESC`
   );
 
   const echeances = rows.find((r) => r.action === 'operations.echeances_prelevees_auto');
   const agios = rows.find((r) => r.action === 'operations.agios_preleves_auto');
+  const tenueCompte = rows.find((r) => r.action === 'operations.tenue_compte_preleve_auto');
 
   return {
     echeances: echeances
@@ -379,6 +380,9 @@ export async function fetchSchedulerStatus() {
       : { derniereExecution: null },
     agios: agios
       ? { derniereExecution: agios.created_at, ...agios.metadata }
+      : { derniereExecution: null },
+    tenueCompte: tenueCompte
+      ? { derniereExecution: tenueCompte.created_at, ...tenueCompte.metadata }
       : { derniereExecution: null },
   };
 }

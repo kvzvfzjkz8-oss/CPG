@@ -56,6 +56,7 @@ export const PERMISSIONS = {
     'demandes.rejeter',
     'clients.verifier',
     'messagerie.repondre',
+    'frais.appliquer',
     'catalogue.lire_public',
 
     // Double validation après le comité de crédit : le dossier doit

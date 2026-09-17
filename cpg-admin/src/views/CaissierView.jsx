@@ -298,6 +298,8 @@ function OperationForm({ type, onCancel, onDone }) {
   const [ribData, setRibData] = useState(null);
   const [modePaiement, setModePaiement] = useState('especes');
   const [telephonePaiement, setTelephonePaiement] = useState('');
+  const [justifie, setJustifie] = useState(false);
+  const [fichier, setFichier] = useState(null);
 
   useEffect(() => {
     if (!needsClient || query.trim().length < 2) {
@@ -323,16 +325,16 @@ function OperationForm({ type, onCancel, onDone }) {
     setError('');
     try {
       if (type === 'retrait_client') {
-        await demanderRetraitCaisse(client.id, Number(montant), motif || undefined, modePaiement, modePaiement !== 'especes' ? telephonePaiement : undefined);
+        await demanderRetraitCaisse(client.id, Number(montant), motif || undefined, modePaiement, modePaiement !== 'especes' ? telephonePaiement : undefined, justifie, fichier);
         onDone(`Demande de retrait de ${formatFCFA(Number(montant))} F déposée pour ${client.full_name} — en attente du directeur.`);
       } else if (type === 'encaissement_client') {
-        await encaisserClient(client.id, Number(montant), motif || undefined);
+        await encaisserClient(client.id, Number(montant), motif || undefined, justifie, fichier);
         onDone(`${formatFCFA(Number(montant))} F encaissés et crédités sur le compte de ${client.full_name}.`);
       } else if (type === 'depense') {
-        await demanderDepenseCaisse(Number(montant), motif);
+        await demanderDepenseCaisse(Number(montant), motif, justifie, fichier);
         onDone(`Demande de dépense de ${formatFCFA(Number(montant))} F envoyée au directeur.`);
       } else if (type === 'appro') {
-        await demanderApproCaisse(Number(montant), motif || undefined);
+        await demanderApproCaisse(Number(montant), motif || undefined, justifie, fichier);
         onDone('Demande de réapprovisionnement envoyée au directeur.');
       }
     } catch (err) {
@@ -455,6 +457,41 @@ function OperationForm({ type, onCancel, onDone }) {
             placeholder={type === 'depense' ? 'Pourquoi cette dépense ?' : ''}
             style={{ width: '100%', padding: '11px 14px', borderRadius: 10, border: `1px solid ${colors.line}`, fontSize: 13, fontFamily: fonts.body, margin: '6px 0 16px' }}
           />
+
+          <label style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>Avez-vous un justificatif ?</label>
+          <div style={{ display: 'flex', gap: 8, marginTop: 6, marginBottom: justifie ? 8 : 16 }}>
+            {[{ key: true, label: 'Oui' }, { key: false, label: 'Non' }].map((opt) => (
+              <button
+                key={String(opt.key)}
+                type="button"
+                onClick={() => { setJustifie(opt.key); if (!opt.key) setFichier(null); }}
+                style={{
+                  flex: 1, padding: '8px 10px', borderRadius: 9, fontSize: 12, fontFamily: fonts.body, cursor: 'pointer',
+                  border: `1px solid ${justifie === opt.key ? colors.forestLight : colors.line}`,
+                  background: justifie === opt.key ? colors.forestPale : colors.card,
+                  color: justifie === opt.key ? colors.forestLight : colors.muted,
+                  fontWeight: justifie === opt.key ? 600 : 400,
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          {justifie && (
+            <div style={{ marginBottom: 16 }}>
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp,application/pdf"
+                onChange={(e) => setFichier(e.target.files?.[0] ?? null)}
+                style={{ width: '100%', fontSize: 12, fontFamily: fonts.body }}
+              />
+              {fichier && (
+                <p style={{ margin: '6px 0 0', fontSize: 11, color: colors.forestLight, fontFamily: fonts.body }}>
+                  {fichier.name} ({Math.round(fichier.size / 1024)} Ko)
+                </p>
+              )}
+            </div>
+          )}
 
           {error && <p style={{ fontSize: 12, color: colors.danger, marginBottom: 12, fontFamily: fonts.body }}>{error}</p>}
 

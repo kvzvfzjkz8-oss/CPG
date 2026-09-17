@@ -343,6 +343,102 @@ export async function runAgiosBatch({ periodStart, periodEnd }) {
   };
 }
 
+/**
+ * ─────────────────────────────────────────────────────────────────
+ *  FRAIS DE TENUE DE COMPTE
+ * ─────────────────────────────────────────────────────────────────
+ *
+ * Contrairement aux agios, un montant fixe, dû par tous les comptes,
+ * peu importe le solde — c'est le coût de possession du compte, pas
+ * une pénalité de découvert. Prélevé même si ça rend le compte
+ * négatif : la période sert uniquement à empêcher un double
+ * prélèvement le même mois, pas à conditionner le prélèvement
+ * lui-même.
+ */
+export async function runTenueCompteForAccount({ accountId, periodStart, periodEnd, feeVersion }) {
+  const amount = computeFee({
+    basis: feeVersion.basis,
+    amount: Number(feeVersion.amount),
+    rate: Number(feeVersion.rate),
+    minAmount: Number(feeVersion.min_amount ?? 0),
+    maxAmount: feeVersion.max_amount === null ? null : Number(feeVersion.max_amount),
+  });
+
+  if (amount <= 0) return { accountId, amount: 0, skipped: true };
+
+  return withTransaction(async (client) => {
+    try {
+      const { rows: entry } = await client.query(
+        `INSERT INTO ledger_entries (account_id, type, amount, label, reference)
+         VALUES ($1, 'frais', $2, $3, $4) RETURNING id`,
+        [accountId, -amount, 'Frais de tenue de compte', `TENUE-${periodStart}`]
+      );
+
+      await client.query(
+        `INSERT INTO applied_fees
+           (fee_version_id, account_id, amount, basis_detail, period_start, period_end, ledger_entry_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          feeVersion.version_id ?? feeVersion.id,
+          accountId,
+          amount,
+          { basis: 'fixe' },
+          periodStart,
+          periodEnd,
+          entry[0].id,
+        ]
+      );
+    } catch (error) {
+      // 23505 = violation d'unicité : déjà prélevé sur cette période.
+      // Rien n'est facturé deux fois — la transaction annulée efface
+      // aussi l'écriture au journal.
+      if (error.code === '23505') {
+        throw new RateError('Les frais de tenue de cette période ont déjà été prélevés.', 'deja_preleve');
+      }
+      throw error;
+    }
+
+    return { accountId, amount };
+  });
+}
+
+/** Passe tous les comptes clients en revue pour la période donnée. */
+export async function runTenueCompteBatch({ periodStart, periodEnd }) {
+  const { rows: fee } = await query(
+    `SELECT * FROM current_fee_versions
+     WHERE trigger_on = 'tenue_compte' AND status = 'actif'
+     LIMIT 1`
+  );
+
+  if (!fee[0]) return { applied: 0, message: 'Aucun barème de frais de tenue actif.' };
+
+  const { rows: accounts } = await query(
+    `SELECT a.id FROM accounts a JOIN users u ON u.id = a.user_id WHERE u.role = 'client' AND u.status = 'actif'`
+  );
+
+  const results = [];
+  for (const account of accounts) {
+    try {
+      const result = await runTenueCompteForAccount({
+        accountId: account.id,
+        periodStart,
+        periodEnd,
+        feeVersion: fee[0],
+      });
+      if (result.amount > 0) results.push(result);
+    } catch (error) {
+      if (error.code === 'deja_preleve') continue;
+      throw error;
+    }
+  }
+
+  return {
+    applied: results.length,
+    total: results.reduce((sum, r) => sum + r.amount, 0),
+    details: results,
+  };
+}
+
 /** Frais ponctuel déclenché par une opération (retrait, transfert…). */
 /**
  * Calcule et applique un frais déclenché (retrait, dépôt, déblocage de
