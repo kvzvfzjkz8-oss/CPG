@@ -52,7 +52,7 @@ router.get(
       const { rows } = await query(
         `SELECT c.id, c.reference, c.amount, c.duration_months, c.status, c.created_at,
                 c.level1_at, c.approved_at,
-                u.full_name AS client, u.job_title, u.employer, u.client_number
+                u.full_name AS client, u.job_title, u.employer, u.client_number, u.phone
          FROM credit_requests c
          JOIN users u ON u.id = c.user_id
          WHERE ($1::credit_status IS NULL OR c.status = $1)

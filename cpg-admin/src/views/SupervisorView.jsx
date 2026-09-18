@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   LayoutDashboard, ShieldCheck, Users, Wallet, UserCog, Bell, Package, CalendarClock, Check, X,
-  Gavel, KeyRound, History, Calculator,
+  Gavel, KeyRound, History, Calculator, Inbox,
 } from 'lucide-react';
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -17,6 +17,7 @@ import {
   fetchAuditLog, fetchCaissePrincipale, alimenterCaissePrincipale,
   simulateCredit, fetchProducts, creerDemandePourClient, searchClientPourDemande,
   fetchCreditApprouvePourClient, ouvrirContratCredit, ouvrirBrouillardCaisse, ouvrirJustificatifCaisse,
+  fetchCreditRequests,
 } from '../api/adminApi';
 import { can } from '../auth/roles';
 import CatalogView from './CatalogView';
@@ -30,6 +31,9 @@ export default function SupervisorView({ role }) {
   ];
   if (can(role, 'commission.lire')) {
     tabs.push({ key: 'commission', label: 'Commission', icon: Gavel });
+  }
+  if (can(role, 'demandes.lire')) {
+    tabs.push({ key: 'demandes', label: 'Demandes en attente', icon: Inbox });
   }
   if (can(role, 'credits.simuler')) {
     tabs.push({ key: 'simulation', label: 'Simulation', icon: Calculator });
@@ -64,6 +68,7 @@ export default function SupervisorView({ role }) {
       />
       {tab === 'vue' && <Overview />}
       {tab === 'commission' && <CommissionView role={role} />}
+      {tab === 'demandes' && <DemandesEnAttenteLectureSeule />}
       {tab === 'simulation' && <SimulationPanel />}
       {tab === 'validation' && <FinalValidation />}
       {tab === 'catalogue' && <CatalogView role={role} />}
@@ -764,6 +769,72 @@ function CaissePrincipalePanel() {
         </Card>
       )}
     </div>
+  );
+}
+
+/**
+ * Vue en lecture seule des dossiers en attente de validation, pour le
+ * gestionnaire — il voit ce qui est en cours de traitement par
+ * l'opérateur (niveau 1, puis validé niveau 1 en attente de
+ * commission), mais ne peut rien y changer : valider ou rejeter reste
+ * le rôle de l'opérateur.
+ */
+function DemandesEnAttenteLectureSeule() {
+  const [demandes, setDemandes] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    Promise.all([
+      fetchCreditRequests('en_verification'),
+      fetchCreditRequests('valide_niveau1'),
+    ])
+      .then(([niveau0, niveau1]) => {
+        setDemandes([
+          ...niveau0.map((d) => ({ ...d, etape: 'En attente de validation niveau 1' })),
+          ...niveau1.map((d) => ({ ...d, etape: 'Validé niveau 1 — en attente de commission' })),
+        ]);
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  return (
+    <Card style={{ padding: 0, overflow: 'hidden' }}>
+      <SectionTitle>
+        {loading ? 'Chargement…' : `${demandes.length} dossier${demandes.length > 1 ? 's' : ''} en attente de validation`}
+      </SectionTitle>
+
+      {!loading && demandes.length === 0 && (
+        <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
+          Aucun dossier en attente pour le moment.
+        </p>
+      )}
+
+      {demandes.map((d) => (
+        <div
+          key={d.id}
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+            padding: '14px 20px', borderBottom: `1px solid ${colors.line}`,
+          }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>
+                {d.client} · {d.reference}
+              </p>
+              <Badge tone={d.etape.startsWith('Validé') ? 'gold' : 'neutral'}>{d.etape}</Badge>
+            </div>
+            <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+              {d.job_title ?? ''}{d.job_title && d.employer ? ' · ' : ''}{d.employer ?? ''}
+              {d.client_number ? ` · ${d.client_number}` : ''}
+            </p>
+          </div>
+          <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: colors.ink, fontFamily: fonts.mono, whiteSpace: 'nowrap' }}>
+            {formatFCFA(d.amount)} F
+          </p>
+        </div>
+      ))}
+    </Card>
   );
 }
 

@@ -9,7 +9,7 @@ import {
   fetchCommissionSession, scheduleCommissionSession, cancelCommissionSession, rescheduleCommissionSession,
   fetchLevel1Credits, depositCreditToCommission,
   fetchCommissionAgenda, depositDifficultyCase, depositExceptionalRequest,
-  holdCommissionSession,
+  holdCommissionSession, searchClientPourDemande, fetchCreditRequests,
 } from '../api/adminApi';
 
 const input = {
@@ -73,7 +73,7 @@ export default function CommissionView({ role }) {
         <SessionPanel session={session} loading={loadingSession} onChange={loadSession} role={role} />
       )}
       {tab === 'deposer' && (
-        <DepositPanel hasOpenSession={hasOpenSession} role={role} />
+        <DepositPanel hasOpenSession={hasOpenSession} role={role} sessionId={session?.id} />
       )}
       {tab === 'tenir' && (
         <HoldSessionPanel session={session} onHeld={loadSession} role={role} />
@@ -239,7 +239,7 @@ function SessionPanel({ session, loading, onChange, role }) {
    DÉPOSER — nouveaux dossiers, difficultés, demandes exceptionnelles
    ═══════════════════════════════════════════════════════════════════ */
 
-function DepositPanel({ hasOpenSession, role }) {
+function DepositPanel({ hasOpenSession, role, sessionId }) {
   const [sub, setSub] = useState('nouveaux');
 
   if (!can(role, 'commission.deposer')) {
@@ -287,8 +287,8 @@ function DepositPanel({ hasOpenSession, role }) {
       </div>
 
       {sub === 'nouveaux' && <NewCreditsDeposit hasOpenSession={hasOpenSession} />}
-      {sub === 'difficulte' && <DifficultyDeposit hasOpenSession={hasOpenSession} />}
-      {sub === 'exceptionnelle' && <ExceptionalDeposit hasOpenSession={hasOpenSession} />}
+      {sub === 'difficulte' && <DifficultyDeposit hasOpenSession={hasOpenSession} sessionId={sessionId} />}
+      {sub === 'exceptionnelle' && <ExceptionalDeposit hasOpenSession={hasOpenSession} sessionId={sessionId} />}
     </div>
   );
 }
@@ -369,23 +369,50 @@ function NewCreditsDeposit({ hasOpenSession }) {
   );
 }
 
-function DifficultyDeposit({ hasOpenSession }) {
-  const [reference, setReference] = useState('');
+function DifficultyDeposit({ hasOpenSession, sessionId }) {
+  const [query, setQuery] = useState('');
+  const [credit, setCredit] = useState(null);
+  const [actifs, setActifs] = useState([]);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
+  const [deposees, setDeposees] = useState([]);
+  const [loadingListe, setLoadingListe] = useState(true);
+
+  useEffect(() => {
+    fetchCreditRequests('approuve').then(setActifs).catch(() => setActifs([]));
+  }, []);
+
+  const resultats = query.trim().length < 2 ? [] : actifs.filter((c) => {
+    const q = query.trim().toLowerCase();
+    return c.reference?.toLowerCase().includes(q)
+      || c.client?.toLowerCase().includes(q)
+      || c.client_number?.toLowerCase().includes(q)
+      || c.phone?.toLowerCase().includes(q);
+  }).slice(0, 8);
+
+  const chargerListe = () => {
+    if (!sessionId) { setLoadingListe(false); return; }
+    fetchCommissionAgenda(sessionId)
+      .then((a) => setDeposees(a.points.filter((p) => p.type === 'dossier_difficulte')))
+      .finally(() => setLoadingListe(false));
+  };
+
+  useEffect(() => { chargerListe(); }, [sessionId]);
 
   const submit = async () => {
-    if (!reference.trim()) return;
+    if (!credit) return;
     setBusy(true);
     setError('');
     try {
-      await depositDifficultyCase(reference.trim().toUpperCase(), note.trim());
-      setToast(`Dossier ${reference.trim().toUpperCase()} déposé pour difficulté.`);
+      await depositDifficultyCase(credit.id, note.trim());
+      setToast(`Dossier ${credit.reference} déposé pour difficulté.`);
       setTimeout(() => setToast(''), 5000);
-      setReference('');
+      setCredit(null);
+      setQuery('');
       setNote('');
+      chargerListe();
     } catch (e) {
       setError(e.message);
     } finally {
@@ -409,8 +436,42 @@ function DifficultyDeposit({ hasOpenSession }) {
       )}
       <div style={{ display: 'grid', gap: 10, marginBottom: 14 }}>
         <div>
-          <label style={label}>Référence du crédit</label>
-          <input style={input} placeholder="ex. CPG-4451" value={reference} onChange={(e) => setReference(e.target.value)} />
+          <label style={label}>Crédit actif</label>
+          {!credit ? (
+            <>
+              <input
+                style={input} placeholder="Nom, numéro client (CPG-...) ou téléphone"
+                value={query} onChange={(e) => setQuery(e.target.value)}
+              />
+              {resultats.length > 0 && (
+                <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {resultats.map((c) => (
+                    <button
+                      key={c.id}
+                      onClick={() => { setCredit(c); setQuery(''); }}
+                      style={{
+                        display: 'flex', justifyContent: 'space-between', padding: '9px 12px',
+                        borderRadius: 9, border: `1px solid ${colors.line}`, background: '#fff',
+                        cursor: 'pointer', textAlign: 'left',
+                      }}
+                    >
+                      <span style={{ fontSize: 13, color: colors.ink, fontFamily: fonts.body }}>
+                        {c.client} <span style={{ color: colors.muted, fontFamily: fonts.mono, fontSize: 11 }}>· {c.client_number}</span>
+                      </span>
+                      <span style={{ fontSize: 12, fontFamily: fonts.mono, color: colors.muted }}>{c.reference}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: colors.forestPale, borderRadius: 9, padding: '9px 12px' }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: colors.forest, fontFamily: fonts.body }}>{credit.client} · {credit.reference}</span>
+              <button type="button" onClick={() => setCredit(null)} style={{ border: 'none', background: 'transparent', color: colors.forestLight, fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: fonts.body }}>
+                Changer
+              </button>
+            </div>
+          )}
         </div>
         <div>
           <label style={label}>Note pour la commission</label>
@@ -419,33 +480,80 @@ function DifficultyDeposit({ hasOpenSession }) {
       </div>
       <button
         onClick={submit}
-        disabled={!hasOpenSession || !reference.trim() || busy}
+        disabled={!hasOpenSession || !credit || busy}
         style={{ ...actionBtn(colors.forest, '#fff'), opacity: hasOpenSession ? 1 : 0.5 }}
       >
         <AlertTriangle size={13} /> Déposer pour difficulté
       </button>
+
+      <p style={{ margin: '22px 0 10px', fontSize: 12, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
+        Dossiers déjà déposés pour cette séance
+      </p>
+      {loadingListe ? (
+        <p style={{ fontSize: 12, color: colors.muted, fontFamily: fonts.body }}>Chargement…</p>
+      ) : deposees.length === 0 ? (
+        <p style={{ fontSize: 12, color: colors.muted, fontFamily: fonts.body, fontStyle: 'italic' }}>
+          Aucun dossier en difficulté déposé pour le moment.
+        </p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {deposees.map((p) => (
+            <div key={p.id} style={{ padding: '10px 14px', borderRadius: 10, border: `1px solid ${colors.line}`, background: colors.bg }}>
+              <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
+                {p.client ? `${p.client} — ` : ''}{p.titre}
+              </p>
+              {p.note && (
+                <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>{p.note}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </Card>
   );
 }
 
-function ExceptionalDeposit({ hasOpenSession }) {
-  const [clientId, setClientId] = useState('');
+function ExceptionalDeposit({ hasOpenSession, sessionId }) {
+  const [query, setQuery] = useState('');
+  const [resultats, setResultats] = useState([]);
+  const [client, setClient] = useState(null);
   const [titre, setTitre] = useState('');
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
+  const [deposees, setDeposees] = useState([]);
+  const [loadingListe, setLoadingListe] = useState(true);
+
+  useEffect(() => {
+    if (query.trim().length < 2) { setResultats([]); return; }
+    const t = setTimeout(() => {
+      searchClientPourDemande(query.trim()).then(setResultats).catch(() => setResultats([]));
+    }, 300);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const chargerListe = () => {
+    if (!sessionId) { setLoadingListe(false); return; }
+    fetchCommissionAgenda(sessionId)
+      .then((a) => setDeposees(a.points.filter((p) => p.type === 'demande_exceptionnelle')))
+      .finally(() => setLoadingListe(false));
+  };
+
+  useEffect(() => { chargerListe(); }, [sessionId]);
 
   const submit = async () => {
     setBusy(true);
     setError('');
     try {
-      await depositExceptionalRequest(clientId.trim(), titre, note.trim());
+      await depositExceptionalRequest(client.id, titre, note.trim());
       setToast('Demande exceptionnelle déposée.');
       setTimeout(() => setToast(''), 5000);
-      setClientId('');
+      setClient(null);
+      setQuery('');
       setTitre('');
       setNote('');
+      chargerListe();
     } catch (e) {
       setError(e.message);
     } finally {
@@ -467,8 +575,40 @@ function ExceptionalDeposit({ hasOpenSession }) {
       )}
       <div style={{ display: 'grid', gap: 10, marginBottom: 14 }}>
         <div>
-          <label style={label}>Numéro client ou téléphone</label>
-          <input style={input} placeholder="ex. CPG-00931" value={clientId} onChange={(e) => setClientId(e.target.value)} />
+          <label style={label}>Client</label>
+          {!client ? (
+            <>
+              <input
+                style={input} placeholder="Nom du client ou numéro de compte"
+                value={query} onChange={(e) => setQuery(e.target.value)}
+              />
+              {resultats.length > 0 && (
+                <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {resultats.map((r) => (
+                    <button
+                      key={r.id}
+                      onClick={() => { setClient(r); setResultats([]); setQuery(''); }}
+                      style={{
+                        display: 'flex', justifyContent: 'space-between', padding: '9px 12px',
+                        borderRadius: 9, border: `1px solid ${colors.line}`, background: '#fff',
+                        cursor: 'pointer', textAlign: 'left',
+                      }}
+                    >
+                      <span style={{ fontSize: 13, color: colors.ink, fontFamily: fonts.body }}>{r.full_name}</span>
+                      <span style={{ fontSize: 12, fontFamily: fonts.mono, color: colors.muted }}>{r.client_number}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: colors.forestPale, borderRadius: 9, padding: '9px 12px' }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: colors.forest, fontFamily: fonts.body }}>{client.full_name} · {client.client_number}</span>
+              <button type="button" onClick={() => setClient(null)} style={{ border: 'none', background: 'transparent', color: colors.forestLight, fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: fonts.body }}>
+                Changer
+              </button>
+            </div>
+          )}
         </div>
         <div>
           <label style={label}>Titre</label>
@@ -481,11 +621,35 @@ function ExceptionalDeposit({ hasOpenSession }) {
       </div>
       <button
         onClick={submit}
-        disabled={!hasOpenSession || !clientId.trim() || titre.trim().length < 3 || busy}
+        disabled={!hasOpenSession || !client || titre.trim().length < 3 || busy}
         style={{ ...actionBtn(colors.forest, '#fff'), opacity: hasOpenSession ? 1 : 0.5 }}
       >
         <Sparkles size={13} /> Déposer la demande
       </button>
+
+      <p style={{ margin: '22px 0 10px', fontSize: 12, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
+        Demandes déjà déposées pour cette séance
+      </p>
+      {loadingListe ? (
+        <p style={{ fontSize: 12, color: colors.muted, fontFamily: fonts.body }}>Chargement…</p>
+      ) : deposees.length === 0 ? (
+        <p style={{ fontSize: 12, color: colors.muted, fontFamily: fonts.body, fontStyle: 'italic' }}>
+          Aucune demande exceptionnelle déposée pour le moment.
+        </p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {deposees.map((p) => (
+            <div key={p.id} style={{ padding: '10px 14px', borderRadius: 10, border: `1px solid ${colors.line}`, background: colors.bg }}>
+              <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
+                {p.client ? `${p.client} — ` : ''}{p.titre}
+              </p>
+              {p.note && (
+                <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>{p.note}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </Card>
   );
 }
@@ -600,7 +764,7 @@ function HoldSessionPanel({ session, onHeld, role }) {
             {agenda.points.map((p) => (
               <AgendaRow
                 key={`item:${p.id}`}
-                titre={p.titre}
+                titre={p.client ? `${p.client} — ${p.titre}` : p.titre}
                 sousTitre={p.note}
                 badge={p.type === 'dossier_difficulte' ? 'Dossier en difficulté' : 'Demande exceptionnelle'}
                 badgeTone={p.type === 'dossier_difficulte' ? 'danger' : 'gold'}
