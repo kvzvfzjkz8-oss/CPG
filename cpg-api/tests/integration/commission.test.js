@@ -286,7 +286,7 @@ describe(
       produitMicroId = body.produits.find((p) => p.code === 'MICRO_STD').product_id;
     });
 
-    test('déposer un dossier sans échéance en retard est refusé', async () => {
+    test('déposer un dossier sans échéance en retard est accepté (la commission juge, pas le système)', async () => {
       const phone = `+24106${String(Math.floor(Math.random() * 900000) + 100000)}`;
       const gestionnaireToken = await loginStaff('gestionnaire');
       await api('/v1/admin/utilisateurs', {
@@ -305,8 +305,8 @@ describe(
       const { status, body } = await api(`/v1/admin/commission/credits/${credit.id}/deposer-difficulte`, {
         method: 'POST', token: gestionnaireToken,
       });
-      assert.equal(status, 422);
-      assert.match(body.error, /retard/);
+      assert.equal(status, 201);
+      assert.equal(body.type, 'dossier_difficulte');
 
       await api(`/v1/admin/commission/seance/${newSession.id}`, { method: 'DELETE', token: gestionnaireToken });
     });

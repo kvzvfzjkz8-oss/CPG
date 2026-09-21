@@ -409,6 +409,43 @@ export async function doubleValidateCredit({ creditId, actorId }) {
 }
 
 /**
+ * Double validation par l'opérateur d'un dossier en difficulté ou
+ * d'une demande exceptionnelle — même circuit que pour un crédit
+ * normal : le directeur tranche en séance, l'opérateur confirme
+ * ensuite avant que ce soit considéré comme définitivement traité.
+ */
+export async function doubleValidateCommissionItem({ itemId, actorId }) {
+  const { rows } = await query(
+    `UPDATE commission_items
+     SET status = 'valide_double', double_validated_by = $2, double_validated_at = now()
+     WHERE id = $1 AND status = 'valide'
+     RETURNING id, type, titre, status`,
+    [itemId, actorId]
+  );
+  if (!rows[0]) {
+    throw new ApiError(409, 'Ce dossier doit d’abord être validé par le directeur en séance.');
+  }
+  return rows[0];
+}
+
+/** Dossiers en difficulté / demandes exceptionnelles validés par le directeur, en attente de double validation. */
+export async function fetchItemsAwaitingDoubleValidation() {
+  const { rows } = await query(
+    `SELECT i.id, i.type, i.titre, i.note, i.credit_id, i.decided_at,
+            c.reference AS credit_reference,
+            u.full_name AS client,
+            d.full_name AS decide_par
+     FROM commission_items i
+     LEFT JOIN credit_requests c ON c.id = i.credit_id
+     LEFT JOIN users u ON u.id = i.client_id
+     LEFT JOIN users d ON d.id = i.decision_by
+     WHERE i.status = 'valide'
+     ORDER BY u.full_name`
+  );
+  return rows;
+}
+
+/**
  * Autorisation d'exception : permet à un client qui a déjà un crédit
  * actif de repasser en commission pour un second dossier. Réservée au
  * directeur, se consomme une fois (voir depositToCommission).

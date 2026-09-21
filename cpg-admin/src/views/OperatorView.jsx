@@ -7,6 +7,7 @@ import { Card, Badge, Tabs, SectionTitle } from '../components/UI';
 import {
   validateLevel1, rejectCredit, sendAdvisorReply,
   fetchDoubleValidationQueue, doubleValidateCredit,
+  fetchItemsAwaitingDoubleValidation, doubleValidateCommissionItem,
   fetchCreditRequests, fetchCreditDetail, fetchConversations, fetchConversationMessages,
   searchClientPourDemande, creerDemandePourClient,
 } from '../api/adminApi';
@@ -62,6 +63,7 @@ export default function OperatorView() {
  */
 function DoubleValidation() {
   const [pending, setPending] = useState([]);
+  const [pendingItems, setPendingItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(null);
   const [toast, setToast] = useState('');
@@ -69,8 +71,12 @@ function DoubleValidation() {
   const load = async () => {
     setLoading(true);
     try {
-      const queue = await fetchDoubleValidationQueue();
+      const [queue, items] = await Promise.all([
+        fetchDoubleValidationQueue(),
+        fetchItemsAwaitingDoubleValidation(),
+      ]);
       setPending(queue);
+      setPendingItems(items);
     } finally {
       setLoading(false);
     }
@@ -93,6 +99,23 @@ function DoubleValidation() {
     }
   };
 
+  const handleItem = async (it) => {
+    setBusy(it.id);
+    try {
+      await doubleValidateCommissionItem(it.id);
+      setToast(`${it.client} — dossier traité.`);
+      setPendingItems((prev) => prev.filter((x) => x.id !== it.id));
+      setTimeout(() => setToast(''), 4000);
+    } catch (e) {
+      setToast(e.message);
+      setTimeout(() => setToast(''), 4000);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const totalEnAttente = pending.length + pendingItems.length;
+
   return (
     <div>
       {toast && (
@@ -105,13 +128,47 @@ function DoubleValidation() {
       )}
       <Card style={{ padding: 0, overflow: 'hidden' }}>
         <SectionTitle>
-          {loading ? 'Chargement…' : `${pending.length} dossier${pending.length > 1 ? 's' : ''} validé${pending.length > 1 ? 's' : ''} par le comité, à revalider`}
+          {loading ? 'Chargement…' : `${totalEnAttente} dossier${totalEnAttente > 1 ? 's' : ''} validé${totalEnAttente > 1 ? 's' : ''} par le comité, à revalider`}
         </SectionTitle>
-        {!loading && pending.length === 0 && (
+        {!loading && totalEnAttente === 0 && (
           <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
             Aucun dossier en attente de double validation.
           </p>
         )}
+        {pendingItems.map((it) => (
+          <div
+            key={`item-${it.id}`}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 20,
+              padding: '16px 20px', borderBottom: `1px solid ${colors.line}`,
+              opacity: busy === it.id ? 0.5 : 1,
+            }}
+          >
+            <div style={{ flex: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>{it.client}</p>
+                <Badge tone={it.type === 'dossier_difficulte' ? 'danger' : 'gold'}>
+                  {it.type === 'dossier_difficulte' ? 'Dossier en difficulté' : 'Demande exceptionnelle'}
+                </Badge>
+              </div>
+              <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+                {it.credit_reference ? `Réf. ${it.credit_reference} · ` : ''}validé par {it.decide_par}
+                {it.note ? ` — ${it.note}` : ''}
+              </p>
+            </div>
+            <button
+              onClick={() => handleItem(it)}
+              disabled={busy === it.id}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 9,
+                border: 'none', background: colors.forest, color: '#fff', fontSize: 12, fontWeight: 600,
+                fontFamily: fonts.body, cursor: 'pointer',
+              }}
+            >
+              <Check size={12} /> Revalider
+            </button>
+          </div>
+        ))}
         {pending.map((r) => (
           <div
             key={r.id}

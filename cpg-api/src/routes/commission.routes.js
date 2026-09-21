@@ -6,6 +6,7 @@ import { audit } from '../services/auditService.js';
 import {
   scheduleSession, cancelSession, rescheduleSession, fetchPlannedSession, depositToCommission,
   withdrawFromCommission, fetchCommissionQueue, holdSession, doubleValidateCredit,
+  doubleValidateCommissionItem, fetchItemsAwaitingDoubleValidation,
   grantExceptionAuthorization, fetchUnusedExceptionAuthorizations,
   depositDifficultyCase, depositExceptionalRequest, withdrawCommissionItem, fetchCommissionItems,
 } from '../services/commissionService.js';
@@ -201,6 +202,20 @@ router.post(
   }
 );
 
+/** GET /admin/commission/items/a-double-valider — dossiers difficulté/exceptionnels validés en séance, en attente de l'opérateur. Doit précéder /items/:sessionId, sinon Express confond « a-double-valider » avec un identifiant de séance. */
+router.get(
+  '/items/a-double-valider',
+  requirePermission('demandes.valider_double'),
+  async (req, res, next) => {
+    try {
+      const points = await fetchItemsAwaitingDoubleValidation();
+      res.json({ points });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
 /** GET /admin/commission/items/:sessionId — dossiers en difficulté et demandes exceptionnelles d'une séance. */
 router.get(
   '/items/:sessionId',
@@ -262,6 +277,21 @@ router.post(
     try {
       const result = await doubleValidateCredit({ creditId: req.params.id, actorId: req.user.id });
       await audit(req, { action: 'commission.double_validation', entityType: 'credit_request', entityId: result.id });
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/** POST /admin/commission/items/:id/valider-double — revalidation par l'opérateur d'un dossier difficulté/exceptionnel. */
+router.post(
+  '/items/:id/valider-double',
+  requirePermission('demandes.valider_double'),
+  async (req, res, next) => {
+    try {
+      const result = await doubleValidateCommissionItem({ itemId: req.params.id, actorId: req.user.id });
+      await audit(req, { action: 'commission.item_double_valide', entityType: 'commission_item', entityId: result.id });
       res.json(result);
     } catch (error) {
       next(error);
