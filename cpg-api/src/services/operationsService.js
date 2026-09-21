@@ -620,10 +620,13 @@ export async function reactivateSuspendedCredit({ creditId }) {
 }
 
 /**
- * Suppression d'un dossier en attente de double validation, par
- * l'opérateur — aucun fonds n'a encore été débloqué à ce stade, rien
- * à extourner, juste à marquer le dossier 'annule'. Génère un rapport
- * dédié pour le directeur (nom de l'opérateur, date, crédit).
+ * Suppression d'un dossier en attente de double validation OU
+ * d'approbation finale — par l'opérateur (double validation) ou le
+ * directeur (les deux étapes). Aucun fonds n'a encore été débloqué à
+ * ce stade, rien à extourner, juste à marquer le dossier 'annule'.
+ * Génère un rapport dédié pour le directeur (nom de l'auteur, date,
+ * crédit) — y compris quand c'est le directeur lui-même qui supprime,
+ * pour garder une trace complète.
  */
 export async function cancelCreditAwaitingDoubleValidation({ creditId, motif, actorId }) {
   if (!motif || motif.trim().length < 5) {
@@ -641,11 +644,13 @@ export async function cancelCreditAwaitingDoubleValidation({ creditId, motif, ac
     if (!credit) throw new ApiError(404, 'Dossier introuvable.');
 
     const { rows: updated } = await client.query(
-      `UPDATE credit_requests SET status = 'annule' WHERE id = $1 AND status = 'valide_commission' RETURNING id`,
+      `UPDATE credit_requests SET status = 'annule'
+       WHERE id = $1 AND status IN ('valide_commission', 'valide_double')
+       RETURNING id`,
       [creditId]
     );
     if (!updated[0]) {
-      throw new ApiError(409, 'Seul un dossier en attente de double validation peut être supprimé ainsi.');
+      throw new ApiError(409, 'Seul un dossier en attente de double validation ou d’approbation finale peut être supprimé ainsi.');
     }
 
     await client.query(

@@ -142,6 +142,7 @@ export const PERMISSIONS = {
     'credits.suspendre',
     'coffres.lire',
     'coffres.transferer',
+    'credits.supprimer_double_validation',
 
     // Simuler un crédit pour expliquer des mensualités à un client au
     // téléphone ou au guichet — aucun enregistrement, un pur calcul,

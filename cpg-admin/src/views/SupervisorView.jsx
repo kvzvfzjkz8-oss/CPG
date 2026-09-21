@@ -15,6 +15,7 @@ import {
   approveCredit, setUserStatus, fetchUsers, createUser, updateUser, resetClientPin, fetchStatistics, fetchMomoTransactions,
   fetchPendingInstallmentAdjustments, decideInstallmentAdjustment,
   fetchFinalApprovalQueue, grantExceptionAuthorization, fetchExceptionAuthorizations,
+  supprimerCreditDoubleValidation,
   fetchDemandesCaisseEnAttente, validerOperationCaisse, rejeterOperationCaisse,
   fetchAuditLog, fetchCaissePrincipale, alimenterCaissePrincipale,
   simulateCredit, fetchProducts, creerDemandePourClient, searchClientPourDemande,
@@ -236,6 +237,9 @@ function FinalValidation() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(null);
   const [toast, setToast] = useState('');
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState(null);
+  const [deleteMotif, setDeleteMotif] = useState('');
+  const [deleteError, setDeleteError] = useState('');
 
   const load = async () => {
     setLoading(true);
@@ -259,6 +263,27 @@ function FinalValidation() {
     } catch (e) {
       setToast(e.message);
       setTimeout(() => setToast(''), 4000);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const doDelete = async (r) => {
+    if (deleteMotif.trim().length < 5) {
+      setDeleteError('Précisez le motif (5 caractères minimum).');
+      return;
+    }
+    setBusy(r.id);
+    setDeleteError('');
+    try {
+      await supprimerCreditDoubleValidation(r.id, deleteMotif.trim());
+      setToast(`${r.client} — dossier supprimé avant déblocage des fonds.`);
+      setPending((prev) => prev.filter((x) => x.id !== r.id));
+      setConfirmingDeleteId(null);
+      setDeleteMotif('');
+      setTimeout(() => setToast(''), 4000);
+    } catch (e) {
+      setDeleteError(e.message ?? 'Suppression impossible.');
     } finally {
       setBusy(null);
     }
@@ -321,6 +346,30 @@ function FinalValidation() {
               <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
                 {r.poste} · Réf. {r.id} · double validation faite
               </p>
+              {confirmingDeleteId === r.id && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
+                  <input
+                    value={deleteMotif}
+                    onChange={(e) => setDeleteMotif(e.target.value)}
+                    placeholder="Motif de la suppression"
+                    style={{ padding: '4px 8px', borderRadius: 6, border: `1px solid ${colors.line}`, fontSize: 11, fontFamily: fonts.body, width: 180 }}
+                  />
+                  <button
+                    onClick={() => doDelete(r)}
+                    disabled={busy === r.id}
+                    style={{ padding: '5px 10px', borderRadius: 7, border: 'none', background: colors.danger, color: '#fff', fontSize: 11, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer' }}
+                  >
+                    Confirmer
+                  </button>
+                  <button
+                    onClick={() => { setConfirmingDeleteId(null); setDeleteMotif(''); setDeleteError(''); }}
+                    style={{ border: 'none', background: 'transparent', color: colors.muted, fontSize: 11, cursor: 'pointer', fontFamily: fonts.body }}
+                  >
+                    Annuler
+                  </button>
+                  {deleteError && <span style={{ fontSize: 10, color: colors.danger, fontFamily: fonts.body }}>{deleteError}</span>}
+                </div>
+              )}
             </div>
             <div style={{ textAlign: 'right' }}>
               <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.mono }}>
@@ -330,6 +379,15 @@ function FinalValidation() {
                 {r.duree} mois
               </p>
             </div>
+            {confirmingDeleteId !== r.id && (
+              <button
+                onClick={() => setConfirmingDeleteId(r.id)}
+                title="Supprimer ce dossier avant déblocage des fonds"
+                style={{ border: 'none', background: 'transparent', color: colors.danger, fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: fonts.body }}
+              >
+                Supprimer
+              </button>
+            )}
             <button onClick={() => approve(r)} disabled={busy === r.id} style={actionBtn(colors.forest, '#fff')}>
               <Check size={12} style={{ marginRight: 4 }} /> Approuver et débloquer les fonds
             </button>

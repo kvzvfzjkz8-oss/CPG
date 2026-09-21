@@ -125,6 +125,7 @@ export const PERMISSIONS = {
     'rapports_suppression.archiver',
     'coffres.lire',
     'coffres.transferer',
+    'credits.supprimer_double_validation',
     'momo.superviser',
     'audit.lire',
     'credits.simuler',
