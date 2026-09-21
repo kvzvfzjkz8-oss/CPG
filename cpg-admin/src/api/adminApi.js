@@ -107,8 +107,13 @@ export async function fetchUsers() {
   return utilisateurs;
 }
 
+/** Fiche complète d'un client : ses informations et l'historique de tous ses crédits. */
+export async function fetchClientDetail(clientId) {
+  return apiRequest(`/v1/admin/clients/${clientId}`);
+}
+
 /** Création d'un compte employé ou client. */
-export async function createUser({ nomComplet, telephone, email, role, motDePasse, codePin, employeur, poste }) {
+export async function createUser({ nomComplet, telephone, email, role, motDePasse, codePin, employeur, poste, confirmerDoublon }) {
   return apiRequest('/v1/admin/utilisateurs', {
     method: 'POST',
     body: {
@@ -122,6 +127,7 @@ export async function createUser({ nomComplet, telephone, email, role, motDePass
       ...(codePin ? { codePin } : {}),
       ...(employeur ? { employeur } : {}),
       ...(poste ? { poste } : {}),
+      ...(confirmerDoublon ? { confirmerDoublon } : {}),
     },
   });
 }

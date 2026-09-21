@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import {
   LayoutDashboard, ShieldCheck, Users, Wallet, UserCog, Bell, Package, CalendarClock, Check, X,
-  Gavel, KeyRound, History, Calculator, Inbox,
+  Gavel, KeyRound, History, Calculator, Inbox, Info,
 } from 'lucide-react';
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   PieChart, Pie, Cell,
 } from 'recharts';
 import { colors, fonts, formatFCFA } from '../theme';
+import { CreditsEnCoursPanel, ClientDetailModal } from '../components/ClientsCredits';
 import { Card, Badge, Tabs, KpiCard, SectionTitle, DataTable, td } from '../components/UI';
 import {
   approveCredit, setUserStatus, fetchUsers, createUser, updateUser, resetClientPin, fetchStatistics, fetchMomoTransactions,
@@ -17,7 +18,7 @@ import {
   fetchAuditLog, fetchCaissePrincipale, alimenterCaissePrincipale,
   simulateCredit, fetchProducts, creerDemandePourClient, searchClientPourDemande,
   fetchCreditApprouvePourClient, ouvrirContratCredit, ouvrirBrouillardCaisse, ouvrirJustificatifCaisse,
-  fetchCreditRequests,
+  fetchCreditRequests, fetchClientDetail,
 } from '../api/adminApi';
 import { can } from '../auth/roles';
 import CatalogView from './CatalogView';
@@ -34,6 +35,9 @@ export default function SupervisorView({ role }) {
   }
   if (can(role, 'demandes.lire')) {
     tabs.push({ key: 'demandes', label: 'Demandes en attente', icon: Inbox });
+  }
+  if (can(role, 'demandes.lire')) {
+    tabs.push({ key: 'credits-actifs', label: 'Crédits en cours', icon: Wallet });
   }
   if (can(role, 'credits.simuler')) {
     tabs.push({ key: 'simulation', label: 'Simulation', icon: Calculator });
@@ -69,6 +73,7 @@ export default function SupervisorView({ role }) {
       {tab === 'vue' && <Overview />}
       {tab === 'commission' && <CommissionView role={role} />}
       {tab === 'demandes' && <DemandesEnAttenteLectureSeule />}
+      {tab === 'credits-actifs' && <CreditsEnCoursPanel />}
       {tab === 'simulation' && <SimulationPanel />}
       {tab === 'validation' && <FinalValidation />}
       {tab === 'catalogue' && <CatalogView role={role} />}
@@ -782,6 +787,7 @@ function CaissePrincipalePanel() {
 function DemandesEnAttenteLectureSeule() {
   const [demandes, setDemandes] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [clientOuvert, setClientOuvert] = useState(null);
 
   useEffect(() => {
     Promise.all([
@@ -819,9 +825,13 @@ function DemandesEnAttenteLectureSeule() {
         >
           <div style={{ minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>
-                {d.client} · {d.reference}
-              </p>
+              <button
+                onClick={() => setClientOuvert({ id: d.client_id, nom: d.client })}
+                style={{ margin: 0, padding: 0, border: 'none', background: 'transparent', fontSize: 13, fontWeight: 500, color: colors.forestLight, fontFamily: fonts.body, cursor: 'pointer', textDecoration: 'underline' }}
+              >
+                {d.client}
+              </button>
+              <span style={{ fontSize: 13, color: colors.ink, fontFamily: fonts.body }}>· {d.reference}</span>
               <Badge tone={d.etape.startsWith('Validé') ? 'gold' : 'neutral'}>{d.etape}</Badge>
             </div>
             <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
@@ -834,6 +844,8 @@ function DemandesEnAttenteLectureSeule() {
           </p>
         </div>
       ))}
+
+      {clientOuvert && <ClientDetailModal clientId={clientOuvert.id} nom={clientOuvert.nom} onClose={() => setClientOuvert(null)} />}
     </Card>
   );
 }
@@ -1153,6 +1165,7 @@ function UserManagement() {
   const [resetBusy, setResetBusy] = useState(null);
   const [toast, setToast] = useState('');
   const [editingId, setEditingId] = useState(null);
+  const [detailsOuvertId, setDetailsOuvertId] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [editBusy, setEditBusy] = useState(false);
   const [editError, setEditError] = useState('');
@@ -1234,7 +1247,7 @@ function UserManagement() {
     }
   };
 
-  const submitCreate = async (e) => {
+  const submitCreate = async (e, forcerDoublon = false) => {
     e.preventDefault();
     setBusy(true);
     setError('');
@@ -1248,6 +1261,7 @@ function UserManagement() {
       const payload = form.role === 'client'
         ? { nomComplet: form.nomComplet, telephone: form.telephone, role: form.role, codePin: form.codePin }
         : { nomComplet: form.nomComplet, telephone: form.telephone, role: form.role, email: form.email, motDePasse: form.motDePasse };
+      if (forcerDoublon) payload.confirmerDoublon = true;
 
       const cree = await createUser(payload);
       setCreating(false);
@@ -1257,7 +1271,15 @@ function UserManagement() {
         flash(`Compte créé — numéro client ${cree.client_number}. Communiquez-le au client pour qu'il active son PIN dans l'app.`);
       }
     } catch (err) {
-      setError(err.message ?? 'Création impossible.');
+      if (err.code === 'confirmation_doublon_requise') {
+        // eslint-disable-next-line no-alert
+        if (window.confirm(`${err.message}\n\nCréer quand même ce compte ?`)) {
+          return submitCreate(e, true);
+        }
+        setError('Création annulée.');
+      } else {
+        setError(err.message ?? 'Création impossible.');
+      }
     } finally {
       setBusy(false);
     }
@@ -1389,7 +1411,31 @@ function UserManagement() {
               </td>
             ) : (
               <>
-                <td style={{ ...td, fontWeight: 500 }}>{u.full_name}</td>
+                <td style={{ ...td, fontWeight: 500 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span>{u.full_name}</span>
+                    <button
+                      onClick={() => setDetailsOuvertId(detailsOuvertId === u.id ? null : u.id)}
+                      title="Qui a créé / modifié cette fiche"
+                      style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: 0, display: 'flex' }}
+                    >
+                      <Info size={13} color={colors.muted} />
+                    </button>
+                  </div>
+                  {detailsOuvertId === u.id && (
+                    <div style={{ marginTop: 6, padding: '8px 10px', borderRadius: 8, background: colors.bg, border: `1px solid ${colors.line}` }}>
+                      <p style={{ margin: 0, fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+                        Créé par <strong style={{ color: colors.ink }}>{u.cree_par ?? 'inconnu'}</strong>
+                        {u.created_at ? ` le ${new Date(u.created_at).toLocaleDateString('fr-FR')}` : ''}
+                      </p>
+                      {u.modifie_par && (
+                        <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+                          Dernière modification par <strong style={{ color: colors.ink }}>{u.modifie_par}</strong>
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </td>
                 <td style={{ ...td, color: colors.muted, fontFamily: fonts.mono }}>{u.client_number ?? '—'}</td>
                 <td style={{ ...td, color: colors.muted }}>{u.employer ?? '—'}</td>
                 <td style={{ ...td, color: colors.muted }}>{u.role}</td>

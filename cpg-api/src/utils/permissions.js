@@ -201,6 +201,11 @@ export const PERMISSIONS = {
     'caisse.demander_depense',
     'caisse.encaisser_client',
     'caisse.cloturer',
+
+    // Voir les clients ayant un crédit en cours — en lecture, comme
+    // le reste du personnel : utile au guichet pour situer un client
+    // qui se présente, sans avoir à ouvrir chaque dossier séparément.
+    'demandes.lire',
   ],
 
   // L'administrateur technique hérite de tout, mais reste tracé dans

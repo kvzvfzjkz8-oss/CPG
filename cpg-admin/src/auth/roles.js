@@ -176,6 +176,7 @@ export const PERMISSIONS = {
     'caisse.demander_appro',
     'caisse.consulter_sa_caisse',
     'caisse.imprimer_rib',
+    'demandes.lire',
   ],
 };
 

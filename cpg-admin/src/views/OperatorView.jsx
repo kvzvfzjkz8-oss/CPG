@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Inbox, ShieldCheck, MessageCircle, Check, X, Eye, Filter, Send, CalendarClock, Gavel, Plus,
+  Inbox, ShieldCheck, MessageCircle, Check, X, Eye, Filter, Send, CalendarClock, Gavel, Plus, Wallet,
 } from 'lucide-react';
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, Tabs, SectionTitle } from '../components/UI';
@@ -11,6 +11,7 @@ import {
   searchClientPourDemande, creerDemandePourClient,
 } from '../api/adminApi';
 import OperationsView from './OperationsView';
+import { CreditsEnCoursPanel } from '../components/ClientsCredits';
 
 export default function OperatorView() {
   const [tab, setTab] = useState('demandes');
@@ -37,6 +38,7 @@ export default function OperatorView() {
         onChange={setTab}
         options={[
           { key: 'demandes', label: 'Demandes entrantes', icon: Inbox },
+          { key: 'credits-actifs', label: 'Crédits en cours', icon: Wallet },
           { key: 'double-validation', label: 'Double validation', icon: Gavel },
           { key: 'verification', label: 'Vérification client', icon: ShieldCheck },
           { key: 'operations', label: 'Opérations mensuelles', icon: CalendarClock },
@@ -44,6 +46,7 @@ export default function OperatorView() {
         ]}
       />
       {tab === 'demandes' && <IncomingRequests />}
+      {tab === 'credits-actifs' && <CreditsEnCoursPanel />}
       {tab === 'double-validation' && <DoubleValidation />}
       {tab === 'verification' && <ClientVerification />}
       {tab === 'operations' && <OperationsView />}

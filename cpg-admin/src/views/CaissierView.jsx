@@ -11,6 +11,7 @@ import {
   demanderDepenseCaisse, encaisserClient,
   fetchClotureDuJour, cloturerCaisse,
 } from '../api/adminApi';
+import { CreditsEnCoursPanel } from '../components/ClientsCredits';
 
 const actionBtn = (bg, fg) => ({
   padding: '10px 18px',
@@ -282,6 +283,10 @@ export default function CaissierView() {
           </div>
         ))}
       </Card>
+
+      <div style={{ marginTop: 16 }}>
+        <CreditsEnCoursPanel />
+      </div>
     </div>
   );
 }

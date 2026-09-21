@@ -52,7 +52,7 @@ router.get(
       const { rows } = await query(
         `SELECT c.id, c.reference, c.amount, c.duration_months, c.status, c.created_at,
                 c.level1_at, c.approved_at,
-                u.full_name AS client, u.job_title, u.employer, u.client_number, u.phone
+                u.id AS client_id, u.full_name AS client, u.job_title, u.employer, u.client_number, u.phone
          FROM credit_requests c
          JOIN users u ON u.id = c.user_id
          WHERE ($1::credit_status IS NULL OR c.status = $1)
@@ -558,13 +558,53 @@ router.post(
    UTILISATEURS — Superviseur uniquement
    ═══════════════════════════════════════════════════════════════════ */
 
+/**
+ * GET /admin/clients/:id — fiche complète d'un client : ses
+ * informations, le solde de son compte, et l'historique de tous ses
+ * crédits (en cours et passés). Accessible à quiconque peut déjà lire
+ * des dossiers de crédit — c'est le même niveau d'information, juste
+ * regroupé par client plutôt que par dossier.
+ */
+router.get('/clients/:id', requirePermission('demandes.lire'), async (req, res, next) => {
+  try {
+    const { rows: client } = await query(
+      `SELECT u.id, u.full_name, u.phone, u.client_number, u.job_title, u.employer,
+              u.status, u.created_at, b.balance
+       FROM users u
+       LEFT JOIN accounts a ON a.user_id = u.id
+       LEFT JOIN account_balances b ON b.account_id = a.id
+       WHERE u.id = $1 AND u.role = 'client'`,
+      [req.params.id]
+    );
+    if (!client[0]) throw new ApiError(404, 'Client introuvable.');
+
+    const { rows: credits } = await query(
+      `SELECT id, reference, amount, duration_months, status, monthly_payment,
+              created_at, level1_at, approved_at
+       FROM credit_requests
+       WHERE user_id = $1
+       ORDER BY created_at DESC`,
+      [req.params.id]
+    );
+
+    res.json({ client: client[0], credits });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/utilisateurs', requirePermission('utilisateurs.gerer'), async (req, res, next) => {
   try {
     const { rows } = await query(
-      `SELECT id, full_name, phone, email, role, status, client_number, job_title, employer, created_at,
-              (pin_hash IS NOT NULL AND role <> 'client') AS pin_backoffice_defini,
-              pin_updated_at
-       FROM users ORDER BY full_name LIMIT 200`
+      `SELECT u.id, u.full_name, u.phone, u.email, u.role, u.status, u.client_number,
+              u.job_title, u.employer, u.created_at,
+              (u.pin_hash IS NOT NULL AND u.role <> 'client') AS pin_backoffice_defini,
+              u.pin_updated_at,
+              cb.full_name AS cree_par, ub.full_name AS modifie_par
+       FROM users u
+       LEFT JOIN users cb ON cb.id = u.created_by
+       LEFT JOIN users ub ON ub.id = u.updated_by
+       ORDER BY u.full_name LIMIT 200`
     );
     res.json({ utilisateurs: rows });
   } catch (error) {
@@ -581,6 +621,7 @@ const createUserSchema = z.object({
   codePin: z.string().regex(/^\d{4,6}$/).optional(), // clients
   employeur: z.string().max(120).optional(),
   poste: z.string().max(120).optional(),
+  confirmerDoublon: z.boolean().optional().default(false),
 });
 
 router.post(
@@ -598,6 +639,31 @@ router.post(
       // définir un directement s'il préfère.
       if (b.role !== 'client' && (!b.motDePasse || !b.email)) {
         throw new ApiError(422, 'Un email et un mot de passe sont requis pour un compte employé.');
+      }
+
+      // Deux clients ne peuvent jamais porter exactement le même nom
+      // sans que ce soit signalé — un homonyme réel doit rester
+      // possible, mais seul le directeur peut le confirmer en
+      // connaissance de cause, jamais un doublon créé par erreur.
+      const { rows: homonymes } = await query(
+        `SELECT id, full_name, client_number, created_at FROM users WHERE lower(full_name) = lower($1)`,
+        [b.nomComplet]
+      );
+      if (homonymes.length > 0) {
+        if (req.user.role !== 'directeur') {
+          throw new ApiError(
+            409,
+            `Un compte existe déjà au nom de « ${homonymes[0].full_name} ». Seul le directeur peut confirmer un homonyme.`,
+            'nom_duplique'
+          );
+        }
+        if (!b.confirmerDoublon) {
+          throw new ApiError(
+            409,
+            `Un compte existe déjà au nom de « ${homonymes[0].full_name} »${homonymes[0].client_number ? ` (${homonymes[0].client_number})` : ''}. Confirmez pour créer quand même un homonyme.`,
+            'confirmation_doublon_requise'
+          );
+        }
       }
 
       const pinHash = b.codePin ? await bcrypt.hash(b.codePin, 12) : null;
@@ -687,6 +753,7 @@ router.patch(
       if (b.email !== undefined) push('email', b.email.toLowerCase());
       if (b.employeur !== undefined) push('employer', b.employeur);
       if (b.poste !== undefined) push('job_title', b.poste);
+      push('updated_by', req.user.id);
 
       const { rows } = await query(
         `UPDATE users SET ${sets.join(', ')} WHERE id = $1
