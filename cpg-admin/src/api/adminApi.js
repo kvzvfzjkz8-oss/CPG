@@ -92,6 +92,21 @@ export async function approveCredit(requestId) {
   return apiRequest(`/v1/admin/credits/${requestId}/approuver`, { method: 'POST' });
 }
 
+/** Suppression d'un crédit actif créé en excès — réservé au directeur, extourne le déblocage et les frais. */
+export async function supprimerCreditActif(creditId, motif) {
+  return apiRequest(`/v1/admin/operations/credits/${creditId}/supprimer`, { method: 'POST', body: { motif } });
+}
+
+/** Suspend temporairement un crédit actif (Gestionnaire ou Directeur) — réversible. */
+export async function suspendreCreditActif(creditId, motif) {
+  return apiRequest(`/v1/admin/operations/credits/${creditId}/suspendre`, { method: 'POST', body: { motif } });
+}
+
+/** Lève une suspension. */
+export async function reactiverCreditSuspendu(creditId) {
+  return apiRequest(`/v1/admin/operations/credits/${creditId}/reactiver`, { method: 'POST' });
+}
+
 /** Rejet d'une demande, avec motif transmis au client. */
 export async function rejectCredit(requestId, motif = '') {
   return apiRequest(`/v1/admin/credits/${requestId}/rejeter`, { method: 'POST', body: { motif } });

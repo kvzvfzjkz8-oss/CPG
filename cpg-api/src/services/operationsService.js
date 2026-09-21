@@ -495,6 +495,131 @@ export async function reverseTransaction({ ledgerEntryId, motif, actorId }) {
 }
 
 /**
+ * Supprime un crédit actif créé en excès (doublon, erreur de saisie)
+ * — réservé au directeur. Ne touche jamais au journal directement :
+ * porte une extourne sur le déblocage (et les frais associés, s'il y
+ * en a) via le même mécanisme que reverseTransaction, puis marque le
+ * dossier 'annule'. Refusé net si la moindre échéance a déjà été
+ * payée : dans ce cas, il faut régulariser à la main, pas défaire
+ * automatiquement un remboursement déjà reçu.
+ */
+export async function cancelActiveCreditInError({ creditId, motif, actorId }) {
+  if (!motif || motif.trim().length < 5) {
+    throw new ApiError(422, 'Un motif est requis (5 caractères minimum).');
+  }
+
+  return withTransaction(async (client) => {
+    const { rows: creditRows } = await client.query(
+      `SELECT * FROM credit_requests WHERE id = $1 FOR UPDATE`,
+      [creditId]
+    );
+    const credit = creditRows[0];
+    if (!credit) throw new ApiError(404, 'Dossier introuvable.');
+    if (credit.status !== 'approuve' && credit.status !== 'suspendu') {
+      throw new ApiError(409, 'Seul un crédit actif (approuvé) ou suspendu peut être supprimé ainsi.');
+    }
+
+    const { rows: paye } = await client.query(
+      `SELECT 1 FROM installments WHERE credit_id = $1 AND status = 'payee' LIMIT 1`,
+      [creditId]
+    );
+    if (paye[0]) {
+      throw new ApiError(
+        409,
+        'Ce crédit a déjà au moins une échéance payée — la suppression n’est possible que sur un crédit sans aucun remboursement.'
+      );
+    }
+
+    const { rows: deblocage } = await client.query(
+      `SELECT * FROM ledger_entries
+       WHERE reference = $1 AND type = 'deblocage_credit'
+       ORDER BY created_at LIMIT 1 FOR UPDATE`,
+      [credit.reference]
+    );
+    if (!deblocage[0]) {
+      throw new ApiError(422, 'Aucune écriture de déblocage retrouvée pour ce crédit — suppression impossible.');
+    }
+
+    // Les frais de déblocage n'ont pas de référence au crédit dans le
+    // journal, mais ils sont créés dans la même transaction que le
+    // déblocage — le même compte, à quelques secondes d'écart, permet
+    // de les retrouver de façon fiable.
+    const { rows: frais } = await client.query(
+      `SELECT * FROM ledger_entries
+       WHERE account_id = $1 AND type = 'frais'
+         AND created_at BETWEEN $2::timestamptz - interval '2 minutes' AND $2::timestamptz + interval '2 minutes'
+       ORDER BY created_at LIMIT 1 FOR UPDATE`,
+      [deblocage[0].account_id, deblocage[0].created_at]
+    );
+
+    const entriesToReverse = frais[0] ? [deblocage[0], frais[0]] : [deblocage[0]];
+    const reversals = [];
+    for (const entry of entriesToReverse) {
+      const { rows: already } = await client.query(
+        `SELECT 1 FROM ledger_entries WHERE reversed_entry_id = $1`,
+        [entry.id]
+      );
+      if (already[0]) continue; // déjà extourné (ne devrait pas arriver, mais on ne double jamais)
+
+      const { rows: reversal } = await client.query(
+        `INSERT INTO ledger_entries (account_id, type, amount, label, reference, created_by, reversed_entry_id)
+         VALUES ($1, 'annulation', $2, $3, $4, $5, $6)
+         RETURNING id, amount`,
+        [
+          entry.account_id, -entry.amount,
+          `Annulation crédit ${credit.reference} — ${motif.trim()}`,
+          entry.reference, actorId, entry.id,
+        ]
+      );
+      reversals.push({ originalId: entry.id, reversalId: reversal[0].id, montant: -entry.amount });
+    }
+
+    await client.query(
+      `UPDATE credit_requests SET status = 'annule' WHERE id = $1`,
+      [creditId]
+    );
+
+    return { creditId, reference: credit.reference, statut: 'annule', reversals };
+  });
+}
+
+/**
+ * Suspend temporairement un crédit actif suspect (doublon probable,
+ * erreur de saisie) — réversible, rien n'est touché financièrement.
+ * Gestionnaire ou directeur.
+ */
+export async function suspendActiveCredit({ creditId, motif, actorId }) {
+  if (!motif || motif.trim().length < 5) {
+    throw new ApiError(422, 'Un motif est requis (5 caractères minimum).');
+  }
+  const { rows } = await query(
+    `UPDATE credit_requests
+     SET status = 'suspendu', suspended_by = $2, suspended_at = now(), suspend_motif = $3
+     WHERE id = $1 AND status = 'approuve'
+     RETURNING id, reference, status`,
+    [creditId, actorId, motif.trim()]
+  );
+  if (!rows[0]) throw new ApiError(409, 'Seul un crédit actif (approuvé) peut être suspendu.');
+  return rows[0];
+}
+
+/**
+ * Lève une suspension — remet le crédit comme s'il n'avait jamais
+ * été suspendu. Gestionnaire ou directeur.
+ */
+export async function reactivateSuspendedCredit({ creditId }) {
+  const { rows } = await query(
+    `UPDATE credit_requests
+     SET status = 'approuve', suspended_by = NULL, suspended_at = NULL, suspend_motif = NULL
+     WHERE id = $1 AND status = 'suspendu'
+     RETURNING id, reference, status`,
+    [creditId]
+  );
+  if (!rows[0]) throw new ApiError(409, 'Ce crédit n’est pas suspendu.');
+  return rows[0];
+}
+
+/**
  * Retrouve l'échéancier d'un crédit par sa référence lisible
  * (CPG-xxxx) plutôt que par son UUID interne — c'est ce que
  * l'opérateur a sous les yeux, jamais l'identifiant technique.

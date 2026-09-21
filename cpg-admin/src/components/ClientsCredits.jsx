@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X } from 'lucide-react';
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, SectionTitle } from './UI';
-import { fetchCreditRequests, fetchClientDetail } from '../api/adminApi';
+import { fetchCreditRequests, fetchClientDetail, supprimerCreditActif, suspendreCreditActif, reactiverCreditSuspendu } from '../api/adminApi';
 
 const STATUT_LABEL = {
   en_verification: 'En attente de validation niveau 1',
@@ -11,10 +11,12 @@ const STATUT_LABEL = {
   valide_commission: 'Validé en commission — en attente de double validation',
   valide_double: "Double validation faite — en attente d'approbation finale",
   approuve: 'Approuvé — crédit actif',
+  suspendu: 'Suspendu',
+  annule: 'Annulé',
   rejete: 'Rejeté',
 };
 const STATUT_TONE = {
-  approuve: 'neutral', rejete: 'danger', en_verification: 'neutral',
+  approuve: 'neutral', rejete: 'danger', en_verification: 'neutral', suspendu: 'gold', annule: 'danger',
 };
 
 /**
@@ -23,14 +25,86 @@ const STATUT_TONE = {
  * utile pour situer rapidement un client qui se présente, sans avoir
  * à ouvrir chaque dossier séparément. Lecture uniquement.
  */
-export function CreditsEnCoursPanel() {
+export function CreditsEnCoursPanel({ role }) {
   const [credits, setCredits] = useState([]);
   const [loading, setLoading] = useState(true);
   const [clientOuvert, setClientOuvert] = useState(null);
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState(null);
+  const [deleteMotif, setDeleteMotif] = useState('');
+  const [deleteBusy, setDeleteBusy] = useState(null);
+  const [deleteError, setDeleteError] = useState('');
+  const [confirmingSuspendId, setConfirmingSuspendId] = useState(null);
+  const [suspendMotif, setSuspendMotif] = useState('');
+  const [suspendBusy, setSuspendBusy] = useState(null);
+  const [suspendError, setSuspendError] = useState('');
 
-  useEffect(() => {
-    fetchCreditRequests('approuve').then(setCredits).finally(() => setLoading(false));
-  }, []);
+  const peutGerer = role === 'directeur' || role === 'superviseur';
+
+  const load = () => {
+    Promise.all([
+      fetchCreditRequests('approuve'),
+      fetchCreditRequests('suspendu'),
+    ])
+      .then(([actifs, suspendus]) => {
+        const fusion = [...actifs, ...suspendus];
+        fusion.sort((a, b) => a.client.localeCompare(b.client));
+        setCredits(fusion);
+      })
+      .catch(() => setCredits([]))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const doDelete = async (c) => {
+    if (deleteMotif.trim().length < 5) {
+      setDeleteError('Précisez le motif (5 caractères minimum).');
+      return;
+    }
+    setDeleteBusy(c.id);
+    setDeleteError('');
+    try {
+      await supprimerCreditActif(c.id, deleteMotif.trim());
+      setConfirmingDeleteId(null);
+      setDeleteMotif('');
+      load();
+    } catch (err) {
+      setDeleteError(err.message ?? 'Suppression impossible.');
+    } finally {
+      setDeleteBusy(null);
+    }
+  };
+
+  const doSuspend = async (c) => {
+    if (suspendMotif.trim().length < 5) {
+      setSuspendError('Précisez le motif (5 caractères minimum).');
+      return;
+    }
+    setSuspendBusy(c.id);
+    setSuspendError('');
+    try {
+      await suspendreCreditActif(c.id, suspendMotif.trim());
+      setConfirmingSuspendId(null);
+      setSuspendMotif('');
+      load();
+    } catch (err) {
+      setSuspendError(err.message ?? 'Suspension impossible.');
+    } finally {
+      setSuspendBusy(null);
+    }
+  };
+
+  const doReactiver = async (c) => {
+    setSuspendBusy(c.id);
+    try {
+      await reactiverCreditSuspendu(c.id);
+      load();
+    } catch (err) {
+      setSuspendError(err.message ?? 'Réactivation impossible.');
+    } finally {
+      setSuspendBusy(null);
+    }
+  };
 
   return (
     <Card style={{ padding: 0, overflow: 'hidden' }}>
@@ -61,15 +135,94 @@ export function CreditsEnCoursPanel() {
                 {c.client}
               </button>
               <span style={{ fontSize: 13, color: colors.ink, fontFamily: fonts.body }}>· {c.reference}</span>
+              {c.status === 'suspendu' && <Badge tone="gold">Suspendu</Badge>}
             </div>
             <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
               {c.job_title ?? ''}{c.job_title && c.employer ? ' · ' : ''}{c.employer ?? ''}
               {c.client_number ? ` · ${c.client_number}` : ''}
             </p>
+            {role === 'directeur' && confirmingDeleteId === c.id && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
+                <input
+                  value={deleteMotif}
+                  onChange={(e) => setDeleteMotif(e.target.value)}
+                  placeholder="Motif de la suppression"
+                  style={{ padding: '4px 8px', borderRadius: 6, border: `1px solid ${colors.line}`, fontSize: 11, fontFamily: fonts.body, width: 180 }}
+                />
+                <button
+                  onClick={() => doDelete(c)}
+                  disabled={deleteBusy === c.id}
+                  style={{ padding: '5px 10px', borderRadius: 7, border: 'none', background: colors.danger, color: '#fff', fontSize: 11, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer' }}
+                >
+                  Confirmer
+                </button>
+                <button
+                  onClick={() => { setConfirmingDeleteId(null); setDeleteMotif(''); setDeleteError(''); }}
+                  style={{ border: 'none', background: 'transparent', color: colors.muted, fontSize: 11, cursor: 'pointer', fontFamily: fonts.body }}
+                >
+                  Annuler
+                </button>
+                {deleteError && <span style={{ fontSize: 10, color: colors.danger, fontFamily: fonts.body }}>{deleteError}</span>}
+              </div>
+            )}
+            {peutGerer && confirmingSuspendId === c.id && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
+                <input
+                  value={suspendMotif}
+                  onChange={(e) => setSuspendMotif(e.target.value)}
+                  placeholder="Motif de la suspension"
+                  style={{ padding: '4px 8px', borderRadius: 6, border: `1px solid ${colors.line}`, fontSize: 11, fontFamily: fonts.body, width: 180 }}
+                />
+                <button
+                  onClick={() => doSuspend(c)}
+                  disabled={suspendBusy === c.id}
+                  style={{ padding: '5px 10px', borderRadius: 7, border: 'none', background: colors.goldDark, color: '#fff', fontSize: 11, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer' }}
+                >
+                  Confirmer
+                </button>
+                <button
+                  onClick={() => { setConfirmingSuspendId(null); setSuspendMotif(''); setSuspendError(''); }}
+                  style={{ border: 'none', background: 'transparent', color: colors.muted, fontSize: 11, cursor: 'pointer', fontFamily: fonts.body }}
+                >
+                  Annuler
+                </button>
+                {suspendError && <span style={{ fontSize: 10, color: colors.danger, fontFamily: fonts.body }}>{suspendError}</span>}
+              </div>
+            )}
           </div>
-          <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: colors.ink, fontFamily: fonts.mono, whiteSpace: 'nowrap' }}>
-            {formatFCFA(c.amount)} F
-          </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+            <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: colors.ink, fontFamily: fonts.mono, whiteSpace: 'nowrap' }}>
+              {formatFCFA(c.amount)} F
+            </p>
+            {peutGerer && c.status === 'approuve' && confirmingSuspendId !== c.id && (
+              <button
+                onClick={() => setConfirmingSuspendId(c.id)}
+                title="Suspendre temporairement ce crédit (réversible)"
+                style={{ border: 'none', background: 'transparent', color: colors.goldDark, fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: fonts.body }}
+              >
+                Suspendre
+              </button>
+            )}
+            {peutGerer && c.status === 'suspendu' && (
+              <button
+                onClick={() => doReactiver(c)}
+                disabled={suspendBusy === c.id}
+                title="Lever la suspension"
+                style={{ border: 'none', background: 'transparent', color: colors.forestLight, fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: fonts.body }}
+              >
+                {suspendBusy === c.id ? '…' : 'Réactiver'}
+              </button>
+            )}
+            {role === 'directeur' && confirmingDeleteId !== c.id && (
+              <button
+                onClick={() => setConfirmingDeleteId(c.id)}
+                title="Supprimer ce crédit (créé en excès)"
+                style={{ border: 'none', background: 'transparent', color: colors.danger, fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: fonts.body }}
+              >
+                Supprimer
+              </button>
+            )}
+          </div>
         </div>
       ))}
 

@@ -77,7 +77,7 @@ export default function SupervisorView({ role }) {
       {tab === 'vue' && <Overview onOuvrirCredits={() => setTab('credits-actifs')} />}
       {tab === 'commission' && <CommissionView role={role} />}
       {tab === 'demandes' && <DemandesEnAttenteLectureSeule />}
-      {tab === 'credits-actifs' && <CreditsEnCoursPanel />}
+      {tab === 'credits-actifs' && <CreditsEnCoursPanel role={role} />}
       {tab === 'simulation' && <SimulationPanel />}
       {tab === 'validation' && <FinalValidation />}
       {tab === 'catalogue' && <CatalogView role={role} />}

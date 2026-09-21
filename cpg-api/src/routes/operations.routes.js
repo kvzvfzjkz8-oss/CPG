@@ -8,6 +8,7 @@ import { audit } from '../services/auditService.js';
 import {
   creditAgentSalaries, creditAgentSalariesFromCsv, previewAgentSalariesFromCsv,
   runInstallmentCollection, fetchMonthlyReport, fetchTransactions, reverseTransaction,
+  cancelActiveCreditInError, suspendActiveCredit, reactivateSuspendedCredit,
   fetchInstallmentsByCreditReference, proposeInstallmentAdjustment,
   fetchPendingInstallmentAdjustments, decideInstallmentAdjustment, fetchSchedulerStatus,
 } from '../services/operationsService.js';
@@ -288,6 +289,93 @@ router.post(
       });
 
       res.status(201).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /admin/operations/credits/:id/supprimer — supprime un crédit
+ * actif créé en excès. Réservé au directeur seul.
+ */
+router.post(
+  '/credits/:id/supprimer',
+  requirePermission('credits.supprimer_actif'),
+  validate(z.object({ motif: z.string().min(5).max(500) })),
+  async (req, res, next) => {
+    try {
+      const result = await cancelActiveCreditInError({
+        creditId: req.params.id,
+        motif: req.body.motif,
+        actorId: req.user.id,
+      });
+
+      await audit(req, {
+        action: 'credit.annule_en_erreur',
+        entityType: 'credit_request',
+        entityId: result.creditId,
+        metadata: { motif: req.body.motif, reference: result.reference },
+      });
+
+      res.status(201).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /admin/operations/credits/:id/suspendre — met un crédit
+ * suspect de côté, sans rien toucher financièrement. Réversible.
+ * Gestionnaire ou directeur.
+ */
+router.post(
+  '/credits/:id/suspendre',
+  requirePermission('credits.suspendre'),
+  validate(z.object({ motif: z.string().min(5).max(500) })),
+  async (req, res, next) => {
+    try {
+      const result = await suspendActiveCredit({
+        creditId: req.params.id,
+        motif: req.body.motif,
+        actorId: req.user.id,
+      });
+
+      await audit(req, {
+        action: 'credit.suspendu',
+        entityType: 'credit_request',
+        entityId: result.id,
+        metadata: { motif: req.body.motif, reference: result.reference },
+      });
+
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /admin/operations/credits/:id/reactiver — annule une
+ * suspension, remet le crédit comme s'il n'avait jamais été suspendu.
+ * Gestionnaire ou directeur.
+ */
+router.post(
+  '/credits/:id/reactiver',
+  requirePermission('credits.suspendre'),
+  async (req, res, next) => {
+    try {
+      const result = await reactivateSuspendedCredit({ creditId: req.params.id });
+
+      await audit(req, {
+        action: 'credit.reactive',
+        entityType: 'credit_request',
+        entityId: result.id,
+        metadata: { reference: result.reference },
+      });
+
+      res.json(result);
     } catch (error) {
       next(error);
     }

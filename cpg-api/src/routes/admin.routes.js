@@ -36,7 +36,7 @@ router.use('/commission', commissionRoutes);
 const listQuery = z.object({
   statut: z.enum([
     'en_verification', 'valide_niveau1', 'en_attente_commission',
-    'valide_commission', 'valide_double', 'approuve', 'rejete',
+    'valide_commission', 'valide_double', 'approuve', 'rejete', 'suspendu', 'annule',
   ]).optional(),
   limite: z.coerce.number().int().min(1).max(1000).default(50),
 });
