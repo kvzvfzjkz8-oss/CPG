@@ -604,6 +604,7 @@ router.get('/utilisateurs', requirePermission('utilisateurs.gerer'), async (req,
        FROM users u
        LEFT JOIN users cb ON cb.id = u.created_by
        LEFT JOIN users ub ON ub.id = u.updated_by
+       WHERE u.status <> 'supprime'
        ORDER BY u.full_name LIMIT 200`
     );
     res.json({ utilisateurs: rows });
@@ -811,6 +812,124 @@ router.patch(
       });
 
       res.json(rows[0]);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /admin/utilisateurs/:id/supprimer — le gestionnaire (ou le
+ * directeur) supprime un client. Jamais une vraie suppression SQL :
+ * bien trop de tables référencent l'utilisateur (crédits, journal,
+ * qui-a-créé-qui...). On désactive le compte et on garde un rapport
+ * dédié pour le directeur, qui l'archive une fois pris connaissance.
+ * Refusé net si le client a le moindre crédit actif ou en cours, ou
+ * un solde non nul — pour ça, il faut d'abord régulariser la
+ * situation, pas juste faire disparaître le dossier.
+ */
+router.post(
+  '/utilisateurs/:id/supprimer',
+  requirePermission('utilisateurs.gerer'),
+  validate(z.object({ motif: z.string().min(5).max(500) })),
+  async (req, res, next) => {
+    try {
+      const { rows: client } = await query(
+        `SELECT u.id, u.full_name, u.client_number, u.role, b.balance
+         FROM users u
+         LEFT JOIN accounts a ON a.user_id = u.id
+         LEFT JOIN account_balances b ON b.account_id = a.id
+         WHERE u.id = $1`,
+        [req.params.id]
+      );
+      if (!client[0]) throw new ApiError(404, 'Client introuvable.');
+      if (client[0].role !== 'client') {
+        throw new ApiError(422, 'Seul un compte client peut être supprimé ainsi.');
+      }
+
+      const { rows: creditsActifs } = await query(
+        `SELECT reference, status FROM credit_requests
+         WHERE user_id = $1 AND status NOT IN ('rejete')`,
+        [req.params.id]
+      );
+      if (creditsActifs.length > 0) {
+        throw new ApiError(
+          409,
+          `Ce client a un dossier de crédit en cours (${creditsActifs[0].reference}) — la suppression n'est possible qu'après régularisation complète.`
+        );
+      }
+      if (Number(client[0].balance ?? 0) !== 0) {
+        throw new ApiError(
+          409,
+          `Le compte de ce client n'est pas à zéro (${client[0].balance} F) — la suppression n'est possible qu'après régularisation complète.`
+        );
+      }
+
+      await withTransaction(async (tx) => {
+        await tx.query(
+          `UPDATE users SET status = 'supprime', updated_by = $2 WHERE id = $1`,
+          [req.params.id, req.user.id]
+        );
+        await tx.query(
+          `UPDATE refresh_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`,
+          [req.params.id]
+        );
+        await tx.query(
+          `INSERT INTO client_deletion_reports (client_id, client_name, client_number, motif, deleted_by)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [req.params.id, client[0].full_name, client[0].client_number, req.body.motif, req.user.id]
+        );
+      });
+
+      await audit(req, {
+        action: 'utilisateur.client_supprime',
+        entityType: 'user',
+        entityId: req.params.id,
+        metadata: { motif: req.body.motif },
+      });
+
+      res.json({ id: req.params.id, statut: 'supprime' });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * GET /admin/rapports-suppression — pour le directeur : chaque
+ * suppression de client faite par le gestionnaire, à archiver une
+ * fois prise connaissance. Non archivées d'abord.
+ */
+router.get('/rapports-suppression', requirePermission('audit.lire'), async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      `SELECT r.id, r.client_name, r.client_number, r.motif, r.deleted_at, r.archived_at,
+              d.full_name AS supprime_par, a.full_name AS archive_par
+       FROM client_deletion_reports r
+       JOIN users d ON d.id = r.deleted_by
+       LEFT JOIN users a ON a.id = r.archived_by
+       ORDER BY r.archived_at IS NOT NULL, r.deleted_at DESC`
+    );
+    res.json({ rapports: rows });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/** POST /admin/rapports-suppression/:id/archiver — réservé au directeur. */
+router.post(
+  '/rapports-suppression/:id/archiver',
+  requirePermission('rapports_suppression.archiver'),
+  async (req, res, next) => {
+    try {
+      const { rows } = await query(
+        `UPDATE client_deletion_reports SET archived_by = $2, archived_at = now()
+         WHERE id = $1 AND archived_at IS NULL
+         RETURNING id`,
+        [req.params.id, req.user.id]
+      );
+      if (!rows[0]) throw new ApiError(404, 'Rapport introuvable ou déjà archivé.');
+      res.json({ id: rows[0].id, archive: true });
     } catch (error) {
       next(error);
     }

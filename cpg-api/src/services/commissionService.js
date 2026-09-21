@@ -207,17 +207,6 @@ export async function depositDifficultyCase({ creditId, note, actorId }) {
     const credit = creditRows[0];
     if (!credit) throw new ApiError(404, 'Dossier introuvable.');
 
-    const { rows: late } = await client.query(
-      `SELECT count(*) AS nombre FROM installments WHERE credit_id = $1 AND status = 'en_retard'`,
-      [creditId]
-    );
-    if (Number(late[0].nombre) === 0) {
-      throw new ApiError(
-        422,
-        'Ce dossier n’a aucune échéance en retard : rien ne justifie un passage en commission pour difficulté.'
-      );
-    }
-
     const { rows: created } = await client.query(
       `INSERT INTO commission_items (session_id, type, credit_id, client_id, titre, note, deposited_by)
        VALUES ($1, 'dossier_difficulte', $2, $3, $4, $5, $6)

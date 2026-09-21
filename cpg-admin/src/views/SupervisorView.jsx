@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   LayoutDashboard, ShieldCheck, Users, Wallet, UserCog, Bell, Package, CalendarClock, Check, X,
-  Gavel, KeyRound, History, Calculator, Inbox, Info,
+  Gavel, KeyRound, History, Calculator, Inbox, Info, Trash2,
 } from 'lucide-react';
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -18,7 +18,8 @@ import {
   fetchAuditLog, fetchCaissePrincipale, alimenterCaissePrincipale,
   simulateCredit, fetchProducts, creerDemandePourClient, searchClientPourDemande,
   fetchCreditApprouvePourClient, ouvrirContratCredit, ouvrirBrouillardCaisse, ouvrirJustificatifCaisse,
-  fetchCreditRequests, fetchClientDetail,
+  fetchCreditRequests, fetchClientDetail, supprimerClient,
+  fetchRapportsSuppression, archiverRapportSuppression,
 } from '../api/adminApi';
 import { can } from '../auth/roles';
 import CatalogView from './CatalogView';
@@ -62,6 +63,9 @@ export default function SupervisorView({ role }) {
   if (can(role, 'audit.lire')) {
     tabs.push({ key: 'audit', label: "Journal d'activité", icon: History });
   }
+  if (can(role, 'rapports_suppression.archiver')) {
+    tabs.push({ key: 'rapports-suppression', label: 'Rapports de suppression', icon: Trash2 });
+  }
 
   return (
     <div>
@@ -83,6 +87,7 @@ export default function SupervisorView({ role }) {
       {tab === 'exceptions' && <ExceptionAuthorizations />}
       {tab === 'caisse' && <CaisseValidation />}
       {tab === 'audit' && <AuditLog />}
+      {tab === 'rapports-suppression' && <RapportsSuppression />}
     </div>
   );
 }
@@ -1154,6 +1159,90 @@ function AuditLog() {
   );
 }
 
+/**
+ * Rapports de suppression de client — réservé au directeur. Chaque
+ * suppression faite par le gestionnaire arrive ici avec le motif,
+ * pour archive une fois prise connaissance.
+ */
+function RapportsSuppression() {
+  const [rapports, setRapports] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [archiveBusy, setArchiveBusy] = useState(null);
+
+  const load = () => {
+    fetchRapportsSuppression().then(setRapports).finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const archiver = async (id) => {
+    setArchiveBusy(id);
+    try {
+      await archiverRapportSuppression(id);
+      load();
+    } catch (err) {
+      // silencieux : le prochain chargement montrera l'état réel
+    } finally {
+      setArchiveBusy(null);
+    }
+  };
+
+  const nonArchives = rapports.filter((r) => !r.archived_at);
+  const archives = rapports.filter((r) => r.archived_at);
+
+  return (
+    <Card style={{ padding: 0, overflow: 'hidden' }}>
+      <SectionTitle>
+        {loading ? 'Chargement…' : `${nonArchives.length} rapport${nonArchives.length > 1 ? 's' : ''} à examiner`}
+      </SectionTitle>
+
+      {!loading && rapports.length === 0 && (
+        <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
+          Aucune suppression de client pour le moment.
+        </p>
+      )}
+
+      {nonArchives.map((r) => (
+        <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 20px', borderBottom: `1px solid ${colors.line}` }}>
+          <div style={{ minWidth: 0 }}>
+            <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
+              {r.client_name} {r.client_number ? `(${r.client_number})` : ''}
+            </p>
+            <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+              {r.motif} — supprimé par <strong>{r.supprime_par}</strong> le {new Date(r.deleted_at).toLocaleDateString('fr-FR')}
+            </p>
+          </div>
+          <button
+            onClick={() => archiver(r.id)}
+            disabled={archiveBusy === r.id}
+            style={{ ...actionBtn(colors.forest, '#fff'), padding: '7px 14px', flexShrink: 0 }}
+          >
+            {archiveBusy === r.id ? '…' : 'Archiver'}
+          </button>
+        </div>
+      ))}
+
+      {archives.length > 0 && (
+        <>
+          <SectionTitle>Archivés ({archives.length})</SectionTitle>
+          {archives.map((r) => (
+            <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 20px', borderBottom: `1px solid ${colors.line}`, opacity: 0.6 }}>
+              <div style={{ minWidth: 0 }}>
+                <p style={{ margin: 0, fontSize: 12, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>
+                  {r.client_name} {r.client_number ? `(${r.client_number})` : ''}
+                </p>
+                <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+                  {r.motif} — archivé par {r.archive_par}
+                </p>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+    </Card>
+  );
+}
+
 function UserManagement() {
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1162,6 +1251,10 @@ function UserManagement() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [confirmingResetId, setConfirmingResetId] = useState(null);
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState(null);
+  const [deleteMotif, setDeleteMotif] = useState('');
+  const [deleteBusy, setDeleteBusy] = useState(null);
+  const [deleteError, setDeleteError] = useState('');
   const [resetBusy, setResetBusy] = useState(null);
   const [toast, setToast] = useState('');
   const [editingId, setEditingId] = useState(null);
@@ -1244,6 +1337,26 @@ function UserManagement() {
       flash(err.message ?? 'Réinitialisation impossible.');
     } finally {
       setResetBusy(null);
+    }
+  };
+
+  const doDeleteClient = async (u) => {
+    if (deleteMotif.trim().length < 5) {
+      setDeleteError('Précisez le motif (5 caractères minimum).');
+      return;
+    }
+    setDeleteBusy(u.id);
+    setDeleteError('');
+    try {
+      await supprimerClient(u.id, deleteMotif.trim());
+      setConfirmingDeleteId(null);
+      setDeleteMotif('');
+      load();
+      flash(`${u.full_name} supprimé — un rapport a été envoyé au directeur.`);
+    } catch (err) {
+      setDeleteError(err.message ?? 'Suppression impossible.');
+    } finally {
+      setDeleteBusy(null);
     }
   };
 
@@ -1491,6 +1604,40 @@ function UserManagement() {
                           style={{ border: 'none', background: 'transparent', color: colors.forestLight, fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: fonts.body }}
                         >
                           Réinitialiser le PIN
+                        </button>
+                      )
+                    )}
+                    {u.role === 'client' && (
+                      confirmingDeleteId === u.id ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <input
+                            value={deleteMotif}
+                            onChange={(e) => setDeleteMotif(e.target.value)}
+                            placeholder="Motif de la suppression"
+                            style={{ padding: '4px 8px', borderRadius: 6, border: `1px solid ${colors.line}`, fontSize: 11, fontFamily: fonts.body, width: 160 }}
+                          />
+                          <button
+                            onClick={() => doDeleteClient(u)}
+                            disabled={deleteBusy === u.id}
+                            style={{ ...actionBtn(colors.danger, '#fff'), padding: '5px 10px' }}
+                          >
+                            Confirmer
+                          </button>
+                          <button
+                            onClick={() => { setConfirmingDeleteId(null); setDeleteMotif(''); setDeleteError(''); }}
+                            style={{ border: 'none', background: 'transparent', color: colors.muted, fontSize: 11, cursor: 'pointer', fontFamily: fonts.body }}
+                          >
+                            Annuler
+                          </button>
+                          {deleteError && <span style={{ fontSize: 10, color: colors.danger, fontFamily: fonts.body }}>{deleteError}</span>}
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setConfirmingDeleteId(u.id)}
+                          title="Supprimer ce client (refusé s'il a un crédit en cours)"
+                          style={{ border: 'none', background: 'transparent', color: colors.danger, fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: fonts.body }}
+                        >
+                          Supprimer
                         </button>
                       )
                     )}

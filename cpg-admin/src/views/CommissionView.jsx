@@ -427,9 +427,9 @@ function DifficultyDeposit({ hasOpenSession, sessionId }) {
         Déposer un dossier en difficulté
       </p>
       <p style={{ margin: '0 0 16px', fontSize: 12, color: colors.muted, fontFamily: fonts.body }}>
-        Réservé à un crédit actif ayant au moins une échéance en retard. La commission décide d'une
-        orientation ; les actions concrètes (décaler une échéance, par exemple) se font ensuite via les
-        outils déjà en place.
+        Pour un crédit actif rencontrant une difficulté — échéance en retard ou situation qui le laisse
+        prévoir. La commission décide d'une orientation ; les actions concrètes (décaler une échéance,
+        par exemple) se font ensuite via les outils déjà en place.
       </p>
       {error && (
         <p style={{ margin: '0 0 12px', fontSize: 12, color: colors.danger, fontFamily: fonts.body }}>{error}</p>

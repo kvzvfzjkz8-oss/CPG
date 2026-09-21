@@ -161,6 +161,21 @@ export async function resetClientPin(userId) {
   return apiRequest(`/v1/admin/utilisateurs/${userId}/reinitialiser-pin-client`, { method: 'POST' });
 }
 
+/** Supprime (désactive) un client — refusé s'il a un crédit en cours ou un solde non nul. */
+export async function supprimerClient(userId, motif) {
+  return apiRequest(`/v1/admin/utilisateurs/${userId}/supprimer`, { method: 'POST', body: { motif } });
+}
+
+/** Rapports de suppression de client, pour le directeur. */
+export async function fetchRapportsSuppression() {
+  const { rapports } = await apiRequest('/v1/admin/rapports-suppression');
+  return rapports;
+}
+
+export async function archiverRapportSuppression(rapportId) {
+  return apiRequest(`/v1/admin/rapports-suppression/${rapportId}/archiver`, { method: 'POST' });
+}
+
 /**
  * Code PIN back-office — réservé au directeur (« Seul le Directeur
  * pourra modifier, supprimer ou mettre à jour un pin »).

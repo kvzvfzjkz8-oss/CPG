@@ -122,6 +122,7 @@ export const PERMISSIONS = {
     'demandes.lire',
     'demandes.rejeter',
     'utilisateurs.gerer',
+    'rapports_suppression.archiver',
     'momo.superviser',
     'audit.lire',
     'credits.simuler',

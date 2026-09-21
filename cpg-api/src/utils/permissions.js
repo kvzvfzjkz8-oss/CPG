@@ -130,6 +130,7 @@ export const PERMISSIONS = {
     'utilisateurs.gerer',
     'momo.superviser',
     'audit.lire',
+    'rapports_suppression.archiver',
 
     // Simuler un crédit pour expliquer des mensualités à un client au
     // téléphone ou au guichet — aucun enregistrement, un pur calcul,
