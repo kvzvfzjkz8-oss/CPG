@@ -74,7 +74,7 @@ export default function SupervisorView({ role }) {
         onChange={setTab}
         options={tabs}
       />
-      {tab === 'vue' && <Overview />}
+      {tab === 'vue' && <Overview onOuvrirCredits={() => setTab('credits-actifs')} />}
       {tab === 'commission' && <CommissionView role={role} />}
       {tab === 'demandes' && <DemandesEnAttenteLectureSeule />}
       {tab === 'credits-actifs' && <CreditsEnCoursPanel />}
@@ -99,7 +99,7 @@ const tooltipStyle = {
   fontSize: 12,
 };
 
-function Overview() {
+function Overview({ onOuvrirCredits }) {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -128,7 +128,18 @@ function Overview() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
         {kpiCards.map((c) => (
-          <KpiCard key={c.label} {...c} />
+          c.label === 'Crédits actifs' ? (
+            <button
+              key={c.label}
+              onClick={onOuvrirCredits}
+              title="Voir la liste des crédits en cours"
+              style={{ border: 'none', background: 'transparent', padding: 0, textAlign: 'left', cursor: 'pointer' }}
+            >
+              <KpiCard {...c} />
+            </button>
+          ) : (
+            <KpiCard key={c.label} {...c} />
+          )
         ))}
       </div>
 

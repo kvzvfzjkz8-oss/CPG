@@ -20,9 +20,11 @@ export { API_BASE_URL } from './client.js';
  */
 
 /** Demandes de crédit, éventuellement filtrées par statut. */
-export async function fetchCreditRequests(statut) {
-  const params = statut ? `?statut=${encodeURIComponent(statut)}` : '';
-  const { credits } = await apiRequest(`/v1/admin/credits${params}`);
+export async function fetchCreditRequests(statut, limite = 500) {
+  const params = new URLSearchParams();
+  if (statut) params.set('statut', statut);
+  params.set('limite', limite);
+  const { credits } = await apiRequest(`/v1/admin/credits?${params.toString()}`);
   return credits;
 }
 

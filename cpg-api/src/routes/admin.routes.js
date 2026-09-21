@@ -38,7 +38,7 @@ const listQuery = z.object({
     'en_verification', 'valide_niveau1', 'en_attente_commission',
     'valide_commission', 'valide_double', 'approuve', 'rejete',
   ]).optional(),
-  limite: z.coerce.number().int().min(1).max(100).default(50),
+  limite: z.coerce.number().int().min(1).max(1000).default(50),
 });
 
 router.get(
