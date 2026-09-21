@@ -174,7 +174,7 @@ export async function fetchCommissionQueue({ sessionId }) {
      FROM credit_requests c
      JOIN users u ON u.id = c.user_id
      WHERE c.commission_session_id = $1 AND c.status = 'en_attente_commission'
-     ORDER BY c.created_at`,
+     ORDER BY u.full_name`,
     [sessionId]
   );
   return rows;
@@ -279,7 +279,7 @@ export async function fetchCommissionItems({ sessionId }) {
      LEFT JOIN credit_requests c ON c.id = i.credit_id
      LEFT JOIN users u ON u.id = i.client_id
      WHERE i.session_id = $1 AND i.status = 'en_attente'
-     ORDER BY i.deposited_at`,
+     ORDER BY u.full_name`,
     [sessionId]
   );
   return rows;
@@ -440,7 +440,7 @@ export async function fetchUnusedExceptionAuthorizations() {
      JOIN users u ON u.id = a.client_user_id
      JOIN users granter ON granter.id = a.granted_by
      WHERE a.used_at IS NULL
-     ORDER BY a.granted_at DESC`
+     ORDER BY u.full_name`
   );
   return rows;
 }

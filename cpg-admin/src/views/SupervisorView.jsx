@@ -800,10 +800,12 @@ function DemandesEnAttenteLectureSeule() {
       fetchCreditRequests('valide_niveau1'),
     ])
       .then(([niveau0, niveau1]) => {
-        setDemandes([
+        const fusion = [
           ...niveau0.map((d) => ({ ...d, etape: 'En attente de validation niveau 1' })),
           ...niveau1.map((d) => ({ ...d, etape: 'Validé niveau 1 — en attente de commission' })),
-        ]);
+        ];
+        fusion.sort((a, b) => a.client.localeCompare(b.client));
+        setDemandes(fusion);
       })
       .finally(() => setLoading(false));
   }, []);

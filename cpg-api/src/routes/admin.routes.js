@@ -56,7 +56,7 @@ router.get(
          FROM credit_requests c
          JOIN users u ON u.id = c.user_id
          WHERE ($1::credit_status IS NULL OR c.status = $1)
-         ORDER BY c.created_at DESC
+         ORDER BY u.full_name
          LIMIT $2`,
         [statut ?? null, limite]
       );
