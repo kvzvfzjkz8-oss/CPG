@@ -620,6 +620,45 @@ export async function reactivateSuspendedCredit({ creditId }) {
 }
 
 /**
+ * Suppression d'un dossier en attente de double validation, par
+ * l'opérateur — aucun fonds n'a encore été débloqué à ce stade, rien
+ * à extourner, juste à marquer le dossier 'annule'. Génère un rapport
+ * dédié pour le directeur (nom de l'opérateur, date, crédit).
+ */
+export async function cancelCreditAwaitingDoubleValidation({ creditId, motif, actorId }) {
+  if (!motif || motif.trim().length < 5) {
+    throw new ApiError(422, 'Un motif est requis (5 caractères minimum).');
+  }
+
+  return withTransaction(async (client) => {
+    const { rows: creditRows } = await client.query(
+      `SELECT c.id, c.reference, u.full_name AS client_name
+       FROM credit_requests c JOIN users u ON u.id = c.user_id
+       WHERE c.id = $1 FOR UPDATE`,
+      [creditId]
+    );
+    const credit = creditRows[0];
+    if (!credit) throw new ApiError(404, 'Dossier introuvable.');
+
+    const { rows: updated } = await client.query(
+      `UPDATE credit_requests SET status = 'annule' WHERE id = $1 AND status = 'valide_commission' RETURNING id`,
+      [creditId]
+    );
+    if (!updated[0]) {
+      throw new ApiError(409, 'Seul un dossier en attente de double validation peut être supprimé ainsi.');
+    }
+
+    await client.query(
+      `INSERT INTO credit_deletion_reports (credit_reference, client_name, motif, deleted_by)
+       VALUES ($1, $2, $3, $4)`,
+      [credit.reference, credit.client_name, motif.trim(), actorId]
+    );
+
+    return { creditId, reference: credit.reference, statut: 'annule' };
+  });
+}
+
+/**
  * Retrouve l'échéancier d'un crédit par sa référence lisible
  * (CPG-xxxx) plutôt que par son UUID interne — c'est ce que
  * l'opérateur a sous les yeux, jamais l'identifiant technique.

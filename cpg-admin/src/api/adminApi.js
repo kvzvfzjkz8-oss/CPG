@@ -97,6 +97,21 @@ export async function supprimerCreditActif(creditId, motif) {
   return apiRequest(`/v1/admin/operations/credits/${creditId}/supprimer`, { method: 'POST', body: { motif } });
 }
 
+/** Suppression par l'opérateur d'un dossier en attente de double validation — génère un rapport pour le directeur. */
+export async function supprimerCreditDoubleValidation(creditId, motif) {
+  return apiRequest(`/v1/admin/operations/credits/${creditId}/supprimer-double-validation`, { method: 'POST', body: { motif } });
+}
+
+/** Rapports de suppression de crédit (double validation), pour le directeur. */
+export async function fetchRapportsSuppressionCredit() {
+  const { rapports } = await apiRequest('/v1/admin/rapports-suppression-credit');
+  return rapports;
+}
+
+export async function archiverRapportSuppressionCredit(rapportId) {
+  return apiRequest(`/v1/admin/rapports-suppression-credit/${rapportId}/archiver`, { method: 'POST' });
+}
+
 /** Suspend temporairement un crédit actif (Gestionnaire ou Directeur) — réversible. */
 export async function suspendreCreditActif(creditId, motif) {
   return apiRequest(`/v1/admin/operations/credits/${creditId}/suspendre`, { method: 'POST', body: { motif } });
@@ -127,6 +142,24 @@ export async function fetchUsers() {
 /** Fiche complète d'un client : ses informations et l'historique de tous ses crédits. */
 export async function fetchClientDetail(clientId) {
   return apiRequest(`/v1/admin/clients/${clientId}`);
+}
+
+/** Historique complet des transactions d'un client — pour la caissière au guichet. */
+export async function fetchHistoriqueClient(clientId) {
+  return apiRequest(`/v1/caisse/clients/${clientId}/transactions`);
+}
+
+/** Ouvre (et imprime) l'historique des transactions d'un client en PDF. */
+export async function imprimerHistoriqueClient(clientId, clientNumber) {
+  const blob = await apiRequestBlob(`/v1/caisse/clients/${clientId}/transactions/pdf`);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Historique-${clientNumber ?? clientId}.pdf`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
 /** Création d'un compte employé ou client. */
@@ -701,6 +734,16 @@ export async function fetchCaissePrincipale() {
 /** Directeur : injecte des fonds dans la caisse principale. */
 export async function alimenterCaissePrincipale(montant, motif) {
   return apiRequest('/v1/caisse/principale/alimenter', { method: 'POST', body: { montant, motif } });
+}
+
+/** Coffres de l'entreprise (frais & agios, remboursements, frais de dossier) — lecture caissière + directeur. */
+export async function fetchCoffres() {
+  return apiRequest('/v1/caisse/coffres');
+}
+
+/** Transfert entre coffres, ou vers la caisse principale — réservé au directeur. */
+export async function transfererDepuisCoffre(coffreSource, destination, montant, motif) {
+  return apiRequest('/v1/caisse/coffres/transferer', { method: 'POST', body: { coffreSource, destination, montant, motif } });
 }
 
 /** Caissière : dépense de fonctionnement (pas un client), soumise à validation. */

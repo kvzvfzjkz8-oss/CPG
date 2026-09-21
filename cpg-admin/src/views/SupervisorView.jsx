@@ -9,6 +9,7 @@ import {
 } from 'recharts';
 import { colors, fonts, formatFCFA } from '../theme';
 import { CreditsEnCoursPanel, ClientDetailModal } from '../components/ClientsCredits';
+import { CoffresPanel } from '../components/Coffres';
 import { Card, Badge, Tabs, KpiCard, SectionTitle, DataTable, td } from '../components/UI';
 import {
   approveCredit, setUserStatus, fetchUsers, createUser, updateUser, resetClientPin, fetchStatistics, fetchMomoTransactions,
@@ -20,6 +21,7 @@ import {
   fetchCreditApprouvePourClient, ouvrirContratCredit, ouvrirBrouillardCaisse, ouvrirJustificatifCaisse,
   fetchCreditRequests, fetchClientDetail, supprimerClient,
   fetchRapportsSuppression, archiverRapportSuppression,
+  fetchRapportsSuppressionCredit, archiverRapportSuppressionCredit,
 } from '../api/adminApi';
 import { can } from '../auth/roles';
 import CatalogView from './CatalogView';
@@ -60,6 +62,9 @@ export default function SupervisorView({ role }) {
   if (can(role, 'caisse.valider')) {
     tabs.push({ key: 'caisse', label: 'Validations caisse', icon: Wallet });
   }
+  if (can(role, 'coffres.lire')) {
+    tabs.push({ key: 'coffres', label: 'Coffres', icon: Package });
+  }
   if (can(role, 'audit.lire')) {
     tabs.push({ key: 'audit', label: "Journal d'activité", icon: History });
   }
@@ -86,8 +91,14 @@ export default function SupervisorView({ role }) {
       {tab === 'corrections' && <PendingAdjustments />}
       {tab === 'exceptions' && <ExceptionAuthorizations />}
       {tab === 'caisse' && <CaisseValidation />}
+      {tab === 'coffres' && <CoffresPanel role={role} />}
       {tab === 'audit' && <AuditLog />}
-      {tab === 'rapports-suppression' && <RapportsSuppression />}
+      {tab === 'rapports-suppression' && (
+        <>
+          <RapportsSuppression />
+          <RapportsSuppressionCredit />
+        </>
+      )}
     </div>
   );
 }
@@ -1243,6 +1254,90 @@ function RapportsSuppression() {
               <div style={{ minWidth: 0 }}>
                 <p style={{ margin: 0, fontSize: 12, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>
                   {r.client_name} {r.client_number ? `(${r.client_number})` : ''}
+                </p>
+                <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+                  {r.motif} — archivé par {r.archive_par}
+                </p>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+    </Card>
+  );
+}
+
+/**
+ * Suppressions de dossiers en double validation, par un opérateur —
+ * séparé des suppressions de client : nom de l'opérateur, date,
+ * référence du crédit. Même principe d'archivage.
+ */
+function RapportsSuppressionCredit() {
+  const [rapports, setRapports] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [archiveBusy, setArchiveBusy] = useState(null);
+
+  const load = () => {
+    fetchRapportsSuppressionCredit().then(setRapports).finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const archiver = async (id) => {
+    setArchiveBusy(id);
+    try {
+      await archiverRapportSuppressionCredit(id);
+      load();
+    } catch (err) {
+      // silencieux : le prochain chargement montrera l'état réel
+    } finally {
+      setArchiveBusy(null);
+    }
+  };
+
+  const nonArchives = rapports.filter((r) => !r.archived_at);
+  const archives = rapports.filter((r) => r.archived_at);
+
+  return (
+    <Card style={{ padding: 0, overflow: 'hidden', marginTop: 16 }}>
+      <SectionTitle>
+        {loading ? 'Chargement…' : `${nonArchives.length} suppression${nonArchives.length > 1 ? 's' : ''} de crédit (double validation) à examiner`}
+      </SectionTitle>
+
+      {!loading && rapports.length === 0 && (
+        <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
+          Aucune suppression de crédit en double validation pour le moment.
+        </p>
+      )}
+
+      {nonArchives.map((r) => (
+        <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 20px', borderBottom: `1px solid ${colors.line}` }}>
+          <div style={{ minWidth: 0 }}>
+            <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
+              {r.client_name} · {r.credit_reference}
+            </p>
+            <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+              {r.motif} — supprimé par <strong>{r.supprime_par}</strong> le {new Date(r.deleted_at).toLocaleDateString('fr-FR')}
+            </p>
+          </div>
+          <button
+            onClick={() => archiver(r.id)}
+            disabled={archiveBusy === r.id}
+            style={{ ...actionBtn(colors.forest, '#fff'), padding: '7px 14px', flexShrink: 0 }}
+          >
+            {archiveBusy === r.id ? '…' : 'Archiver'}
+          </button>
+        </div>
+      ))}
+
+      {archives.length > 0 && (
+        <>
+          <SectionTitle>Archivés ({archives.length})</SectionTitle>
+          {archives.map((r) => (
+            <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 20px', borderBottom: `1px solid ${colors.line}`, opacity: 0.6 }}>
+              <div style={{ minWidth: 0 }}>
+                <p style={{ margin: 0, fontSize: 12, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>
+                  {r.client_name} · {r.credit_reference}
                 </p>
                 <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
                   {r.motif} — archivé par {r.archive_par}

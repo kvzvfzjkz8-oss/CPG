@@ -8,6 +8,8 @@ import { ApiError } from '../middleware/errorHandler.js';
 import { notifyUser } from '../services/pushService.js';
 import { audit } from '../services/auditService.js';
 import { genererBrouillardPDF } from '../services/brouillardService.js';
+import { fetchCoffres, transfererDepuisCoffre } from '../services/coffreService.js';
+import { genererHistoriquePDF } from '../services/historiqueService.js';
 
 // Justificatif joint à une demande de caisse (reçu, facture...) —
 // gardé en mémoire puis stocké directement en base (bytea), jamais
@@ -75,6 +77,78 @@ router.get(
         [`%${q}%`]
       );
       res.json({ resultats: rows });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * GET /caisse/clients/:id/transactions — historique complet des
+ * transactions d'un client, pour la caissière au guichet. Pas de
+ * limite de période : tout l'historique, du plus récent au plus
+ * ancien.
+ */
+router.get(
+  '/clients/:id/transactions',
+  requirePermission('caisse.consulter_solde_client'),
+  async (req, res, next) => {
+    try {
+      const { rows: client } = await query(
+        `SELECT u.id, u.full_name, u.client_number, u.phone, b.balance, a.id AS account_id
+         FROM users u
+         JOIN accounts a ON a.user_id = u.id
+         JOIN account_balances b ON b.account_id = a.id
+         WHERE u.id = $1 AND u.role = 'client'`,
+        [req.params.id]
+      );
+      if (!client[0]) throw new ApiError(404, 'Client introuvable.');
+
+      const { rows: transactions } = await query(
+        `SELECT id, type, amount, label, reference, created_at
+         FROM ledger_entries
+         WHERE account_id = $1
+         ORDER BY created_at DESC
+         LIMIT 500`,
+        [client[0].account_id]
+      );
+
+      res.json({ client: client[0], transactions });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/** GET /caisse/clients/:id/transactions/pdf — même historique, imprimable. */
+router.get(
+  '/clients/:id/transactions/pdf',
+  requirePermission('caisse.consulter_solde_client'),
+  async (req, res, next) => {
+    try {
+      const { rows: client } = await query(
+        `SELECT u.id, u.full_name, u.client_number, u.phone, b.balance, a.id AS account_id
+         FROM users u
+         JOIN accounts a ON a.user_id = u.id
+         JOIN account_balances b ON b.account_id = a.id
+         WHERE u.id = $1 AND u.role = 'client'`,
+        [req.params.id]
+      );
+      if (!client[0]) throw new ApiError(404, 'Client introuvable.');
+
+      const { rows: transactions } = await query(
+        `SELECT type, amount, label, reference, created_at
+         FROM ledger_entries
+         WHERE account_id = $1
+         ORDER BY created_at DESC
+         LIMIT 500`,
+        [client[0].account_id]
+      );
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="Historique-${client[0].client_number}.pdf"`);
+      const doc = genererHistoriquePDF({ client: client[0], transactions });
+      doc.pipe(res);
     } catch (error) {
       next(error);
     }
@@ -801,6 +875,54 @@ router.get(
         operations,
       });
       doc.pipe(res);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/* ═══════════════════════════════════════════════════════════════════
+   COFFRES DE L'ENTREPRISE — frais & agios, remboursements, frais de
+   dossier. Lecture pour la caissière et le directeur, transferts
+   réservés au directeur.
+   ═══════════════════════════════════════════════════════════════════ */
+
+router.get('/coffres', requirePermission('coffres.lire'), async (req, res, next) => {
+  try {
+    const result = await fetchCoffres();
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post(
+  '/coffres/transferer',
+  requirePermission('coffres.transferer'),
+  validate(z.object({
+    coffreSource: z.enum(['frais_agios', 'remboursements', 'frais_dossier']),
+    destination: z.string().min(1),
+    montant: z.coerce.number().int().positive(),
+    motif: z.string().max(500).optional(),
+  })),
+  async (req, res, next) => {
+    try {
+      const result = await transfererDepuisCoffre({
+        coffreSource: req.body.coffreSource,
+        destination: req.body.destination,
+        montant: req.body.montant,
+        motif: req.body.motif,
+        actorId: req.user.id,
+      });
+
+      await audit(req, {
+        action: 'coffre.transfert',
+        entityType: 'coffre',
+        entityId: result.id,
+        metadata: { coffreSource: result.coffreSource, destination: result.destination, montant: result.montant },
+      });
+
+      res.status(201).json(result);
     } catch (error) {
       next(error);
     }

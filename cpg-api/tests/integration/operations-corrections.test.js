@@ -211,7 +211,9 @@ describe(
       assert.equal(confirmation.credited.length, 1);
 
       const { body: compte } = await api('/v1/client/compte', { token: client.token });
-      assert.equal(compte.account.balance, 42000);
+      // 42000 crédités, moins 1000 F de tenue de compte déclenchés
+      // automatiquement juste après le crédit de la paie.
+      assert.equal(compte.account.balance, 41000);
     });
 
     test('un gestionnaire ne peut pas non plus demander l\'aperçu', async () => {

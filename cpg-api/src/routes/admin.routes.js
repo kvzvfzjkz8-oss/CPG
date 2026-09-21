@@ -937,6 +937,47 @@ router.post(
 );
 
 /**
+ * GET /admin/rapports-suppression-credit — pour le directeur : chaque
+ * suppression d'un dossier en double validation faite par un
+ * opérateur, avec son nom, la date, et le crédit concerné.
+ */
+router.get('/rapports-suppression-credit', requirePermission('audit.lire'), async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      `SELECT r.id, r.credit_reference, r.client_name, r.motif, r.deleted_at, r.archived_at,
+              d.full_name AS supprime_par, a.full_name AS archive_par
+       FROM credit_deletion_reports r
+       JOIN users d ON d.id = r.deleted_by
+       LEFT JOIN users a ON a.id = r.archived_by
+       ORDER BY r.archived_at IS NOT NULL, r.deleted_at DESC`
+    );
+    res.json({ rapports: rows });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/** POST /admin/rapports-suppression-credit/:id/archiver — réservé au directeur. */
+router.post(
+  '/rapports-suppression-credit/:id/archiver',
+  requirePermission('rapports_suppression.archiver'),
+  async (req, res, next) => {
+    try {
+      const { rows } = await query(
+        `UPDATE credit_deletion_reports SET archived_by = $2, archived_at = now()
+         WHERE id = $1 AND archived_at IS NULL
+         RETURNING id`,
+        [req.params.id, req.user.id]
+      );
+      if (!rows[0]) throw new ApiError(404, 'Rapport introuvable ou déjà archivé.');
+      res.json({ id: rows[0].id, archive: true });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
  * PUT /admin/utilisateurs/:id/pin — définit ou remplace le code PIN
  * back-office (8 chiffres) d'un employé. Réservé au directeur : « Seul
  * le Directeur pourra modifier, supprimer ou mettre à jour un pin. »

@@ -102,7 +102,7 @@ describe(
       assert.equal(status, 403);
     });
 
-    test('un opérateur crédite la paie et le solde du client augmente', async () => {
+    test('un opérateur crédite la paie et le solde du client augmente (frais de tenue prélevés automatiquement dans la foulée)', async () => {
       const token = await loginStaff('operateur');
       const { status, body } = await api('/v1/admin/operations/salaires', {
         method: 'POST',
@@ -115,7 +115,9 @@ describe(
       assert.equal(body.total, 275000);
 
       const { body: compte } = await api('/v1/client/compte', { token: agent.token });
-      assert.equal(compte.account.balance, 275000);
+      // 275000 crédités, moins 1000 F de tenue de compte déclenchés
+      // automatiquement juste après le crédit de la paie.
+      assert.equal(compte.account.balance, 274000);
     });
 
     test('un identifiant inconnu est signalé sans bloquer le reste du lot', async () => {
@@ -150,7 +152,10 @@ describe(
       assert.equal(body.notFound[0].motif, 'deja_credite_ce_mois');
 
       const { body: compte } = await api('/v1/client/compte', { token: agent.token });
-      assert.equal(compte.account.balance, 275000, 'le solde ne doit pas avoir doublé');
+      // 274000 après le premier crédit (275000 moins 1000 F de tenue
+      // de compte) — la relance ne crédite rien de plus, et la tenue
+      // de compte ne se prélève jamais deux fois sur la même période.
+      assert.equal(compte.account.balance, 274000, 'le solde ne doit pas avoir doublé');
     });
 
     test('une période mal formée est rejetée', async () => {

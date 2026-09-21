@@ -9,9 +9,11 @@ import {
   creditAgentSalaries, creditAgentSalariesFromCsv, previewAgentSalariesFromCsv,
   runInstallmentCollection, fetchMonthlyReport, fetchTransactions, reverseTransaction,
   cancelActiveCreditInError, suspendActiveCredit, reactivateSuspendedCredit,
+  cancelCreditAwaitingDoubleValidation,
   fetchInstallmentsByCreditReference, proposeInstallmentAdjustment,
   fetchPendingInstallmentAdjustments, decideInstallmentAdjustment, fetchSchedulerStatus,
 } from '../services/operationsService.js';
+import { runTenueCompteBatch } from '../services/feeService.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -67,7 +69,28 @@ router.post(
         },
       });
 
-      res.status(201).json(result);
+      // Les frais de tenue de compte se récupèrent automatiquement
+      // dès que les clients sont payés — l'opérateur garde aussi la
+      // main via le bouton manuel (Opérations mensuelles) si besoin.
+      // En meilleur effort : un souci ici ne doit jamais faire
+      // échouer l'import de paie lui-même, qui a déjà réussi.
+      let tenueCompte = null;
+      try {
+        const now = new Date();
+        const periodStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+        const periodEnd = now.toISOString().slice(0, 10);
+        tenueCompte = await runTenueCompteBatch({ periodStart, periodEnd });
+        await audit(req, {
+          action: 'operations.tenue_compte_preleve_auto_apres_paie',
+          entityType: 'periode',
+          entityId: result.reference,
+          metadata: { comptes: tenueCompte.applied, total: tenueCompte.total },
+        });
+      } catch (feeError) {
+        // Ne bloque jamais la réponse de l'import de paie.
+      }
+
+      res.status(201).json({ ...result, tenueCompte });
     } catch (error) {
       next(error);
     }
@@ -376,6 +399,38 @@ router.post(
       });
 
       res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /admin/operations/credits/:id/supprimer-double-validation —
+ * l'opérateur supprime un dossier qui lui arrive en double
+ * validation. Rien n'est débloqué à ce stade, donc rien à extourner —
+ * mais chaque suppression génère un rapport pour le directeur.
+ */
+router.post(
+  '/credits/:id/supprimer-double-validation',
+  requirePermission('credits.supprimer_double_validation'),
+  validate(z.object({ motif: z.string().min(5).max(500) })),
+  async (req, res, next) => {
+    try {
+      const result = await cancelCreditAwaitingDoubleValidation({
+        creditId: req.params.id,
+        motif: req.body.motif,
+        actorId: req.user.id,
+      });
+
+      await audit(req, {
+        action: 'credit.supprime_double_validation',
+        entityType: 'credit_request',
+        entityId: result.creditId,
+        metadata: { motif: req.body.motif, reference: result.reference },
+      });
+
+      res.status(201).json(result);
     } catch (error) {
       next(error);
     }

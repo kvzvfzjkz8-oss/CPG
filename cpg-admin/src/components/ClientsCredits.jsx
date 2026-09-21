@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X } from 'lucide-react';
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, SectionTitle } from './UI';
-import { fetchCreditRequests, fetchClientDetail, supprimerCreditActif, suspendreCreditActif, reactiverCreditSuspendu } from '../api/adminApi';
+import { fetchCreditRequests, fetchClientDetail, supprimerCreditActif, suspendreCreditActif, reactiverCreditSuspendu, fetchHistoriqueClient, imprimerHistoriqueClient } from '../api/adminApi';
 
 const STATUT_LABEL = {
   en_verification: 'En attente de validation niveau 1',
@@ -37,6 +37,7 @@ export function CreditsEnCoursPanel({ role }) {
   const [suspendMotif, setSuspendMotif] = useState('');
   const [suspendBusy, setSuspendBusy] = useState(null);
   const [suspendError, setSuspendError] = useState('');
+  const [recherche, setRecherche] = useState('');
 
   const peutGerer = role === 'directeur' || role === 'superviseur';
 
@@ -106,19 +107,32 @@ export function CreditsEnCoursPanel({ role }) {
     }
   };
 
+  const credistFiltres = recherche.trim()
+    ? credits.filter((c) => c.client.toLowerCase().includes(recherche.trim().toLowerCase()))
+    : credits;
+
   return (
     <Card style={{ padding: 0, overflow: 'hidden' }}>
-      <SectionTitle>
-        {loading ? 'Chargement…' : `${credits.length} client${credits.length > 1 ? 's' : ''} avec un crédit en cours`}
+      <SectionTitle
+        right={
+          <input
+            value={recherche}
+            onChange={(e) => setRecherche(e.target.value)}
+            placeholder="Rechercher un nom…"
+            style={{ padding: '6px 10px', borderRadius: 8, border: `1px solid ${colors.line}`, fontSize: 11, fontFamily: fonts.body }}
+          />
+        }
+      >
+        {loading ? 'Chargement…' : `${credistFiltres.length} client${credistFiltres.length > 1 ? 's' : ''} avec un crédit en cours`}
       </SectionTitle>
 
-      {!loading && credits.length === 0 && (
+      {!loading && credistFiltres.length === 0 && (
         <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
-          Aucun crédit en cours pour le moment.
+          {recherche.trim() ? 'Aucun client correspondant.' : 'Aucun crédit en cours pour le moment.'}
         </p>
       )}
 
-      {credits.map((c) => (
+      {credistFiltres.map((c) => (
         <div
           key={c.id}
           style={{
@@ -140,6 +154,7 @@ export function CreditsEnCoursPanel({ role }) {
             <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
               {c.job_title ?? ''}{c.job_title && c.employer ? ' · ' : ''}{c.employer ?? ''}
               {c.client_number ? ` · ${c.client_number}` : ''}
+              {c.approved_at ? ` · Débloqué le ${new Date(c.approved_at).toLocaleDateString('fr-FR')}` : ''}
             </p>
             {role === 'directeur' && confirmingDeleteId === c.id && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
@@ -240,6 +255,9 @@ export function ClientDetailModal({ clientId, nom, onClose }) {
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [historique, setHistorique] = useState(null);
+  const [historiqueOuvert, setHistoriqueOuvert] = useState(false);
+  const [imprBusy, setImprBusy] = useState(false);
 
   useEffect(() => {
     if (!clientId) { setLoading(false); setError('Identifiant client indisponible pour ce dossier.'); return; }
@@ -248,6 +266,23 @@ export function ClientDetailModal({ clientId, nom, onClose }) {
       .catch((e) => setError(e.message ?? 'Impossible de charger la fiche client.'))
       .finally(() => setLoading(false));
   }, [clientId]);
+
+  const voirHistorique = () => {
+    if (historiqueOuvert) { setHistoriqueOuvert(false); return; }
+    setHistoriqueOuvert(true);
+    if (!historique) {
+      fetchHistoriqueClient(clientId).then((d) => setHistorique(d.transactions));
+    }
+  };
+
+  const imprimer = async () => {
+    setImprBusy(true);
+    try {
+      await imprimerHistoriqueClient(clientId, detail?.client.client_number);
+    } finally {
+      setImprBusy(false);
+    }
+  };
 
   return (
     <div
@@ -281,6 +316,49 @@ export function ClientDetailModal({ clientId, nom, onClose }) {
               <InfoLigne label="Statut" valeur={detail.client.status === 'actif' ? 'Actif' : detail.client.status === 'suspendu' ? 'Suspendu' : 'Fermé'} />
             </div>
 
+            <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+              <button
+                onClick={voirHistorique}
+                style={{ padding: '7px 14px', borderRadius: 9, border: `1px solid ${colors.line}`, background: '#fff', color: colors.forestLight, fontSize: 12, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer' }}
+              >
+                {historiqueOuvert ? 'Masquer l\'historique' : 'Voir l\'historique des transactions'}
+              </button>
+              <button
+                onClick={imprimer}
+                disabled={imprBusy}
+                style={{ padding: '7px 14px', borderRadius: 9, border: 'none', background: colors.forest, color: '#fff', fontSize: 12, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer' }}
+              >
+                {imprBusy ? 'Génération…' : 'Imprimer'}
+              </button>
+            </div>
+
+            {historiqueOuvert && (
+              <div style={{ marginBottom: 20 }}>
+                {!historique ? (
+                  <p style={{ fontSize: 12, color: colors.muted, fontFamily: fonts.body }}>Chargement…</p>
+                ) : historique.length === 0 ? (
+                  <p style={{ fontSize: 12, color: colors.muted, fontFamily: fonts.body, fontStyle: 'italic' }}>Aucune transaction.</p>
+                ) : (
+                  <div style={{ maxHeight: 220, overflowY: 'auto', border: `1px solid ${colors.line}`, borderRadius: 10 }}>
+                    {historique.map((t) => {
+                      const entree = ['depot', 'deblocage_credit', 'ajustement', 'salaire'].includes(t.type);
+                      return (
+                        <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', borderBottom: `1px solid ${colors.line}` }}>
+                          <div>
+                            <p style={{ margin: 0, fontSize: 11, color: colors.ink, fontFamily: fonts.body }}>{t.label ?? t.type}</p>
+                            <p style={{ margin: '1px 0 0', fontSize: 10, color: colors.muted, fontFamily: fonts.body }}>{new Date(t.created_at).toLocaleDateString('fr-FR')}</p>
+                          </div>
+                          <span style={{ fontSize: 11, fontWeight: 600, fontFamily: fonts.mono, color: entree ? colors.forest : colors.danger }}>
+                            {entree ? '+' : '-'}{formatFCFA(Math.abs(t.amount))} F
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
             <p style={{ margin: '0 0 10px', fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
               Crédits ({detail.credits.length})
             </p>
@@ -300,6 +378,10 @@ export function ClientDetailModal({ clientId, nom, onClose }) {
                       <Badge tone={STATUT_TONE[c.status] ?? 'gold'}>{STATUT_LABEL[c.status] ?? c.status}</Badge>
                       <span style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>{c.duration_months} mois</span>
                     </div>
+                    <p style={{ margin: '4px 0 0', fontSize: 10, color: colors.muted, fontFamily: fonts.body }}>
+                      Demandé le {new Date(c.created_at).toLocaleDateString('fr-FR')}
+                      {c.approved_at ? ` · Débloqué le ${new Date(c.approved_at).toLocaleDateString('fr-FR')}` : ''}
+                    </p>
                   </div>
                 ))}
               </div>

@@ -54,6 +54,12 @@ export const PERMISSIONS = {
     // rétablit dès qu'un dépôt arrive ensuite.
     'frais.appliquer',
 
+    // Supprimer un dossier qui lui arrive en double validation, sans
+    // avoir à attendre le directeur — rien n'est encore débloqué à ce
+    // stade, donc rien à extourner. Chaque suppression génère un
+    // rapport pour le directeur (voir credit_deletion_reports).
+    'credits.supprimer_double_validation',
+
     // Déposer une demande au nom d'un client, au guichet ou par
     // téléphone — mêmes règles que si le client l'avait soumise
     // lui-même depuis l'application.
@@ -134,6 +140,8 @@ export const PERMISSIONS = {
     'rapports_suppression.archiver',
     'credits.supprimer_actif',
     'credits.suspendre',
+    'coffres.lire',
+    'coffres.transferer',
 
     // Simuler un crédit pour expliquer des mensualités à un client au
     // téléphone ou au guichet — aucun enregistrement, un pur calcul,
@@ -210,6 +218,10 @@ export const PERMISSIONS = {
     // le reste du personnel : utile au guichet pour situer un client
     // qui se présente, sans avoir à ouvrir chaque dossier séparément.
     'demandes.lire',
+
+    // Voir les coffres de l'entreprise (lecture seule — les
+    // transferts restent réservés au directeur).
+    'coffres.lire',
   ],
 
   // L'administrateur technique hérite de tout, mais reste tracé dans

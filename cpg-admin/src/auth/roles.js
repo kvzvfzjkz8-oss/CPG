@@ -123,6 +123,8 @@ export const PERMISSIONS = {
     'demandes.rejeter',
     'utilisateurs.gerer',
     'rapports_suppression.archiver',
+    'coffres.lire',
+    'coffres.transferer',
     'momo.superviser',
     'audit.lire',
     'credits.simuler',
@@ -178,6 +180,7 @@ export const PERMISSIONS = {
     'caisse.consulter_sa_caisse',
     'caisse.imprimer_rib',
     'demandes.lire',
+    'coffres.lire',
   ],
 };
 
