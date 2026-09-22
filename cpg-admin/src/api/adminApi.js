@@ -97,9 +97,28 @@ export async function supprimerCreditActif(creditId, motif) {
   return apiRequest(`/v1/admin/operations/credits/${creditId}/supprimer`, { method: 'POST', body: { motif } });
 }
 
-/** Suppression par l'opérateur d'un dossier en attente de double validation — génère un rapport pour le directeur. */
+/** Suppression directe d'un dossier en double validation — réservée au directeur (lui-même confirme). */
 export async function supprimerCreditDoubleValidation(creditId, motif) {
   return apiRequest(`/v1/admin/operations/credits/${creditId}/supprimer-double-validation`, { method: 'POST', body: { motif } });
+}
+
+/** L'opérateur propose la suppression d'un dossier en double validation — n'est effective qu'après confirmation du directeur. */
+export async function proposerSuppressionCreditDoubleValidation(creditId, motif) {
+  return apiRequest(`/v1/admin/operations/credits/${creditId}/proposer-suppression-double-validation`, { method: 'POST', body: { motif } });
+}
+
+/** Demandes de suppression de crédit (double validation) en attente d'arbitrage du directeur. */
+export async function fetchPendingCreditDeletionRequests() {
+  const { demandes } = await apiRequest('/v1/admin/operations/suppressions-double-validation');
+  return demandes;
+}
+
+/** Le directeur confirme ou rejette une demande de suppression de crédit posée par l'opérateur. */
+export async function deciderSuppressionCreditDoubleValidation(requestId, approuver, note) {
+  return apiRequest(`/v1/admin/operations/suppressions-double-validation/${requestId}/decider`, {
+    method: 'POST',
+    body: { approuver, note },
+  });
 }
 
 /** Rapports de suppression de crédit (double validation), pour le directeur. */
@@ -784,6 +803,17 @@ export async function cloturerCoffre(coffre) {
 export async function fetchCoffreClotures() {
   const { clotures } = await apiRequest('/v1/caisse/coffres/clotures');
   return clotures;
+}
+
+/** Montant attendu sur les échéances pas encore prélevées d'un mois donné ('AAAA-MM', mois en cours par défaut). */
+export async function fetchEcheancesAttendues(mois) {
+  const qs = mois ? `?mois=${encodeURIComponent(mois)}` : '';
+  return apiRequest(`/v1/caisse/coffres/echeances-attendues${qs}`);
+}
+
+/** Détail mois par mois d'un coffre (même total global, réparti par mois calendaire). */
+export async function fetchCoffreParMois(coffre) {
+  return apiRequest(`/v1/caisse/coffres/${coffre}/par-mois`);
 }
 
 /** Caissière : dépense de fonctionnement (pas un client), soumise à validation. */
