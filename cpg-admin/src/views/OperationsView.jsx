@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Upload, ShieldCheck, CalendarClock, FileWarning, Check, X, Undo2, Search, Pencil, Clock,
+  Upload, ShieldCheck, CalendarClock, FileWarning, Check, X, Undo2, Search, Pencil, Clock, Trash2,
 } from 'lucide-react';
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, Tabs, SectionTitle } from '../components/UI';
@@ -8,8 +8,9 @@ import {
   previewSalaryImport, confirmSalaryImport, fetchMonthlyReport, fetchTransactions,
   reverseLedgerTransaction, fetchInstallmentsByReference, proposeInstallmentAdjustment,
   fetchSchedulerStatus, runAgiosBatch, fetchCompteAgios, runTenueCompteBatch, fetchCompteTenue,
-  fetchCreditRequests,
+  fetchCreditRequests, supprimerCreditActif,
 } from '../api/adminApi';
+import { useAuth } from '../auth/AuthContext';
 
 const input = {
   padding: '9px 11px', borderRadius: 9, border: `1px solid ${colors.line}`,
@@ -813,9 +814,15 @@ function MiniKpi({ label: l, nombre, total, tone = 'neutral' }) {
    ═══════════════════════════════════════════════════════════════════ */
 
 function InstallmentCorrection() {
+  const { user } = useAuth();
+  const peutSupprimer = user?.role === 'directeur';
   const [reference, setReference] = useState('');
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleteMotif, setDeleteMotif] = useState('');
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
   const [loading, setLoading] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [nouvelleDate, setNouvelleDate] = useState('');
@@ -849,6 +856,9 @@ function InstallmentCorrection() {
     setLoading(true);
     setError('');
     setResult(null);
+    setConfirmingDelete(false);
+    setDeleteMotif('');
+    setDeleteError('');
     try {
       const r = await fetchInstallmentsByReference(cible);
       setResult(r);
@@ -856,6 +866,33 @@ function InstallmentCorrection() {
       setError(e.message ?? 'Dossier introuvable.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const closeModal = () => {
+    setResult(null);
+    setEditingId(null);
+    setConfirmingDelete(false);
+    setDeleteMotif('');
+    setDeleteError('');
+  };
+
+  const doDelete = async () => {
+    if (deleteMotif.trim().length < 5) {
+      setDeleteError('Précisez le motif (5 caractères minimum).');
+      return;
+    }
+    setDeleteBusy(true);
+    setDeleteError('');
+    try {
+      await supprimerCreditActif(result.credit.id, deleteMotif.trim());
+      setToast(`Crédit ${result.credit.reference} supprimé.`);
+      setTimeout(() => setToast(''), 6000);
+      closeModal();
+    } catch (e) {
+      setDeleteError(e.message ?? 'Suppression impossible.');
+    } finally {
+      setDeleteBusy(false);
     }
   };
 
@@ -982,8 +1019,28 @@ function InstallmentCorrection() {
       )}
 
       {result && (
-        <Card style={{ padding: 0, overflow: 'hidden' }}>
-          <SectionTitle>{result.credit.reference} · {result.credit.client}</SectionTitle>
+        <div
+          onClick={closeModal}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(20, 30, 25, 0.45)',
+            display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+            padding: '5vh 16px', overflowY: 'auto', zIndex: 100,
+          }}
+        >
+        <Card
+          onClick={(e) => e.stopPropagation()}
+          style={{ padding: 0, overflow: 'hidden', width: '100%', maxWidth: 640, maxHeight: '90vh', overflowY: 'auto' }}
+        >
+          <SectionTitle right={
+            <button onClick={closeModal} style={{
+              border: 'none', background: 'transparent', color: colors.muted, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', padding: 4,
+            }}>
+              <X size={16} />
+            </button>
+          }>
+            {result.credit.reference} · {result.credit.client}
+          </SectionTitle>
           {result.installments.map((inst) => (
             <div key={inst.id} style={{ borderBottom: `1px solid ${colors.line}` }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, padding: '12px 20px' }}>
@@ -1044,7 +1101,55 @@ function InstallmentCorrection() {
               )}
             </div>
           ))}
+
+          {peutSupprimer && (
+            <div style={{ padding: 20, borderTop: `1px solid ${colors.line}` }}>
+              {!confirmingDelete ? (
+                <button
+                  onClick={() => setConfirmingDelete(true)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6, padding: '9px 14px', borderRadius: 9,
+                    border: `1px solid ${colors.danger}`, background: '#fff', color: colors.danger,
+                    fontSize: 12, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer',
+                  }}
+                >
+                  <Trash2 size={13} /> Supprimer ce crédit
+                </button>
+              ) : (
+                <div>
+                  <p style={{ margin: '0 0 8px', fontSize: 12, color: colors.danger, fontFamily: fonts.body }}>
+                    Réservé aux dossiers créés en excès ou en double — extourne le déblocage et les
+                    frais. Refusé si une échéance a déjà été payée.
+                  </p>
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                    <input
+                      style={input} placeholder="Motif de la suppression (obligatoire)"
+                      value={deleteMotif} onChange={(e) => setDeleteMotif(e.target.value)}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button
+                      onClick={doDelete}
+                      disabled={deleteBusy || deleteMotif.trim().length < 5}
+                      style={{
+                        padding: '9px 14px', borderRadius: 9, border: 'none', background: colors.danger, color: '#fff',
+                        fontSize: 12, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer',
+                        opacity: deleteMotif.trim().length < 5 ? 0.5 : 1,
+                      }}
+                    >
+                      {deleteBusy ? 'Suppression…' : 'Confirmer la suppression'}
+                    </button>
+                    <button onClick={() => { setConfirmingDelete(false); setDeleteMotif(''); setDeleteError(''); }} style={actionBtn('transparent', colors.muted)}>
+                      Annuler
+                    </button>
+                  </div>
+                  {deleteError && <p style={{ margin: '8px 0 0', fontSize: 12, color: colors.danger, fontFamily: fonts.body }}>{deleteError}</p>}
+                </div>
+              )}
+            </div>
+          )}
         </Card>
+        </div>
       )}
     </div>
   );
