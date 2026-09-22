@@ -9,7 +9,7 @@ import {
   validateLevel1, rejectCredit, sendAdvisorReply,
   fetchDoubleValidationQueue, doubleValidateCredit,
   fetchItemsAwaitingDoubleValidation, doubleValidateCommissionItem,
-  supprimerCreditDoubleValidation,
+  proposerSuppressionCreditDoubleValidation, fetchPendingCreditDeletionRequests,
   fetchCreditRequests, fetchCreditDetail, fetchConversations, fetchConversationMessages,
   searchClientPourDemande, creerDemandePourClient,
   fetchOverdueInstallments, executerEcheances, proposeInstallmentAdjustment,
@@ -288,6 +288,7 @@ function OverdueInstallments({ onChanged }) {
 function DoubleValidation() {
   const [pending, setPending] = useState([]);
   const [pendingItems, setPendingItems] = useState([]);
+  const [demandesSuppression, setDemandesSuppression] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(null);
   const [toast, setToast] = useState('');
@@ -298,18 +299,24 @@ function DoubleValidation() {
   const load = async () => {
     setLoading(true);
     try {
-      const [queue, items] = await Promise.all([
+      const [queue, items, demandes] = await Promise.all([
         fetchDoubleValidationQueue(),
         fetchItemsAwaitingDoubleValidation(),
+        fetchPendingCreditDeletionRequests(),
       ]);
       setPending(queue);
       setPendingItems(items);
+      setDemandesSuppression(demandes);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => { load(); }, []);
+
+  // Dossiers pour lesquels une demande de suppression est déjà posée,
+  // en attente que le directeur la confirme ou la rejette.
+  const suppressionEnAttente = (creditId) => demandesSuppression.find((d) => d.credit_id === creditId);
 
   const handle = async (r) => {
     setBusy(r.id);
@@ -334,9 +341,9 @@ function DoubleValidation() {
     setBusy(r.id);
     setDeleteError('');
     try {
-      await supprimerCreditDoubleValidation(r.id, deleteMotif.trim());
-      setToast(`${r.client} — dossier supprimé, un rapport a été envoyé au directeur.`);
-      setPending((prev) => prev.filter((x) => x.id !== r.id));
+      const demande = await proposerSuppressionCreditDoubleValidation(r.id, deleteMotif.trim());
+      setToast(`${r.client} — demande de suppression envoyée au directeur, en attente de sa confirmation.`);
+      setDemandesSuppression((prev) => [...prev, { id: demande.id, credit_id: r.id }]);
       setConfirmingDeleteId(null);
       setDeleteMotif('');
       setTimeout(() => setToast(''), 4000);
@@ -417,7 +424,9 @@ function DoubleValidation() {
             </button>
           </div>
         ))}
-        {pending.map((r) => (
+        {pending.map((r) => {
+          const demandeEnAttente = suppressionEnAttente(r.id);
+          return (
           <div
             key={r.id}
             style={{
@@ -431,6 +440,11 @@ function DoubleValidation() {
               <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
                 {r.poste} · Réf. {r.id} · validé par le comité
               </p>
+              {demandeEnAttente && (
+                <p style={{ margin: '5px 0 0', fontSize: 11, color: colors.danger, fontFamily: fonts.body, fontWeight: 600 }}>
+                  Suppression demandée — en attente de confirmation du directeur
+                </p>
+              )}
               {confirmingDeleteId === r.id && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
                   <input
@@ -462,28 +476,31 @@ function DoubleValidation() {
               </p>
               <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>{r.duree} mois</p>
             </div>
-            {confirmingDeleteId !== r.id && (
+            {!demandeEnAttente && confirmingDeleteId !== r.id && (
               <button
                 onClick={() => setConfirmingDeleteId(r.id)}
-                title="Supprimer ce dossier (créé en double) — un rapport sera envoyé au directeur"
+                title="Demander la suppression de ce dossier (créé en double) — le directeur devra confirmer"
                 style={{ border: 'none', background: 'transparent', color: colors.danger, fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: fonts.body }}
               >
                 Supprimer
               </button>
             )}
-            <button
-              onClick={() => handle(r)}
-              disabled={busy === r.id}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 9,
-                border: 'none', background: colors.forest, color: '#fff', fontSize: 12, fontWeight: 600,
-                fontFamily: fonts.body, cursor: 'pointer',
-              }}
-            >
-              <Check size={12} /> Revalider
-            </button>
+            {!demandeEnAttente && (
+              <button
+                onClick={() => handle(r)}
+                disabled={busy === r.id}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 9,
+                  border: 'none', background: colors.forest, color: '#fff', fontSize: 12, fontWeight: 600,
+                  fontFamily: fonts.body, cursor: 'pointer',
+                }}
+              >
+                <Check size={12} /> Revalider
+              </button>
+            )}
           </div>
-        ))}
+          );
+        })}
       </Card>
     </div>
   );

@@ -97,9 +97,28 @@ export async function supprimerCreditActif(creditId, motif) {
   return apiRequest(`/v1/admin/operations/credits/${creditId}/supprimer`, { method: 'POST', body: { motif } });
 }
 
-/** Suppression par l'opérateur d'un dossier en attente de double validation — génère un rapport pour le directeur. */
+/** Suppression directe d'un dossier en double validation — réservée au directeur (lui-même confirme). */
 export async function supprimerCreditDoubleValidation(creditId, motif) {
   return apiRequest(`/v1/admin/operations/credits/${creditId}/supprimer-double-validation`, { method: 'POST', body: { motif } });
+}
+
+/** L'opérateur propose la suppression d'un dossier en double validation — n'est effective qu'après confirmation du directeur. */
+export async function proposerSuppressionCreditDoubleValidation(creditId, motif) {
+  return apiRequest(`/v1/admin/operations/credits/${creditId}/proposer-suppression-double-validation`, { method: 'POST', body: { motif } });
+}
+
+/** Demandes de suppression de crédit (double validation) en attente d'arbitrage du directeur. */
+export async function fetchPendingCreditDeletionRequests() {
+  const { demandes } = await apiRequest('/v1/admin/operations/suppressions-double-validation');
+  return demandes;
+}
+
+/** Le directeur confirme ou rejette une demande de suppression de crédit posée par l'opérateur. */
+export async function deciderSuppressionCreditDoubleValidation(requestId, approuver, note) {
+  return apiRequest(`/v1/admin/operations/suppressions-double-validation/${requestId}/decider`, {
+    method: 'POST',
+    body: { approuver, note },
+  });
 }
 
 /** Rapports de suppression de crédit (double validation), pour le directeur. */
