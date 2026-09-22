@@ -8,6 +8,7 @@ import {
   previewSalaryImport, confirmSalaryImport, fetchMonthlyReport, fetchTransactions,
   reverseLedgerTransaction, fetchInstallmentsByReference, proposeInstallmentAdjustment,
   fetchSchedulerStatus, runAgiosBatch, fetchCompteAgios, runTenueCompteBatch, fetchCompteTenue,
+  fetchCreditRequests,
 } from '../api/adminApi';
 
 const input = {
@@ -822,13 +823,34 @@ function InstallmentCorrection() {
   const [busyId, setBusyId] = useState(null);
   const [toast, setToast] = useState('');
 
-  const search = async () => {
-    if (!reference.trim()) return;
+  // Liste de tous les crédits en cours (approuvés ou suspendus), pour
+  // que l'opérateur puisse en choisir un directement sans déjà
+  // connaître sa référence — la recherche par référence ci-dessous
+  // reste disponible pour aller plus vite quand on la connaît.
+  const [credits, setCredits] = useState([]);
+  const [creditsLoading, setCreditsLoading] = useState(true);
+  const [filtre, setFiltre] = useState('');
+
+  useEffect(() => {
+    Promise.all([fetchCreditRequests('approuve'), fetchCreditRequests('suspendu')])
+      .then(([actifs, suspendus]) => {
+        const fusion = [...actifs, ...suspendus];
+        fusion.sort((a, b) => a.client.localeCompare(b.client));
+        setCredits(fusion);
+      })
+      .catch(() => setCredits([]))
+      .finally(() => setCreditsLoading(false));
+  }, []);
+
+  const search = async (ref) => {
+    const cible = (ref ?? reference).trim().toUpperCase();
+    if (!cible) return;
+    setReference(cible);
     setLoading(true);
     setError('');
     setResult(null);
     try {
-      const r = await fetchInstallmentsByReference(reference.trim().toUpperCase());
+      const r = await fetchInstallmentsByReference(cible);
       setResult(r);
     } catch (e) {
       setError(e.message ?? 'Dossier introuvable.');
@@ -836,6 +858,18 @@ function InstallmentCorrection() {
       setLoading(false);
     }
   };
+
+  const creditsFiltres = filtre.trim()
+    ? credits.filter((c) => {
+        const q = filtre.trim().toLowerCase();
+        return (
+          c.client.toLowerCase().includes(q) ||
+          c.reference.toLowerCase().includes(q) ||
+          (c.produit ?? '').toLowerCase().includes(q) ||
+          (c.purpose ?? '').toLowerCase().includes(q)
+        );
+      })
+    : credits;
 
   const startEdit = (inst) => {
     setEditingId(inst.id);
@@ -888,6 +922,54 @@ function InstallmentCorrection() {
           </button>
         </div>
         {error && <p style={{ margin: '10px 0 0', fontSize: 12, color: colors.danger, fontFamily: fonts.body }}>{error}</p>}
+      </Card>
+
+      <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 16 }}>
+        <SectionTitle
+          right={
+            <input
+              value={filtre}
+              onChange={(e) => setFiltre(e.target.value)}
+              placeholder="Filtrer par nom, référence, type de crédit ou service…"
+              style={{ ...input, width: 300 }}
+            />
+          }
+        >
+          Tous les crédits en cours ({creditsFiltres.length})
+        </SectionTitle>
+        {creditsLoading ? (
+          <p style={{ padding: 24, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>Chargement…</p>
+        ) : creditsFiltres.length === 0 ? (
+          <p style={{ padding: 24, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
+            Aucun crédit en cours ne correspond.
+          </p>
+        ) : (
+          <div style={{ maxHeight: 340, overflowY: 'auto' }}>
+            {creditsFiltres.map((c) => (
+              <div
+                key={c.id}
+                onClick={() => search(c.reference)}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14,
+                  padding: '11px 20px', borderBottom: `1px solid ${colors.line}`, cursor: 'pointer',
+                  background: reference === c.reference ? colors.forestPale : 'transparent',
+                }}
+              >
+                <div style={{ minWidth: 180 }}>
+                  <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>{c.client}</p>
+                  <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+                    {c.produit ?? c.purpose ?? '—'}
+                  </p>
+                </div>
+                <p style={{ margin: 0, fontSize: 12, color: colors.ink, fontFamily: fonts.mono }}>{c.reference}</p>
+                <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.mono }}>{formatFCFA(c.amount)} F</p>
+                <Badge tone={c.status === 'suspendu' ? 'gold' : 'neutral'}>
+                  {c.status === 'suspendu' ? 'Suspendu' : 'Actif'}
+                </Badge>
+              </div>
+            ))}
+          </div>
+        )}
       </Card>
 
       {toast && (
