@@ -143,6 +143,7 @@ export const PERMISSIONS = {
     'credits.suspendre',
     'coffres.lire',
     'coffres.transferer',
+    'coffres.cloturer',
     'credits.supprimer_double_validation',
 
     // Simuler un crédit pour expliquer des mensualités à un client au

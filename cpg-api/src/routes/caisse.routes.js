@@ -8,7 +8,7 @@ import { ApiError } from '../middleware/errorHandler.js';
 import { notifyUser } from '../services/pushService.js';
 import { audit } from '../services/auditService.js';
 import { genererBrouillardPDF } from '../services/brouillardService.js';
-import { fetchCoffres, transfererDepuisCoffre } from '../services/coffreService.js';
+import { fetchCoffres, transfererDepuisCoffre, cloturerCoffre, fetchCoffreClotures } from '../services/coffreService.js';
 import { genererHistoriquePDF } from '../services/historiqueService.js';
 
 // Justificatif joint à une demande de caisse (reçu, facture...) —
@@ -922,6 +922,45 @@ router.post(
         metadata: { coffreSource: result.coffreSource, destination: result.destination, montant: result.montant },
       });
 
+      res.status(201).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * GET /coffres/clotures — historique des clôtures mensuelles, tous
+ * coffres confondus. Même lecture que les coffres eux-mêmes
+ * (caissière et directeur).
+ */
+router.get('/coffres/clotures', requirePermission('coffres.lire'), async (req, res, next) => {
+  try {
+    const clotures = await fetchCoffreClotures();
+    res.json({ clotures });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /coffres/:coffre/cloturer — réservé au directeur : archive le
+ * solde courant du coffre et fait repartir son calcul à zéro pour la
+ * période suivante. Un clic, pas de motif requis — c'est une clôture
+ * de routine, pas une correction.
+ */
+router.post(
+  '/coffres/:coffre/cloturer',
+  requirePermission('coffres.cloturer'),
+  async (req, res, next) => {
+    try {
+      const result = await cloturerCoffre({ coffre: req.params.coffre, actorId: req.user.id });
+      await audit(req, {
+        action: 'coffre.cloture',
+        entityType: 'coffre',
+        entityId: result.id,
+        metadata: { coffre: result.coffre, montant: result.montant },
+      });
       res.status(201).json(result);
     } catch (error) {
       next(error);
