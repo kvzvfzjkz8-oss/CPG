@@ -14,6 +14,7 @@ import { Card, Badge, Tabs, KpiCard, SectionTitle, DataTable, td } from '../comp
 import {
   approveCredit, setUserStatus, fetchUsers, createUser, updateUser, resetClientPin, fetchStatistics, fetchMomoTransactions,
   fetchPendingInstallmentAdjustments, decideInstallmentAdjustment,
+  fetchPendingCreditDeletionRequests, deciderSuppressionCreditDoubleValidation,
   fetchFinalApprovalQueue, grantExceptionAuthorization, fetchExceptionAuthorizations,
   supprimerCreditDoubleValidation,
   fetchDemandesCaisseEnAttente, validerOperationCaisse, rejeterOperationCaisse,
@@ -57,6 +58,9 @@ export default function SupervisorView({ role }) {
   if (can(role, 'operations.decider_correction_echeance')) {
     tabs.push({ key: 'corrections', label: 'Corrections d\'échéances', icon: CalendarClock });
   }
+  if (can(role, 'credits.decider_suppression_double_validation')) {
+    tabs.push({ key: 'suppressions-credit', label: 'Suppressions à confirmer', icon: Trash2 });
+  }
   if (can(role, 'commission.autoriser_exception')) {
     tabs.push({ key: 'exceptions', label: 'Autorisations d\'exception', icon: KeyRound });
   }
@@ -90,6 +94,7 @@ export default function SupervisorView({ role }) {
       {tab === 'utilisateurs' && <UserManagement />}
       {tab === 'momo' && <MomoSupervision />}
       {tab === 'corrections' && <PendingAdjustments />}
+      {tab === 'suppressions-credit' && <PendingCreditDeletions />}
       {tab === 'exceptions' && <ExceptionAuthorizations />}
       {tab === 'caisse' && <CaisseValidation />}
       {tab === 'coffres' && <CoffresPanel role={role} />}
@@ -2061,6 +2066,133 @@ function PendingAdjustments() {
             <div style={{ display: 'flex', gap: 8 }}>
               <button onClick={() => decide(d, true)} disabled={busyId === d.id} style={actionBtn(colors.forest, '#fff')}>
                 <Check size={12} style={{ marginRight: 4 }} /> Approuver
+              </button>
+              <button
+                onClick={() => setRejectingId(rejectingId === d.id ? null : d.id)}
+                disabled={busyId === d.id}
+                style={actionBtn(colors.dangerPale, colors.danger)}
+              >
+                <X size={12} style={{ marginRight: 4 }} /> Rejeter
+              </button>
+            </div>
+          </div>
+
+          {rejectingId === d.id && (
+            <div style={{ padding: '0 20px 16px', display: 'flex', gap: 8 }}>
+              <input
+                placeholder="Motif du rejet (obligatoire)"
+                value={note} onChange={(e) => setNote(e.target.value)}
+                style={{
+                  flex: 1, padding: '9px 11px', borderRadius: 9, border: `1px solid ${colors.line}`,
+                  fontSize: 12, fontFamily: fonts.body, outline: 'none',
+                }}
+              />
+              <button
+                onClick={() => decide(d, false)}
+                disabled={note.trim().length === 0 || busyId === d.id}
+                style={{ ...actionBtn(colors.danger, '#fff'), opacity: note.trim().length === 0 ? 0.5 : 1 }}
+              >
+                Confirmer le rejet
+              </button>
+            </div>
+          )}
+        </div>
+      ))}
+    </Card>
+  );
+}
+
+/**
+ * Demandes de suppression d'un dossier en double validation, posées
+ * par l'opérateur — le directeur seul confirme (le dossier est alors
+ * réellement annulé) ou rejette (le dossier reste tel quel). C'est ce
+ * qui a été demandé : la suppression n'est plus au seul geste de
+ * l'opérateur, elle attend cette confirmation.
+ */
+function PendingCreditDeletions() {
+  const [demandes, setDemandes] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState(null);
+  const [rejectingId, setRejectingId] = useState(null);
+  const [note, setNote] = useState('');
+  const [toast, setToast] = useState('');
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await fetchPendingCreditDeletionRequests();
+      setDemandes(r);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  React.useEffect(() => { load(); }, []);
+
+  const flash = (text) => {
+    setToast(text);
+    setTimeout(() => setToast(''), 6000);
+  };
+
+  const decide = async (demande, approuver) => {
+    if (!approuver && note.trim().length === 0) return;
+    setBusyId(demande.id);
+    try {
+      await deciderSuppressionCreditDoubleValidation(demande.id, approuver, note.trim());
+      setDemandes((prev) => prev.filter((d) => d.id !== demande.id));
+      setRejectingId(null);
+      setNote('');
+      flash(
+        approuver
+          ? `Suppression confirmée : le dossier ${demande.credit_reference} (${demande.client}) est annulé.`
+          : `Suppression rejetée pour le dossier ${demande.credit_reference} (${demande.client}) — rien n'a changé.`
+      );
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <Card style={{ padding: 0, overflow: 'hidden' }}>
+      {toast && (
+        <div style={{
+          margin: 16, background: colors.goldPale, border: `1px solid ${colors.gold}`, borderRadius: 12,
+          padding: '11px 16px', fontSize: 12, color: colors.goldDark, fontFamily: fonts.body,
+        }}>
+          {toast}
+        </div>
+      )}
+
+      <SectionTitle>
+        {loading ? 'Chargement…' : `${demandes.length} demande${demandes.length > 1 ? 's' : ''} de suppression en attente`}
+      </SectionTitle>
+
+      {!loading && demandes.length === 0 && (
+        <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
+          Aucune demande de suppression en attente.
+        </p>
+      )}
+
+      {demandes.map((d) => (
+        <div key={d.id} style={{ borderBottom: `1px solid ${colors.line}` }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, padding: '14px 20px', opacity: busyId === d.id ? 0.5 : 1 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>
+                {d.client} · {d.credit_reference}
+              </p>
+              <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+                Proposé par {d.demandeur} · {d.motif}
+              </p>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.mono }}>
+                {formatFCFA(d.amount)} F
+              </p>
+              <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>{d.duration_months} mois</p>
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => decide(d, true)} disabled={busyId === d.id} style={actionBtn(colors.danger, '#fff')}>
+                <Check size={12} style={{ marginRight: 4 }} /> Confirmer la suppression
               </button>
               <button
                 onClick={() => setRejectingId(rejectingId === d.id ? null : d.id)}

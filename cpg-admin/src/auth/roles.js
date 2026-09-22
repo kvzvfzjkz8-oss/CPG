@@ -66,6 +66,11 @@ export const PERMISSIONS = {
     'demandes.valider_double',
     'commission.lire',
 
+    // Proposer la suppression d'un dossier arrivé en double validation
+    // — la suppression elle-même n'est effective qu'une fois confirmée
+    // par le directeur.
+    'credits.proposer_suppression_double_validation',
+
     // Opérations mensuelles : créditer la paie des agents (fichier
     // joint) et vérifier ce que le logiciel a fait seul — les agios
     // et les échéances sont prélevés automatiquement (tâche planifiée
@@ -126,7 +131,11 @@ export const PERMISSIONS = {
     'rapports_suppression.restaurer',
     'coffres.lire',
     'coffres.transferer',
+    'coffres.cloturer',
     'credits.supprimer_double_validation',
+    // Confirmer (ou rejeter) une demande de suppression posée par
+    // l'opérateur pour un dossier en double validation.
+    'credits.decider_suppression_double_validation',
     'momo.superviser',
     'audit.lire',
     'credits.simuler',
