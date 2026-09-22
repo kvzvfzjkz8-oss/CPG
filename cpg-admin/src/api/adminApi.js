@@ -505,6 +505,25 @@ export async function fetchInstallmentsByReference(reference) {
   return apiRequest(`/v1/admin/operations/echeances?reference=${encodeURIComponent(reference)}`);
 }
 
+/** Toutes les échéances en retard, tous clients confondus. */
+export async function fetchOverdueInstallments() {
+  const { installments } = await apiRequest('/v1/admin/operations/echeances/en-retard');
+  return installments;
+}
+
+/**
+ * Relance la collecte des échéances arrivées à terme (normalement
+ * automatique chaque jour à 6h) — filet de rattrapage pour prélever
+ * tout de suite ce qui est devenu collectable (ex. juste après un
+ * import, ou après qu'un client a été crédité).
+ */
+export async function executerEcheances(asOf) {
+  return apiRequest('/v1/admin/operations/echeances/executer', {
+    method: 'POST',
+    body: asOf ? { asOf } : {},
+  });
+}
+
 /**
  * Propose une nouvelle date pour une échéance — n'applique rien tant
  * que le directeur n'a pas validé (voir decideInstallmentAdjustment).
@@ -754,6 +773,17 @@ export async function fetchCoffres() {
 /** Transfert entre coffres, ou vers la caisse principale — réservé au directeur. */
 export async function transfererDepuisCoffre(coffreSource, destination, montant, motif) {
   return apiRequest('/v1/caisse/coffres/transferer', { method: 'POST', body: { coffreSource, destination, montant, motif } });
+}
+
+/** Clôture mensuelle d'un coffre (archive le solde, remet à zéro) — réservé au directeur. */
+export async function cloturerCoffre(coffre) {
+  return apiRequest(`/v1/caisse/coffres/${coffre}/cloturer`, { method: 'POST' });
+}
+
+/** Historique des clôtures de coffres — lecture caissière + directeur. */
+export async function fetchCoffreClotures() {
+  const { clotures } = await apiRequest('/v1/caisse/coffres/clotures');
+  return clotures;
 }
 
 /** Caissière : dépense de fonctionnement (pas un client), soumise à validation. */

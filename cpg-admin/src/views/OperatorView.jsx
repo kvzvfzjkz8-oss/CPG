@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   Inbox, ShieldCheck, MessageCircle, Check, X, Eye, Filter, Send, CalendarClock, Gavel, Plus, Wallet,
+  AlertTriangle, Phone, Pencil, PlayCircle,
 } from 'lucide-react';
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, Tabs, SectionTitle } from '../components/UI';
@@ -11,6 +12,7 @@ import {
   supprimerCreditDoubleValidation,
   fetchCreditRequests, fetchCreditDetail, fetchConversations, fetchConversationMessages,
   searchClientPourDemande, creerDemandePourClient,
+  fetchOverdueInstallments, executerEcheances, proposeInstallmentAdjustment,
 } from '../api/adminApi';
 import OperationsView from './OperationsView';
 import { CreditsEnCoursPanel } from '../components/ClientsCredits';
@@ -18,6 +20,7 @@ import { CreditsEnCoursPanel } from '../components/ClientsCredits';
 export default function OperatorView() {
   const [tab, setTab] = useState('demandes');
   const [unreadCount, setUnreadCount] = useState(0);
+  const [overdueCount, setOverdueCount] = useState(0);
 
   useEffect(() => {
     const checkUnread = () => {
@@ -33,6 +36,17 @@ export default function OperatorView() {
     return () => clearInterval(interval);
   }, [tab]);
 
+  useEffect(() => {
+    const checkOverdue = () => {
+      fetchOverdueInstallments()
+        .then((list) => setOverdueCount(list.length))
+        .catch(() => {});
+    };
+    checkOverdue();
+    const interval = setInterval(checkOverdue, 60000);
+    return () => clearInterval(interval);
+  }, [tab]);
+
   return (
     <div>
       <Tabs
@@ -40,6 +54,7 @@ export default function OperatorView() {
         onChange={setTab}
         options={[
           { key: 'demandes', label: 'Demandes entrantes', icon: Inbox },
+          { key: 'echeances-retard', label: 'Échéances en retard', icon: AlertTriangle, badge: overdueCount },
           { key: 'credits-actifs', label: 'Crédits en cours', icon: Wallet },
           { key: 'double-validation', label: 'Double validation', icon: Gavel },
           { key: 'verification', label: 'Vérification client', icon: ShieldCheck },
@@ -48,11 +63,219 @@ export default function OperatorView() {
         ]}
       />
       {tab === 'demandes' && <IncomingRequests />}
+      {tab === 'echeances-retard' && <OverdueInstallments onChanged={() => {
+        fetchOverdueInstallments().then((list) => setOverdueCount(list.length)).catch(() => {});
+      }} />}
       {tab === 'credits-actifs' && <CreditsEnCoursPanel />}
       {tab === 'double-validation' && <DoubleValidation />}
       {tab === 'verification' && <ClientVerification />}
       {tab === 'operations' && <OperationsView />}
       {tab === 'messagerie' && <Messaging />}
+    </div>
+  );
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════════════
+ *  ÉCHÉANCES EN RETARD — vue globale, tous clients confondus
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * Sur sa page principale, l'opérateur voit d'un coup d'œil toutes les
+ * échéances dépassées à relancer, sans avoir à chercher client par
+ * client. « Récupérable » signale que le solde du compte suffit déjà
+ * à couvrir l'échéance — un bon indice de qui relancer en priorité
+ * pour un encaissement immédiat via « Lancer le prélèvement ».
+ */
+function OverdueInstallments({ onChanged }) {
+  const [list, setList] = useState(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [collecting, setCollecting] = useState(false);
+  const [toast, setToast] = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [nouvelleDate, setNouvelleDate] = useState('');
+  const [motif, setMotif] = useState('');
+  const [busyId, setBusyId] = useState(null);
+
+  const load = () => {
+    setLoading(true);
+    fetchOverdueInstallments()
+      .then(setList)
+      .catch((e) => setError(e.message ?? 'Chargement impossible.'))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const lancerPrelevement = async () => {
+    setCollecting(true);
+    setError('');
+    try {
+      const result = await executerEcheances();
+      setToast(
+        `Prélèvement lancé : ${result.paid.length} échéance${result.paid.length > 1 ? 's' : ''} encaissée${result.paid.length > 1 ? 's' : ''} ` +
+        `(${formatFCFA(result.totalCollected)} F), ${result.late.length} toujours en retard faute de provision.`
+      );
+      setTimeout(() => setToast(''), 8000);
+      load();
+      onChanged?.();
+    } catch (e) {
+      setError(e.message ?? 'Le prélèvement a échoué.');
+    } finally {
+      setCollecting(false);
+    }
+  };
+
+  const startEdit = (inst) => {
+    setEditingId(inst.id);
+    setNouvelleDate(inst.dueDate.slice(0, 10));
+    setMotif('');
+  };
+
+  const submitCorrection = async (inst) => {
+    if (motif.trim().length < 5) return;
+    setBusyId(inst.id);
+    try {
+      await proposeInstallmentAdjustment(inst.id, nouvelleDate, motif.trim());
+      setEditingId(null);
+      setToast(`Correction proposée pour ${inst.reference} (échéance n°${inst.sequence}) — en attente de validation du directeur.`);
+      setTimeout(() => setToast(''), 6000);
+    } catch (e) {
+      setError(e.message ?? 'La proposition a échoué.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  if (loading && !list) {
+    return <Card style={{ padding: 40, textAlign: 'center' }}>Chargement…</Card>;
+  }
+
+  const totalDu = (list ?? []).reduce((sum, i) => sum + i.amount, 0);
+  const recouvrables = (list ?? []).filter((i) => i.recouvrable).length;
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 16, marginBottom: 16, alignItems: 'stretch' }}>
+        <Card style={{ padding: 16, flex: 1 }}>
+          <p style={{ margin: 0, fontSize: 10, color: colors.muted, fontFamily: fonts.body, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+            Échéances en retard
+          </p>
+          <p style={{ margin: '6px 0 0', fontSize: 22, fontWeight: 700, color: (list?.length ?? 0) > 0 ? colors.danger : colors.ink, fontFamily: fonts.mono }}>
+            {list?.length ?? 0}
+          </p>
+          <p style={{ margin: '4px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+            {formatFCFA(totalDu)} F au total · {recouvrables} récupérable{recouvrables > 1 ? 's' : ''} immédiatement
+          </p>
+        </Card>
+        <div style={{ display: 'flex', alignItems: 'center' }}>
+          <button
+            onClick={lancerPrelevement}
+            disabled={collecting || !(list?.length)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8, padding: '12px 18px', borderRadius: 10,
+              border: 'none', background: colors.forest, color: '#fff', fontSize: 13, fontWeight: 600,
+              fontFamily: fonts.body, cursor: 'pointer', opacity: !(list?.length) ? 0.5 : 1, whiteSpace: 'nowrap',
+            }}
+          >
+            <PlayCircle size={16} /> {collecting ? 'Prélèvement…' : 'Lancer le prélèvement maintenant'}
+          </button>
+        </div>
+      </div>
+
+      {toast && (
+        <div style={{
+          background: colors.goldPale, border: `1px solid ${colors.gold}`, borderRadius: 12,
+          padding: '11px 16px', marginBottom: 16, fontSize: 12, color: colors.goldDark, fontFamily: fonts.body,
+        }}>
+          {toast}
+        </div>
+      )}
+      {error && <p style={{ margin: '0 0 12px', fontSize: 12, color: colors.danger, fontFamily: fonts.body }}>{error}</p>}
+
+      <Card style={{ padding: 0, overflow: 'hidden' }}>
+        <SectionTitle>Détail par client</SectionTitle>
+        {(!list || list.length === 0) ? (
+          <p style={{ padding: 24, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
+            Aucune échéance en retard pour le moment.
+          </p>
+        ) : (
+          list.map((inst) => (
+            <div key={inst.id} style={{ borderBottom: `1px solid ${colors.line}` }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, padding: '12px 20px', flexWrap: 'wrap' }}>
+                <div style={{ minWidth: 180 }}>
+                  <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
+                    {inst.client}
+                  </p>
+                  <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body, display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <Phone size={10} /> {inst.phone ?? '—'} · {inst.clientNumber ?? '—'}
+                  </p>
+                </div>
+                <div style={{ minWidth: 110 }}>
+                  <p style={{ margin: 0, fontSize: 12, color: colors.ink, fontFamily: fonts.mono }}>{inst.reference}</p>
+                  <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>Échéance {inst.sequence}/{inst.durationMonths}</p>
+                </div>
+                <div style={{ minWidth: 90, textAlign: 'right' }}>
+                  <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.mono }}>{formatFCFA(inst.amount)} F</p>
+                  <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+                    échue le {new Date(inst.dueDate).toLocaleDateString('fr-FR')}
+                  </p>
+                </div>
+                <Badge tone="danger">{inst.joursRetard} jour{inst.joursRetard > 1 ? 's' : ''} de retard</Badge>
+                <Badge tone={inst.recouvrable ? 'neutral' : 'gold'}>
+                  {inst.recouvrable ? 'Solde suffisant' : `Solde insuffisant (${formatFCFA(inst.soldeDisponible)} F)`}
+                </Badge>
+                {editingId !== inst.id && (
+                  <button onClick={() => startEdit(inst)} style={{
+                    display: 'flex', alignItems: 'center', gap: 6, padding: '8px 12px', borderRadius: 8,
+                    border: `1px solid ${colors.line}`, background: '#fff', color: colors.ink,
+                    fontSize: 11, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer',
+                  }}>
+                    <Pencil size={12} /> Proposer une correction
+                  </button>
+                )}
+              </div>
+              {editingId === inst.id && (
+                <div style={{ padding: '0 20px 16px' }}>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
+                    <input
+                      type="date" value={nouvelleDate} onChange={(e) => setNouvelleDate(e.target.value)}
+                      style={{ padding: '9px 11px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body, width: 170 }}
+                    />
+                    <input
+                      placeholder="Motif de la correction (obligatoire)"
+                      value={motif} onChange={(e) => setMotif(e.target.value)}
+                      style={{ flex: 1, minWidth: 220, padding: '9px 11px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body }}
+                    />
+                  </div>
+                  <p style={{ margin: '0 0 8px', fontSize: 10, color: colors.muted, fontFamily: fonts.body }}>
+                    Cette date ne s'appliquera qu'après validation du directeur.
+                  </p>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button
+                      onClick={() => submitCorrection(inst)}
+                      disabled={busyId === inst.id || motif.trim().length < 5}
+                      style={{
+                        padding: '8px 14px', borderRadius: 9, border: 'none', background: colors.forest, color: '#fff',
+                        fontSize: 12, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer',
+                        opacity: motif.trim().length < 5 ? 0.5 : 1,
+                      }}
+                    >
+                      {busyId === inst.id ? 'Envoi…' : 'Soumettre au directeur'}
+                    </button>
+                    <button onClick={() => setEditingId(null)} style={{
+                      padding: '8px 14px', borderRadius: 9, border: 'none', background: 'transparent', color: colors.muted,
+                      fontSize: 12, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer',
+                    }}>
+                      Annuler
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </Card>
     </div>
   );
 }
