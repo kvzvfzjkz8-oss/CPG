@@ -12,6 +12,7 @@ import {
   cancelCreditAwaitingDoubleValidation,
   fetchInstallmentsByCreditReference, proposeInstallmentAdjustment,
   fetchPendingInstallmentAdjustments, decideInstallmentAdjustment, fetchSchedulerStatus,
+  fetchOverdueInstallments,
 } from '../services/operationsService.js';
 import { runTenueCompteBatch } from '../services/feeService.js';
 
@@ -431,6 +432,25 @@ router.post(
       });
 
       res.status(201).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * GET /admin/operations/echeances/en-retard — toutes les échéances
+ * dépassées, tous clients confondus, pour la page principale de
+ * l'opérateur : plus besoin de connaître une référence à l'avance
+ * pour repérer et organiser les relances.
+ */
+router.get(
+  '/echeances/en-retard',
+  requirePermission('operations.lire'),
+  async (req, res, next) => {
+    try {
+      const installments = await fetchOverdueInstallments();
+      res.json({ installments });
     } catch (error) {
       next(error);
     }

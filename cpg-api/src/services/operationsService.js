@@ -808,6 +808,53 @@ export async function fetchInstallmentsByCreditReference(reference) {
 }
 
 /**
+ * Liste globale des échéances en retard — toutes celles pas encore
+ * payées dont la date est dépassée, tous crédits confondus. Sert à
+ * l'opérateur pour piloter les relances depuis sa page principale,
+ * sans avoir à connaître par avance la référence de chaque dossier.
+ *
+ * Le retard est calculé sur la date (due_date < aujourd'hui), pas sur
+ * le statut `en_retard` : ce dernier n'est posé que par la collecte
+ * quotidienne (runInstallmentCollection), donc une échéance dépassée
+ * mais pas encore traitée par le job (ex. import historique tout
+ * juste effectué) doit quand même apparaître ici.
+ */
+export async function fetchOverdueInstallments() {
+  const { rows } = await query(
+    `SELECT i.id, i.sequence, i.due_date, i.amount, i.status,
+            c.reference, c.duration_months,
+            u.full_name AS client, u.phone, u.client_number,
+            COALESCE(b.balance, 0) AS solde_disponible,
+            (CURRENT_DATE - i.due_date) AS jours_retard
+     FROM installments i
+     JOIN credit_requests c ON c.id = i.credit_id
+     JOIN users u ON u.id = c.user_id
+     LEFT JOIN LATERAL (
+       SELECT id FROM accounts WHERE user_id = u.id ORDER BY created_at LIMIT 1
+     ) a ON true
+     LEFT JOIN account_balances b ON b.account_id = a.id
+     WHERE i.status <> 'payee' AND i.due_date < CURRENT_DATE
+     ORDER BY i.due_date ASC`
+  );
+
+  return rows.map((r) => ({
+    id: r.id,
+    sequence: r.sequence,
+    dueDate: r.due_date,
+    amount: Number(r.amount),
+    status: r.status,
+    reference: r.reference,
+    durationMonths: r.duration_months,
+    client: r.client,
+    phone: r.phone,
+    clientNumber: r.client_number,
+    soldeDisponible: Number(r.solde_disponible),
+    joursRetard: Number(r.jours_retard),
+    recouvrable: Number(r.solde_disponible) >= Number(r.amount),
+  }));
+}
+
+/**
  * Applique réellement la correction de date — appelée uniquement par
  * decideInstallmentAdjustment() après validation du directeur. Jamais
  * exposée directement à l'opérateur : proposer une correction et
