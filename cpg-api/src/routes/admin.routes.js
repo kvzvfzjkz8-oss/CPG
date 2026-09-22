@@ -52,10 +52,13 @@ router.get(
 
       const { rows } = await query(
         `SELECT c.id, c.reference, c.amount, c.duration_months, c.status, c.created_at,
-                c.level1_at, c.approved_at,
-                u.id AS client_id, u.full_name AS client, u.job_title, u.employer, u.client_number, u.phone
+                c.level1_at, c.approved_at, c.purpose,
+                u.id AS client_id, u.full_name AS client, u.job_title, u.employer, u.client_number, u.phone,
+                p.name AS produit
          FROM credit_requests c
          JOIN users u ON u.id = c.user_id
+         LEFT JOIN product_versions pv ON pv.id = c.product_version_id
+         LEFT JOIN credit_products p ON p.id = pv.product_id
          WHERE ($1::credit_status IS NULL OR c.status = $1)
          ORDER BY u.full_name
          LIMIT $2`,
