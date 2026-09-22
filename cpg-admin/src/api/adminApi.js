@@ -112,6 +112,11 @@ export async function archiverRapportSuppressionCredit(rapportId) {
   return apiRequest(`/v1/admin/rapports-suppression-credit/${rapportId}/archiver`, { method: 'POST' });
 }
 
+/** Corbeille : restaure un crédit supprimé (Directeur uniquement). */
+export async function restaurerRapportSuppressionCredit(rapportId) {
+  return apiRequest(`/v1/admin/rapports-suppression-credit/${rapportId}/restaurer`, { method: 'POST' });
+}
+
 /** Suspend temporairement un crédit actif (Gestionnaire ou Directeur) — réversible. */
 export async function suspendreCreditActif(creditId, motif) {
   return apiRequest(`/v1/admin/operations/credits/${creditId}/suspendre`, { method: 'POST', body: { motif } });
@@ -224,6 +229,11 @@ export async function fetchRapportsSuppression() {
 
 export async function archiverRapportSuppression(rapportId) {
   return apiRequest(`/v1/admin/rapports-suppression/${rapportId}/archiver`, { method: 'POST' });
+}
+
+/** Corbeille : restaure un client supprimé (Directeur uniquement). */
+export async function restaurerRapportSuppression(rapportId) {
+  return apiRequest(`/v1/admin/rapports-suppression/${rapportId}/restaurer`, { method: 'POST' });
 }
 
 /**

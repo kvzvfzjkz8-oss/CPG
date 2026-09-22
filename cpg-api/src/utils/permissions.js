@@ -138,6 +138,7 @@ export const PERMISSIONS = {
     'momo.superviser',
     'audit.lire',
     'rapports_suppression.archiver',
+    'rapports_suppression.restaurer',
     'credits.supprimer_actif',
     'credits.suspendre',
     'coffres.lire',

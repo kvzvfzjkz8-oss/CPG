@@ -21,8 +21,8 @@ import {
   simulateCredit, fetchProducts, creerDemandePourClient, searchClientPourDemande,
   fetchCreditApprouvePourClient, ouvrirContratCredit, ouvrirBrouillardCaisse, ouvrirJustificatifCaisse,
   fetchCreditRequests, fetchClientDetail, supprimerClient,
-  fetchRapportsSuppression, archiverRapportSuppression,
-  fetchRapportsSuppressionCredit, archiverRapportSuppressionCredit,
+  fetchRapportsSuppression, archiverRapportSuppression, restaurerRapportSuppression,
+  fetchRapportsSuppressionCredit, archiverRapportSuppressionCredit, restaurerRapportSuppressionCredit,
 } from '../api/adminApi';
 import { can } from '../auth/roles';
 import CatalogView from './CatalogView';
@@ -70,7 +70,7 @@ export default function SupervisorView({ role }) {
     tabs.push({ key: 'audit', label: "Journal d'activité", icon: History });
   }
   if (can(role, 'rapports_suppression.archiver')) {
-    tabs.push({ key: 'rapports-suppression', label: 'Rapports de suppression', icon: Trash2 });
+    tabs.push({ key: 'rapports-suppression', label: 'Corbeille', icon: Trash2 });
   }
 
   return (
@@ -1250,6 +1250,9 @@ function RapportsSuppression() {
   const [rapports, setRapports] = useState([]);
   const [loading, setLoading] = useState(true);
   const [archiveBusy, setArchiveBusy] = useState(null);
+  const [restoreBusy, setRestoreBusy] = useState(null);
+  const [restoreError, setRestoreError] = useState('');
+  const [toast, setToast] = useState('');
 
   const load = () => {
     fetchRapportsSuppression().then(setRapports).finally(() => setLoading(false));
@@ -1269,14 +1272,37 @@ function RapportsSuppression() {
     }
   };
 
-  const nonArchives = rapports.filter((r) => !r.archived_at);
-  const archives = rapports.filter((r) => r.archived_at);
+  const restaurer = async (r) => {
+    if (!window.confirm(`Restaurer le compte de ${r.client_name} ? Il redeviendra actif comme avant sa suppression.`)) return;
+    setRestoreBusy(r.id);
+    setRestoreError('');
+    try {
+      await restaurerRapportSuppression(r.id);
+      setToast(`${r.client_name} — compte restauré.`);
+      load();
+      setTimeout(() => setToast(''), 4000);
+    } catch (err) {
+      setRestoreError(err.message ?? 'Restauration impossible.');
+    } finally {
+      setRestoreBusy(null);
+    }
+  };
+
+  const enCorbeille = rapports.filter((r) => !r.restored_at);
+  const restaures = rapports.filter((r) => r.restored_at);
 
   return (
     <Card style={{ padding: 0, overflow: 'hidden' }}>
       <SectionTitle>
-        {loading ? 'Chargement…' : `${nonArchives.length} rapport${nonArchives.length > 1 ? 's' : ''} à examiner`}
+        {loading ? 'Chargement…' : `${enCorbeille.length} client${enCorbeille.length > 1 ? 's' : ''} dans la corbeille`}
       </SectionTitle>
+
+      {toast && (
+        <p style={{ margin: 0, padding: '8px 20px', background: colors.forest, color: '#fff', fontSize: 12, fontFamily: fonts.body }}>{toast}</p>
+      )}
+      {restoreError && (
+        <p style={{ margin: 0, padding: '8px 20px', background: '#c0392b', color: '#fff', fontSize: 12, fontFamily: fonts.body }}>{restoreError}</p>
+      )}
 
       {!loading && rapports.length === 0 && (
         <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
@@ -1284,7 +1310,7 @@ function RapportsSuppression() {
         </p>
       )}
 
-      {nonArchives.map((r) => (
+      {enCorbeille.map((r) => (
         <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 20px', borderBottom: `1px solid ${colors.line}` }}>
           <div style={{ minWidth: 0 }}>
             <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
@@ -1292,29 +1318,41 @@ function RapportsSuppression() {
             </p>
             <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
               {r.motif} — supprimé par <strong>{r.supprime_par}</strong> le {new Date(r.deleted_at).toLocaleDateString('fr-FR')}
+              {r.archived_at ? ' · archivé' : ''}
             </p>
           </div>
-          <button
-            onClick={() => archiver(r.id)}
-            disabled={archiveBusy === r.id}
-            style={{ ...actionBtn(colors.forest, '#fff'), padding: '7px 14px', flexShrink: 0 }}
-          >
-            {archiveBusy === r.id ? '…' : 'Archiver'}
-          </button>
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+            <button
+              onClick={() => restaurer(r)}
+              disabled={restoreBusy === r.id}
+              style={{ ...actionBtn('#1d5f8a', '#fff'), padding: '7px 14px' }}
+            >
+              {restoreBusy === r.id ? '…' : 'Restaurer'}
+            </button>
+            {!r.archived_at && (
+              <button
+                onClick={() => archiver(r.id)}
+                disabled={archiveBusy === r.id}
+                style={{ ...actionBtn(colors.forest, '#fff'), padding: '7px 14px' }}
+              >
+                {archiveBusy === r.id ? '…' : 'Archiver'}
+              </button>
+            )}
+          </div>
         </div>
       ))}
 
-      {archives.length > 0 && (
+      {restaures.length > 0 && (
         <>
-          <SectionTitle>Archivés ({archives.length})</SectionTitle>
-          {archives.map((r) => (
+          <SectionTitle>Restaurés ({restaures.length})</SectionTitle>
+          {restaures.map((r) => (
             <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 20px', borderBottom: `1px solid ${colors.line}`, opacity: 0.6 }}>
               <div style={{ minWidth: 0 }}>
                 <p style={{ margin: 0, fontSize: 12, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>
                   {r.client_name} {r.client_number ? `(${r.client_number})` : ''}
                 </p>
                 <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
-                  {r.motif} — archivé par {r.archive_par}
+                  Restauré par {r.restaure_par} le {new Date(r.restored_at).toLocaleDateString('fr-FR')}
                 </p>
               </div>
             </div>
@@ -1334,6 +1372,9 @@ function RapportsSuppressionCredit() {
   const [rapports, setRapports] = useState([]);
   const [loading, setLoading] = useState(true);
   const [archiveBusy, setArchiveBusy] = useState(null);
+  const [restoreBusy, setRestoreBusy] = useState(null);
+  const [restoreError, setRestoreError] = useState('');
+  const [toast, setToast] = useState('');
 
   const load = () => {
     fetchRapportsSuppressionCredit().then(setRapports).finally(() => setLoading(false));
@@ -1353,52 +1394,93 @@ function RapportsSuppressionCredit() {
     }
   };
 
-  const nonArchives = rapports.filter((r) => !r.archived_at);
-  const archives = rapports.filter((r) => r.archived_at);
+  const restaurer = async (r) => {
+    const cible = r.type === 'credit_actif'
+      ? 'Le crédit sera de nouveau actif et les fonds re-débloqués.'
+      : 'Le dossier reprendra le circuit là où il avait été supprimé.';
+    if (!window.confirm(`Restaurer le dossier ${r.credit_reference} (${r.client_name}) ? ${cible}`)) return;
+    setRestoreBusy(r.id);
+    setRestoreError('');
+    try {
+      await restaurerRapportSuppressionCredit(r.id);
+      setToast(`${r.credit_reference} — dossier restauré.`);
+      load();
+      setTimeout(() => setToast(''), 4000);
+    } catch (err) {
+      setRestoreError(err.message ?? 'Restauration impossible.');
+    } finally {
+      setRestoreBusy(null);
+    }
+  };
+
+  const enCorbeille = rapports.filter((r) => !r.restored_at);
+  const restaures = rapports.filter((r) => r.restored_at);
 
   return (
     <Card style={{ padding: 0, overflow: 'hidden', marginTop: 16 }}>
       <SectionTitle>
-        {loading ? 'Chargement…' : `${nonArchives.length} suppression${nonArchives.length > 1 ? 's' : ''} de crédit (double validation) à examiner`}
+        {loading ? 'Chargement…' : `${enCorbeille.length} crédit${enCorbeille.length > 1 ? 's' : ''} dans la corbeille`}
       </SectionTitle>
+
+      {toast && (
+        <p style={{ margin: 0, padding: '8px 20px', background: colors.forest, color: '#fff', fontSize: 12, fontFamily: fonts.body }}>{toast}</p>
+      )}
+      {restoreError && (
+        <p style={{ margin: 0, padding: '8px 20px', background: '#c0392b', color: '#fff', fontSize: 12, fontFamily: fonts.body }}>{restoreError}</p>
+      )}
 
       {!loading && rapports.length === 0 && (
         <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
-          Aucune suppression de crédit en double validation pour le moment.
+          Aucune suppression de crédit pour le moment.
         </p>
       )}
 
-      {nonArchives.map((r) => (
+      {enCorbeille.map((r) => (
         <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 20px', borderBottom: `1px solid ${colors.line}` }}>
           <div style={{ minWidth: 0 }}>
             <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
               {r.client_name} · {r.credit_reference}
+              <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 600, color: colors.muted, border: `1px solid ${colors.line}`, borderRadius: 4, padding: '1px 6px' }}>
+                {r.type === 'credit_actif' ? 'crédit actif' : 'avant déblocage'}
+              </span>
             </p>
             <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
               {r.motif} — supprimé par <strong>{r.supprime_par}</strong> le {new Date(r.deleted_at).toLocaleDateString('fr-FR')}
+              {r.archived_at ? ' · archivé' : ''}
             </p>
           </div>
-          <button
-            onClick={() => archiver(r.id)}
-            disabled={archiveBusy === r.id}
-            style={{ ...actionBtn(colors.forest, '#fff'), padding: '7px 14px', flexShrink: 0 }}
-          >
-            {archiveBusy === r.id ? '…' : 'Archiver'}
-          </button>
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+            <button
+              onClick={() => restaurer(r)}
+              disabled={restoreBusy === r.id}
+              style={{ ...actionBtn('#1d5f8a', '#fff'), padding: '7px 14px' }}
+            >
+              {restoreBusy === r.id ? '…' : 'Restaurer'}
+            </button>
+            {!r.archived_at && (
+              <button
+                onClick={() => archiver(r.id)}
+                disabled={archiveBusy === r.id}
+                style={{ ...actionBtn(colors.forest, '#fff'), padding: '7px 14px' }}
+              >
+                {archiveBusy === r.id ? '…' : 'Archiver'}
+              </button>
+            )}
+          </div>
         </div>
       ))}
 
-      {archives.length > 0 && (
+      {restaures.length > 0 && (
         <>
-          <SectionTitle>Archivés ({archives.length})</SectionTitle>
-          {archives.map((r) => (
+          <SectionTitle>Restaurés ({restaures.length})</SectionTitle>
+          {restaures.map((r) => (
             <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 20px', borderBottom: `1px solid ${colors.line}`, opacity: 0.6 }}>
               <div style={{ minWidth: 0 }}>
                 <p style={{ margin: 0, fontSize: 12, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>
                   {r.client_name} · {r.credit_reference}
                 </p>
                 <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
-                  {r.motif} — archivé par {r.archive_par}
+                  Restauré par {r.restaure_par} le {new Date(r.restored_at).toLocaleDateString('fr-FR')}
                 </p>
               </div>
             </div>

@@ -12,6 +12,7 @@ import { validateAgainstScale } from '../utils/rateVersioning.js';
 import { applyTriggeredFee } from '../services/feeService.js';
 import { notifyUser } from '../services/pushService.js';
 import { audit } from '../services/auditService.js';
+import { restoreDeletedClient, restoreDeletedCredit } from '../services/operationsService.js';
 
 import catalogRoutes from './catalog.routes.js';
 import operationsRoutes from './operations.routes.js';
@@ -904,17 +905,43 @@ router.get('/rapports-suppression', requirePermission('audit.lire'), async (req,
   try {
     const { rows } = await query(
       `SELECT r.id, r.client_name, r.client_number, r.motif, r.deleted_at, r.archived_at,
-              d.full_name AS supprime_par, a.full_name AS archive_par
+              r.restored_at,
+              d.full_name AS supprime_par, a.full_name AS archive_par,
+              rb.full_name AS restaure_par
        FROM client_deletion_reports r
        JOIN users d ON d.id = r.deleted_by
        LEFT JOIN users a ON a.id = r.archived_by
-       ORDER BY r.archived_at IS NOT NULL, r.deleted_at DESC`
+       LEFT JOIN users rb ON rb.id = r.restored_by
+       ORDER BY r.restored_at IS NOT NULL, r.archived_at IS NOT NULL, r.deleted_at DESC`
     );
     res.json({ rapports: rows });
   } catch (error) {
     next(error);
   }
 });
+
+/**
+ * POST /admin/rapports-suppression/:id/restaurer — réservé au
+ * directeur : remet le client dans la corbeille en 'actif'.
+ */
+router.post(
+  '/rapports-suppression/:id/restaurer',
+  requirePermission('rapports_suppression.restaurer'),
+  async (req, res, next) => {
+    try {
+      const result = await restoreDeletedClient({ reportId: req.params.id, actorId: req.user.id });
+      await audit(req, {
+        action: 'utilisateur.client_restaure',
+        entityType: 'user',
+        entityId: result.clientId,
+        metadata: { rapportId: req.params.id },
+      });
+      res.json({ ...result, restaure: true });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 /** POST /admin/rapports-suppression/:id/archiver — réservé au directeur. */
 router.post(
@@ -945,17 +972,44 @@ router.get('/rapports-suppression-credit', requirePermission('audit.lire'), asyn
   try {
     const { rows } = await query(
       `SELECT r.id, r.credit_reference, r.client_name, r.motif, r.deleted_at, r.archived_at,
-              d.full_name AS supprime_par, a.full_name AS archive_par
+              r.restored_at, r.type, r.previous_status,
+              d.full_name AS supprime_par, a.full_name AS archive_par,
+              rb.full_name AS restaure_par
        FROM credit_deletion_reports r
        JOIN users d ON d.id = r.deleted_by
        LEFT JOIN users a ON a.id = r.archived_by
-       ORDER BY r.archived_at IS NOT NULL, r.deleted_at DESC`
+       LEFT JOIN users rb ON rb.id = r.restored_by
+       ORDER BY r.restored_at IS NOT NULL, r.archived_at IS NOT NULL, r.deleted_at DESC`
     );
     res.json({ rapports: rows });
   } catch (error) {
     next(error);
   }
 });
+
+/**
+ * POST /admin/rapports-suppression-credit/:id/restaurer — réservé au
+ * directeur : remet le dossier de crédit dans l'état d'avant
+ * suppression (voir restoreDeletedCredit pour le détail des deux cas).
+ */
+router.post(
+  '/rapports-suppression-credit/:id/restaurer',
+  requirePermission('rapports_suppression.restaurer'),
+  async (req, res, next) => {
+    try {
+      const result = await restoreDeletedCredit({ reportId: req.params.id, actorId: req.user.id });
+      await audit(req, {
+        action: 'credit.dossier_restaure',
+        entityType: 'credit_request',
+        entityId: result.creditId,
+        metadata: { rapportId: req.params.id, statut: result.statut },
+      });
+      res.json({ ...result, restaure: true });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 /** POST /admin/rapports-suppression-credit/:id/archiver — réservé au directeur. */
 router.post(

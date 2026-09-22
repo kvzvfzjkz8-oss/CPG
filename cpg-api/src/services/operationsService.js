@@ -510,7 +510,9 @@ export async function cancelActiveCreditInError({ creditId, motif, actorId }) {
 
   return withTransaction(async (client) => {
     const { rows: creditRows } = await client.query(
-      `SELECT * FROM credit_requests WHERE id = $1 FOR UPDATE`,
+      `SELECT c.*, u.full_name AS client_name
+       FROM credit_requests c JOIN users u ON u.id = c.user_id
+       WHERE c.id = $1 FOR UPDATE`,
       [creditId]
     );
     const credit = creditRows[0];
@@ -518,6 +520,7 @@ export async function cancelActiveCreditInError({ creditId, motif, actorId }) {
     if (credit.status !== 'approuve' && credit.status !== 'suspendu') {
       throw new ApiError(409, 'Seul un crédit actif (approuvé) ou suspendu peut être supprimé ainsi.');
     }
+    const statutAvant = credit.status;
 
     const { rows: paye } = await client.query(
       `SELECT 1 FROM installments WHERE credit_id = $1 AND status = 'payee' LIMIT 1`,
@@ -579,6 +582,12 @@ export async function cancelActiveCreditInError({ creditId, motif, actorId }) {
       [creditId]
     );
 
+    await client.query(
+      `INSERT INTO credit_deletion_reports (credit_reference, client_name, motif, deleted_by, previous_status, type)
+       VALUES ($1, $2, $3, $4, $5, 'credit_actif')`,
+      [credit.reference, credit.client_name, motif.trim(), actorId, statutAvant]
+    );
+
     return { creditId, reference: credit.reference, statut: 'annule', reversals };
   });
 }
@@ -635,13 +644,14 @@ export async function cancelCreditAwaitingDoubleValidation({ creditId, motif, ac
 
   return withTransaction(async (client) => {
     const { rows: creditRows } = await client.query(
-      `SELECT c.id, c.reference, u.full_name AS client_name
+      `SELECT c.id, c.reference, c.status, u.full_name AS client_name
        FROM credit_requests c JOIN users u ON u.id = c.user_id
        WHERE c.id = $1 FOR UPDATE`,
       [creditId]
     );
     const credit = creditRows[0];
     if (!credit) throw new ApiError(404, 'Dossier introuvable.');
+    const statutAvant = credit.status;
 
     const { rows: updated } = await client.query(
       `UPDATE credit_requests SET status = 'annule'
@@ -654,12 +664,123 @@ export async function cancelCreditAwaitingDoubleValidation({ creditId, motif, ac
     }
 
     await client.query(
-      `INSERT INTO credit_deletion_reports (credit_reference, client_name, motif, deleted_by)
-       VALUES ($1, $2, $3, $4)`,
-      [credit.reference, credit.client_name, motif.trim(), actorId]
+      `INSERT INTO credit_deletion_reports (credit_reference, client_name, motif, deleted_by, previous_status, type)
+       VALUES ($1, $2, $3, $4, $5, 'double_validation')`,
+      [credit.reference, credit.client_name, motif.trim(), actorId, statutAvant]
     );
 
     return { creditId, reference: credit.reference, statut: 'annule' };
+  });
+}
+
+/**
+ * Restaure un client supprimé — remet le compte à 'actif'. Le client
+ * avait été bloqué de suppression s'il avait un crédit en cours ou un
+ * solde non nul, donc la restauration ne touche rien d'autre que le
+ * statut du compte.
+ */
+export async function restoreDeletedClient({ reportId, actorId }) {
+  return withTransaction(async (client) => {
+    const { rows: reportRows } = await client.query(
+      `SELECT * FROM client_deletion_reports WHERE id = $1 FOR UPDATE`,
+      [reportId]
+    );
+    const report = reportRows[0];
+    if (!report) throw new ApiError(404, 'Rapport introuvable.');
+    if (report.restored_at) throw new ApiError(409, 'Ce client a déjà été restauré.');
+
+    const { rows: updated } = await client.query(
+      `UPDATE users SET status = 'actif', updated_by = $2
+       WHERE id = $1 AND status = 'supprime'
+       RETURNING id, full_name`,
+      [report.client_id, actorId]
+    );
+    if (!updated[0]) {
+      throw new ApiError(409, 'Ce compte n’est plus dans l’état « supprimé » — restauration impossible.');
+    }
+
+    await client.query(
+      `UPDATE client_deletion_reports SET restored_at = now(), restored_by = $2 WHERE id = $1`,
+      [reportId, actorId]
+    );
+
+    return { clientId: updated[0].id, nom: updated[0].full_name };
+  });
+}
+
+/**
+ * Restaure un crédit supprimé (corbeille). Deux cas selon le type de
+ * suppression :
+ *  - 'double_validation' : rien n'avait été débloqué, on remet
+ *    simplement le statut d'avant.
+ *  - 'credit_actif' : le déblocage (et les frais associés) avaient été
+ *    extournés — on contre-extourne (nouvelles écritures, jamais on ne
+ *    touche aux anciennes) puis on remet le statut d'avant.
+ */
+export async function restoreDeletedCredit({ reportId, actorId }) {
+  return withTransaction(async (client) => {
+    const { rows: reportRows } = await client.query(
+      `SELECT * FROM credit_deletion_reports WHERE id = $1 FOR UPDATE`,
+      [reportId]
+    );
+    const report = reportRows[0];
+    if (!report) throw new ApiError(404, 'Rapport introuvable.');
+    if (report.restored_at) throw new ApiError(409, 'Ce dossier a déjà été restauré.');
+    if (!report.previous_status) {
+      throw new ApiError(422, 'Statut d’origine inconnu pour ce dossier — restauration impossible depuis la corbeille.');
+    }
+
+    const { rows: creditRows } = await client.query(
+      `SELECT * FROM credit_requests WHERE reference = $1 FOR UPDATE`,
+      [report.credit_reference]
+    );
+    const credit = creditRows[0];
+    if (!credit) throw new ApiError(404, 'Le dossier de crédit correspondant est introuvable.');
+    if (credit.status !== 'annule') {
+      throw new ApiError(409, 'Ce dossier n’est plus dans l’état « annulé » — restauration impossible.');
+    }
+
+    if (report.type === 'credit_actif') {
+      const { rows: reversalEntries } = await client.query(
+        `SELECT * FROM ledger_entries
+         WHERE reference = $1 AND type = 'annulation'
+           AND label LIKE 'Annulation crédit ' || $1 || ' —%'
+         ORDER BY created_at`,
+        [report.credit_reference]
+      );
+      for (const rev of reversalEntries) {
+        // On ne touche jamais une écriture existante : on en ajoute une
+        // nouvelle qui compense exactement l'extourne précédente.
+        const { rows: already } = await client.query(
+          `SELECT 1 FROM ledger_entries WHERE reversed_entry_id = $1`,
+          [rev.id]
+        );
+        if (already[0]) continue;
+        await client.query(
+          `INSERT INTO ledger_entries (account_id, type, amount, label, reference, created_by, reversed_entry_id)
+           VALUES ($1, 'annulation', $2, $3, $4, $5, $6)`,
+          [
+            rev.account_id, -rev.amount,
+            `Restauration crédit ${report.credit_reference} — dossier remis en circulation depuis la corbeille`,
+            rev.reference, actorId, rev.id,
+          ]
+        );
+      }
+    }
+
+    await client.query(
+      `UPDATE credit_requests
+       SET status = $2, suspended_by = CASE WHEN $2 = 'suspendu' THEN suspended_by ELSE NULL END
+       WHERE id = $1`,
+      [credit.id, report.previous_status]
+    );
+
+    await client.query(
+      `UPDATE credit_deletion_reports SET restored_at = now(), restored_by = $2 WHERE id = $1`,
+      [reportId, actorId]
+    );
+
+    return { creditId: credit.id, reference: credit.reference, statut: report.previous_status };
   });
 }
 

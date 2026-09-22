@@ -123,6 +123,7 @@ export const PERMISSIONS = {
     'demandes.rejeter',
     'utilisateurs.gerer',
     'rapports_suppression.archiver',
+    'rapports_suppression.restaurer',
     'coffres.lire',
     'coffres.transferer',
     'credits.supprimer_double_validation',
