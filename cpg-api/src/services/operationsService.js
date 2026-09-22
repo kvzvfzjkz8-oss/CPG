@@ -674,6 +674,132 @@ export async function cancelCreditAwaitingDoubleValidation({ creditId, motif, ac
 }
 
 /**
+ * Propose la suppression d'un dossier en attente de double validation
+ * ou d'approbation finale — l'opérateur ne supprime plus lui-même :
+ * il propose, et seul le directeur confirme (voir
+ * decideCreditDeletionRequest). Même principe que la correction
+ * d'échéance : proposer et décider sont deux actions distinctes,
+ * portées par deux personnes différentes.
+ */
+export async function proposeCreditDeletionRequest({ creditId, motif, actorId }) {
+  if (!motif || motif.trim().length < 5) {
+    throw new ApiError(422, 'Un motif est requis (5 caractères minimum).');
+  }
+
+  return withTransaction(async (client) => {
+    const { rows: creditRows } = await client.query(
+      `SELECT c.id, c.reference, c.status FROM credit_requests c WHERE c.id = $1 FOR UPDATE`,
+      [creditId]
+    );
+    const credit = creditRows[0];
+    if (!credit) throw new ApiError(404, 'Dossier introuvable.');
+    if (!['valide_commission', 'valide_double'].includes(credit.status)) {
+      throw new ApiError(409, 'Seul un dossier en attente de double validation ou d’approbation finale peut faire l’objet d’une demande de suppression.');
+    }
+
+    const { rows: existing } = await client.query(
+      `SELECT 1 FROM credit_deletion_requests WHERE credit_id = $1 AND status = 'en_attente'`,
+      [creditId]
+    );
+    if (existing[0]) {
+      throw new ApiError(409, 'Une demande de suppression est déjà en attente pour ce dossier.');
+    }
+
+    const { rows: created } = await client.query(
+      `INSERT INTO credit_deletion_requests (credit_id, motif, requested_by)
+       VALUES ($1, $2, $3)
+       RETURNING id, credit_id, motif, status, requested_at`,
+      [creditId, motif.trim(), actorId]
+    );
+
+    return created[0];
+  });
+}
+
+/** Demandes de suppression de crédit en attente d'arbitrage du directeur. */
+export async function fetchPendingCreditDeletionRequests() {
+  const { rows } = await query(
+    `SELECT r.id, r.motif, r.requested_at, r.credit_id,
+            c.reference AS credit_reference, c.amount, c.duration_months, c.status AS credit_status,
+            u.full_name AS client,
+            demandeur.full_name AS demandeur
+     FROM credit_deletion_requests r
+     JOIN credit_requests c ON c.id = r.credit_id
+     JOIN users u ON u.id = c.user_id
+     JOIN users demandeur ON demandeur.id = r.requested_by
+     WHERE r.status = 'en_attente'
+     ORDER BY r.requested_at`
+  );
+  return rows;
+}
+
+/**
+ * Le directeur tranche une demande de suppression : approuver annule
+ * réellement le dossier (même effet que l'ancienne suppression directe
+ * — voir cancelCreditAwaitingDoubleValidation — y compris le rapport
+ * dans credit_deletion_reports pour la corbeille), rejeter l'écarte
+ * sans toucher au dossier. Le proposant ne peut pas décider sa propre
+ * demande (contrainte no_self_decision_suppression_credit imposée en
+ * base également).
+ */
+export async function decideCreditDeletionRequest({ requestId, approve, note, actorId }) {
+  return withTransaction(async (client) => {
+    const { rows } = await client.query(
+      `SELECT * FROM credit_deletion_requests WHERE id = $1 FOR UPDATE`,
+      [requestId]
+    );
+    const request = rows[0];
+    if (!request) throw new ApiError(404, 'Demande de suppression introuvable.');
+    if (request.status !== 'en_attente') {
+      throw new ApiError(409, 'Cette demande a déjà été traitée.');
+    }
+    if (request.requested_by === actorId) {
+      throw new ApiError(403, 'Qui a proposé la suppression ne peut pas la valider lui-même.');
+    }
+
+    let resultat = null;
+    if (approve) {
+      const { rows: creditRows } = await client.query(
+        `SELECT c.id, c.reference, c.status, u.full_name AS client_name
+         FROM credit_requests c JOIN users u ON u.id = c.user_id
+         WHERE c.id = $1 FOR UPDATE`,
+        [request.credit_id]
+      );
+      const credit = creditRows[0];
+      if (!credit) throw new ApiError(404, 'Dossier introuvable.');
+      const statutAvant = credit.status;
+
+      const { rows: updated } = await client.query(
+        `UPDATE credit_requests SET status = 'annule'
+         WHERE id = $1 AND status IN ('valide_commission', 'valide_double')
+         RETURNING id`,
+        [credit.id]
+      );
+      if (!updated[0]) {
+        throw new ApiError(409, 'Ce dossier n’est plus dans un état permettant sa suppression (déjà traité entre-temps).');
+      }
+
+      await client.query(
+        `INSERT INTO credit_deletion_reports (credit_reference, client_name, motif, deleted_by, previous_status, type)
+         VALUES ($1, $2, $3, $4, $5, 'double_validation')`,
+        [credit.reference, credit.client_name, request.motif, actorId, statutAvant]
+      );
+
+      resultat = { creditId: credit.id, reference: credit.reference, statut: 'annule' };
+    }
+
+    await client.query(
+      `UPDATE credit_deletion_requests
+       SET status = $2, decided_by = $3, decided_at = now(), decision_note = $4
+       WHERE id = $1`,
+      [requestId, approve ? 'approuve' : 'rejete', actorId, note ?? null]
+    );
+
+    return { statut: approve ? 'approuve' : 'rejete', credit: resultat };
+  });
+}
+
+/**
  * Restaure un client supprimé — remet le compte à 'actif'. Le client
  * avait été bloqué de suppression s'il avait un crédit en cours ou un
  * solde non nul, donc la restauration ne touche rien d'autre que le

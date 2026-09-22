@@ -10,6 +10,7 @@ import {
   runInstallmentCollection, fetchMonthlyReport, fetchTransactions, reverseTransaction,
   cancelActiveCreditInError, suspendActiveCredit, reactivateSuspendedCredit,
   cancelCreditAwaitingDoubleValidation,
+  proposeCreditDeletionRequest, fetchPendingCreditDeletionRequests, decideCreditDeletionRequest,
   fetchInstallmentsByCreditReference, proposeInstallmentAdjustment,
   fetchPendingInstallmentAdjustments, decideInstallmentAdjustment, fetchSchedulerStatus,
   fetchOverdueInstallments,
@@ -429,6 +430,91 @@ router.post(
         entityType: 'credit_request',
         entityId: result.creditId,
         metadata: { motif: req.body.motif, reference: result.reference },
+      });
+
+      res.status(201).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /admin/operations/credits/:id/proposer-suppression-double-validation
+ * — l'opérateur propose la suppression d'un dossier en attente de
+ * double validation ou d'approbation finale. Rien n'est supprimé tant
+ * que le directeur n'a pas confirmé (voir
+ * /suppressions-double-validation/:id/decider ci-dessous).
+ */
+router.post(
+  '/credits/:id/proposer-suppression-double-validation',
+  requirePermission('credits.proposer_suppression_double_validation'),
+  validate(z.object({ motif: z.string().min(5).max(500) })),
+  async (req, res, next) => {
+    try {
+      const result = await proposeCreditDeletionRequest({
+        creditId: req.params.id,
+        motif: req.body.motif,
+        actorId: req.user.id,
+      });
+
+      await audit(req, {
+        action: 'credit.suppression_double_validation_proposee',
+        entityType: 'credit_request',
+        entityId: req.params.id,
+        metadata: { motif: req.body.motif },
+      });
+
+      res.status(201).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * GET /admin/operations/suppressions-double-validation — demandes de
+ * suppression de crédit en attente d'arbitrage du directeur.
+ */
+router.get(
+  '/suppressions-double-validation',
+  requirePermission('operations.lire'),
+  async (req, res, next) => {
+    try {
+      const demandes = await fetchPendingCreditDeletionRequests();
+      res.json({ demandes });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /admin/operations/suppressions-double-validation/:id/decider —
+ * le directeur confirme (le dossier est réellement annulé, un rapport
+ * est ajouté à la corbeille) ou rejette (rien ne change) une demande
+ * de suppression posée par l'opérateur. Réservé au directeur — c'est
+ * exactement ce qui a été demandé : la suppression doit être confirmée
+ * par lui.
+ */
+router.post(
+  '/suppressions-double-validation/:id/decider',
+  requirePermission('credits.decider_suppression_double_validation'),
+  validate(z.object({ approuver: z.boolean(), note: z.string().max(500).optional() })),
+  async (req, res, next) => {
+    try {
+      const result = await decideCreditDeletionRequest({
+        requestId: req.params.id,
+        approve: req.body.approuver,
+        note: req.body.note,
+        actorId: req.user.id,
+      });
+
+      await audit(req, {
+        action: 'credit.suppression_double_validation_decidee',
+        entityType: 'credit_deletion_request',
+        entityId: req.params.id,
+        metadata: { approuver: req.body.approuver, note: req.body.note },
       });
 
       res.status(201).json(result);

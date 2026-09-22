@@ -54,11 +54,12 @@ export const PERMISSIONS = {
     // rétablit dès qu'un dépôt arrive ensuite.
     'frais.appliquer',
 
-    // Supprimer un dossier qui lui arrive en double validation, sans
-    // avoir à attendre le directeur — rien n'est encore débloqué à ce
-    // stade, donc rien à extourner. Chaque suppression génère un
-    // rapport pour le directeur (voir credit_deletion_reports).
-    'credits.supprimer_double_validation',
+    // Proposer la suppression d'un dossier qui lui arrive en double
+    // validation — rien n'est encore débloqué à ce stade, donc rien à
+    // extourner. L'opérateur ne supprime plus lui-même : la demande
+    // n'est effective qu'après confirmation du directeur (voir
+    // credit_deletion_requests / credits.decider_suppression_double_validation).
+    'credits.proposer_suppression_double_validation',
 
     // Déposer une demande au nom d'un client, au guichet ou par
     // téléphone — mêmes règles que si le client l'avait soumise
@@ -144,7 +145,14 @@ export const PERMISSIONS = {
     'coffres.lire',
     'coffres.transferer',
     'coffres.cloturer',
+    // Suppression directe d'un dossier en double validation ou déjà
+    // double-validé, par le directeur lui-même (pas besoin de
+    // confirmation puisqu'il est déjà celui qui confirme).
     'credits.supprimer_double_validation',
+    // Confirmer (ou rejeter) une demande de suppression posée par
+    // l'opérateur — seul le directeur peut trancher, jamais
+    // l'opérateur qui l'a proposée (imposé aussi en base).
+    'credits.decider_suppression_double_validation',
 
     // Simuler un crédit pour expliquer des mensualités à un client au
     // téléphone ou au guichet — aucun enregistrement, un pur calcul,
