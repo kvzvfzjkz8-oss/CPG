@@ -8,7 +8,7 @@ import { ApiError } from '../middleware/errorHandler.js';
 import { notifyUser } from '../services/pushService.js';
 import { audit } from '../services/auditService.js';
 import { genererBrouillardPDF } from '../services/brouillardService.js';
-import { fetchCoffres, transfererDepuisCoffre, cloturerCoffre, fetchCoffreClotures } from '../services/coffreService.js';
+import { fetchCoffres, transfererDepuisCoffre, cloturerCoffre, fetchCoffreClotures, fetchEcheancesAttendues, fetchCoffreParMois } from '../services/coffreService.js';
 import { genererHistoriquePDF } from '../services/historiqueService.js';
 
 // Justificatif joint à une demande de caisse (reçu, facture...) —
@@ -895,6 +895,44 @@ router.get('/coffres', requirePermission('coffres.lire'), async (req, res, next)
     next(error);
   }
 });
+
+/**
+ * GET /coffres/:coffre/par-mois — même total global qu'un coffre dans
+ * GET /coffres, mais réparti mois par mois (12 derniers mois), pour
+ * voir clairement quelle part a été encaissée à quel moment.
+ */
+router.get(
+  '/coffres/:coffre/par-mois',
+  requirePermission('coffres.lire'),
+  async (req, res, next) => {
+    try {
+      const result = await fetchCoffreParMois(req.params.coffre);
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * GET /coffres/echeances-attendues?mois=2026-10 — montant total et
+ * détail des échéances pas encore prélevées pour le mois donné (le
+ * mois en cours par défaut). Sert au clic sur le coffre
+ * « Remboursements » pour montrer ce qui reste attendu.
+ */
+router.get(
+  '/coffres/echeances-attendues',
+  requirePermission('coffres.lire'),
+  validate(z.object({ mois: z.string().regex(/^\d{4}-\d{2}$/).optional() }), 'query'),
+  async (req, res, next) => {
+    try {
+      const result = await fetchEcheancesAttendues({ mois: req.query.mois });
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 router.post(
   '/coffres/transferer',

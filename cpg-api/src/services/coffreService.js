@@ -38,8 +38,14 @@ async function dernierePeriodeDebut(run, coffre) {
 
 async function totalCollecte(run, coffre, depuis) {
   if (coffre === 'remboursements') {
+    // paiement_credit est écrit en négatif côté compte client (débit —
+    // voir la convention de signe de ledger_entries, migration 001) :
+    // l'argent sort de son solde pour rembourser le crédit. Vu du
+    // coffre de l'entreprise c'est l'inverse, une entrée — d'où le
+    // -SUM(amount), sans quoi le coffre affichait un solde négatif
+    // alors que de l'argent a bien été encaissé.
     const { rows } = await run(
-      `SELECT COALESCE(SUM(amount), 0) AS total FROM ledger_entries
+      `SELECT COALESCE(SUM(-amount), 0) AS total FROM ledger_entries
        WHERE type = 'paiement_credit' AND ($1::timestamptz IS NULL OR created_at > $1)`,
       [depuis]
     );
@@ -184,6 +190,108 @@ export async function cloturerCoffre({ coffre, actorId }) {
 
     return { id: created[0].id, coffre, montant: solde, periodeDebut: created[0].periode_debut, periodeFin: created[0].periode_fin };
   });
+}
+
+/**
+ * Détail mois par mois d'un coffre — même montant global que
+ * fetchCoffres() (depuis la dernière clôture), mais réparti par mois
+ * calendaire pour que le directeur voie clairement quelle part a été
+ * encaissée quand, plutôt qu'un seul chiffre agrégé. Les 12 derniers
+ * mois avec au moins un mouvement, les plus récents en premier.
+ */
+export async function fetchCoffreParMois(coffre) {
+  if (!TYPES_VALIDES.includes(coffre)) {
+    throw new ApiError(422, 'Coffre invalide.');
+  }
+  const depuis = await dernierePeriodeDebut(query, coffre);
+
+  let rows;
+  if (coffre === 'remboursements') {
+    ({ rows } = await query(
+      `SELECT to_char(created_at, 'YYYY-MM') AS mois,
+              COALESCE(SUM(-amount), 0) AS total,
+              count(*) AS nombre
+       FROM ledger_entries
+       WHERE type = 'paiement_credit' AND ($1::timestamptz IS NULL OR created_at > $1)
+       GROUP BY 1
+       ORDER BY 1 DESC
+       LIMIT 12`,
+      [depuis]
+    ));
+  } else {
+    const codes = coffre === 'frais_dossier' ? [CODE_FRAIS_DOSSIER] : CODES_FRAIS_AGIOS;
+    ({ rows } = await query(
+      `SELECT to_char(af.created_at, 'YYYY-MM') AS mois,
+              COALESCE(SUM(af.amount), 0) AS total,
+              count(*) AS nombre
+       FROM applied_fees af
+       JOIN fee_versions fv ON fv.id = af.fee_version_id
+       JOIN fee_definitions f ON f.id = fv.fee_id
+       WHERE f.code = ANY($1::text[]) AND ($2::timestamptz IS NULL OR af.created_at > $2)
+       GROUP BY 1
+       ORDER BY 1 DESC
+       LIMIT 12`,
+      [codes, depuis]
+    ));
+  }
+
+  const total = await totalCollecte(query, coffre, depuis);
+
+  return {
+    coffre,
+    total,
+    periodeDepuis: depuis,
+    parMois: rows.map((r) => ({ mois: r.mois, total: Number(r.total), nombre: Number(r.nombre) })),
+  };
+}
+
+/**
+ * Montant attendu sur les échéances de crédit pas encore prélevées
+ * pour un mois donné — sert à mettre en regard, dans le coffre
+ * « Remboursements », ce qui a déjà été encaissé et ce qui reste
+ * attendu sur le mois en cours (ou un autre mois, au choix). Par
+ * défaut, le mois en cours au moment de l'appel.
+ */
+export async function fetchEcheancesAttendues({ mois } = {}) {
+  // `mois` au format 'AAAA-MM' ; on prend le mois en cours si absent.
+  const base = mois ? new Date(`${mois}-01T00:00:00Z`) : new Date();
+  if (Number.isNaN(base.getTime())) {
+    throw new ApiError(422, 'Mois invalide (format attendu : AAAA-MM).');
+  }
+  const debut = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), 1));
+  const fin = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + 1, 1));
+
+  const { rows } = await query(
+    `SELECT COALESCE(SUM(i.amount), 0) AS total, count(*) AS nombre
+     FROM installments i
+     WHERE i.status = 'a_venir' AND i.due_date >= $1 AND i.due_date < $2`,
+    [debut, fin]
+  );
+
+  const { rows: detail } = await query(
+    `SELECT i.id, i.sequence, i.due_date, i.amount, c.reference,
+            u.full_name AS client
+     FROM installments i
+     JOIN credit_requests c ON c.id = i.credit_id
+     JOIN users u ON u.id = c.user_id
+     WHERE i.status = 'a_venir' AND i.due_date >= $1 AND i.due_date < $2
+     ORDER BY i.due_date ASC`,
+    [debut, fin]
+  );
+
+  return {
+    mois: `${debut.getUTCFullYear()}-${String(debut.getUTCMonth() + 1).padStart(2, '0')}`,
+    total: Number(rows[0].total),
+    nombre: Number(rows[0].nombre),
+    echeances: detail.map((r) => ({
+      id: r.id,
+      sequence: r.sequence,
+      dueDate: r.due_date,
+      amount: Number(r.amount),
+      reference: r.reference,
+      client: r.client,
+    })),
+  };
 }
 
 /** Historique des clôtures — tous coffres confondus, plus récentes d'abord. */
