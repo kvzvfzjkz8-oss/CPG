@@ -915,7 +915,15 @@ function InstallmentCorrection() {
   };
 
   const submit = async (inst) => {
-    if (motif.trim().length < 5) return;
+    setError('');
+    if (!nouvelleDate) {
+      setError('Choisissez une nouvelle date avant de soumettre.');
+      return;
+    }
+    if (motif.trim().length < 5) {
+      setError('Le motif est obligatoire (5 caractères minimum).');
+      return;
+    }
     setBusyId(inst.id);
     try {
       await proposeInstallmentAdjustment(inst.id, nouvelleDate, motif.trim());
@@ -1085,15 +1093,20 @@ function InstallmentCorrection() {
                   <p style={{ margin: '0 0 8px', fontSize: 10, color: colors.muted, fontFamily: fonts.body }}>
                     Cette date ne s'appliquera qu'après validation du directeur.
                   </p>
+                  {error && (
+                    <p style={{ margin: '0 0 8px', fontSize: 11, color: colors.danger, fontFamily: fonts.body }}>
+                      {error}
+                    </p>
+                  )}
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button
                       onClick={() => submit(inst)}
-                      disabled={busyId === inst.id || motif.trim().length < 5}
-                      style={{ ...actionBtn(colors.forest, '#fff'), opacity: motif.trim().length < 5 ? 0.5 : 1 }}
+                      disabled={busyId === inst.id}
+                      style={{ ...actionBtn(colors.forest, '#fff'), opacity: busyId === inst.id ? 0.5 : 1 }}
                     >
                       {busyId === inst.id ? 'Envoi…' : 'Soumettre au directeur'}
                     </button>
-                    <button onClick={() => setEditingId(null)} style={actionBtn('transparent', colors.muted)}>
+                    <button onClick={() => { setEditingId(null); setError(''); }} style={actionBtn('transparent', colors.muted)}>
                       Annuler
                     </button>
                   </div>

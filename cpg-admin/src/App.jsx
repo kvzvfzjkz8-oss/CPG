@@ -3,7 +3,7 @@ import { GitCommit, Search, Bell, LogOut, KeyRound, X, MessageSquare, Send, User
 import { colors, fonts } from './theme';
 import { ROLES, ROLE_LABELS, ROLE_DESCRIPTIONS } from './auth/roles';
 import { AuthProvider, useAuth } from './auth/AuthContext';
-import { changerMonMotDePasse, modifierMonProfil, fetchMessagesInternes, envoyerMessageInterne, fetchPersonnel } from './api/adminApi';
+import { changerMonMotDePasse, modifierMonProfil, fetchMessagesInternes, envoyerMessageInterne, fetchPersonnel, fetchNotifications } from './api/adminApi';
 import LoginView from './views/LoginView';
 import OperatorView from './views/OperatorView';
 import SupervisorView from './views/SupervisorView';
@@ -157,7 +157,7 @@ function AuthenticatedApp() {
                 }}
               />
             </div>
-            <Bell size={17} color={colors.ink} />
+            <NotificationBell onOuvrirMessagerie={() => setShowMessagerie(true)} />
           </div>
         </header>
 
@@ -167,6 +167,110 @@ function AuthenticatedApp() {
           {role !== ROLES.OPERATEUR && role !== ROLES.CAISSIER && <SupervisorView role={role} />}
         </div>
       </main>
+    </div>
+  );
+}
+
+/**
+ * Cloche de notifications — à la connexion et ensuite à intervalle
+ * régulier, affiche les tâches en attente propres au rôle et le
+ * nombre de messages internes non lus. Cliquer sur un message ouvre
+ * directement la messagerie.
+ */
+function NotificationBell({ onOuvrirMessagerie }) {
+  const [notifications, setNotifications] = useState(null);
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  const load = () => {
+    fetchNotifications().then(setNotifications).catch(() => {});
+  };
+
+  useEffect(() => {
+    load();
+    // Assez fréquent pour qu'une tâche fraîchement déposée ou un
+    // message qui vient d'arriver soit vu sans avoir à recharger la
+    // page, sans pour autant solliciter le serveur en continu.
+    const interval = setInterval(load, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const onClickOutside = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onClickOutside);
+    return () => document.removeEventListener('mousedown', onClickOutside);
+  }, []);
+
+  const totalTaches = notifications?.totalTaches ?? 0;
+  const messagesEnAttente = notifications?.messagesEnAttente ?? 0;
+  const total = totalTaches + messagesEnAttente;
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button
+        onClick={() => { setOpen((v) => !v); if (!open) load(); }}
+        style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: 0, position: 'relative' }}
+        title="Notifications"
+      >
+        <Bell size={17} color={colors.ink} />
+        {total > 0 && (
+          <span style={{
+            position: 'absolute', top: -5, right: -6, minWidth: 15, height: 15, borderRadius: 8,
+            background: colors.danger, color: '#fff', fontSize: 9, fontWeight: 700, fontFamily: fonts.body,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px',
+          }}>
+            {total > 99 ? '99+' : total}
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <div style={{
+          position: 'absolute', top: 28, right: 0, width: 300, maxHeight: 380, overflowY: 'auto',
+          background: '#fff', borderRadius: 12, border: `1px solid ${colors.line}`,
+          boxShadow: '0 8px 24px rgba(11,61,46,0.14)', zIndex: 50,
+        }}>
+          <p style={{ margin: 0, padding: '12px 16px', fontSize: 12, fontWeight: 600, color: colors.ink, fontFamily: fonts.body, borderBottom: `1px solid ${colors.line}` }}>
+            Notifications
+          </p>
+
+          {messagesEnAttente > 0 && (
+            <button
+              onClick={() => { setOpen(false); onOuvrirMessagerie?.(); }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
+                padding: '10px 16px', border: 'none', background: 'transparent', cursor: 'pointer',
+                borderBottom: `1px solid ${colors.line}`,
+              }}
+            >
+              <MessageSquare size={13} color={colors.forestLight} />
+              <span style={{ fontSize: 12, color: colors.ink, fontFamily: fonts.body }}>
+                {messagesEnAttente} message{messagesEnAttente > 1 ? 's' : ''} non lu{messagesEnAttente > 1 ? 's' : ''}
+              </span>
+            </button>
+          )}
+
+          {(notifications?.taches ?? []).map((t) => (
+            <div key={t.cle} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '10px 16px', borderBottom: `1px solid ${colors.line}` }}>
+              <span style={{ fontSize: 12, color: colors.ink, fontFamily: fonts.body }}>{t.libelle}</span>
+              <span style={{
+                fontSize: 10, fontWeight: 700, color: colors.gold, background: colors.goldPale,
+                borderRadius: 8, padding: '2px 7px', fontFamily: fonts.body,
+              }}>
+                {t.nombre}
+              </span>
+            </div>
+          ))}
+
+          {total === 0 && (
+            <p style={{ margin: 0, padding: '20px 16px', fontSize: 12, color: colors.muted, fontFamily: fonts.body, textAlign: 'center' }}>
+              Rien en attente pour le moment.
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

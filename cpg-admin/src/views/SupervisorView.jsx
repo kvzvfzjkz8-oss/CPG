@@ -15,10 +15,12 @@ import {
   approveCredit, setUserStatus, fetchUsers, createUser, updateUser, resetClientPin, fetchStatistics, fetchMomoTransactions,
   fetchPendingInstallmentAdjustments, decideInstallmentAdjustment,
   fetchPendingCreditDeletionRequests, deciderSuppressionCreditDoubleValidation,
+  fetchPendingCommissionItemDeletionRequests, deciderSuppressionCommissionItemDoubleValidation,
   fetchFinalApprovalQueue, grantExceptionAuthorization, fetchExceptionAuthorizations,
   supprimerCreditDoubleValidation,
   fetchDemandesCaisseEnAttente, validerOperationCaisse, rejeterOperationCaisse,
-  fetchAuditLog, fetchCaissePrincipale, alimenterCaissePrincipale,
+  fetchAuditLog, fetchCaissePrincipale, alimenterCaissePrincipale, fetchToutesLesCaisses,
+  fetchComptesSoldes, zeroOutAccountBalances,
   simulateCredit, fetchProducts, creerDemandePourClient, searchClientPourDemande,
   fetchCreditApprouvePourClient, ouvrirContratCredit, ouvrirBrouillardCaisse, ouvrirJustificatifCaisse,
   fetchCreditRequests, fetchClientDetail, supprimerClient,
@@ -61,6 +63,9 @@ export default function SupervisorView({ role }) {
   if (can(role, 'credits.decider_suppression_double_validation')) {
     tabs.push({ key: 'suppressions-credit', label: 'Suppressions à confirmer', icon: Trash2 });
   }
+  if (can(role, 'commission.decider_suppression_double_validation')) {
+    tabs.push({ key: 'suppressions-commission', label: 'Suppressions commission à confirmer', icon: Trash2 });
+  }
   if (can(role, 'commission.autoriser_exception')) {
     tabs.push({ key: 'exceptions', label: 'Autorisations d\'exception', icon: KeyRound });
   }
@@ -91,10 +96,11 @@ export default function SupervisorView({ role }) {
       {tab === 'simulation' && <SimulationPanel />}
       {tab === 'validation' && <FinalValidation />}
       {tab === 'catalogue' && <CatalogView role={role} />}
-      {tab === 'utilisateurs' && <UserManagement />}
+      {tab === 'utilisateurs' && <UserManagement role={role} />}
       {tab === 'momo' && <MomoSupervision />}
       {tab === 'corrections' && <PendingAdjustments />}
       {tab === 'suppressions-credit' && <PendingCreditDeletions />}
+      {tab === 'suppressions-commission' && <PendingCommissionItemDeletions />}
       {tab === 'exceptions' && <ExceptionAuthorizations />}
       {tab === 'caisse' && <CaisseValidation />}
       {tab === 'coffres' && <CoffresPanel role={role} />}
@@ -868,6 +874,242 @@ function CaissePrincipalePanel() {
 }
 
 /**
+ * Solde courant de chaque caissière, pour le directeur — distinct de la
+ * caisse principale : ici on voit l'argent que chaque caissière a
+ * physiquement entre les mains en ce moment.
+ */
+function CaissesCaissiersPanel() {
+  const [caisses, setCaisses] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = () => {
+    setLoading(true);
+    fetchToutesLesCaisses().then(setCaisses).finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  return (
+    <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 16 }}>
+      <SectionTitle>Solde des caisses des caissières</SectionTitle>
+      {!loading && caisses.length === 0 && (
+        <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
+          Aucune caissière active.
+        </p>
+      )}
+      {caisses.map((c) => (
+        <div key={c.caissierId} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 20px', borderBottom: `1px solid ${colors.line}` }}>
+          <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>
+            {c.caissier}
+          </p>
+          <p style={{ margin: 0, fontSize: 13, fontWeight: 600, fontFamily: fonts.mono, color: c.solde < 0 ? colors.danger : colors.ink }}>
+            {formatFCFA(c.solde)} F
+          </p>
+        </div>
+      ))}
+    </Card>
+  );
+}
+
+/**
+ * Zone dangereuse, réservée au directeur : remise à zéro du solde de
+ * comptes clients choisis — filtrés (positifs/négatifs/tous) et/ou
+ * recherchés par nom, puis sélectionnés un par un ou en bloc. Rien ne
+ * se fait sans sélection explicite ; double confirmation (motif +
+ * saisie littérale « CONFIRMER ») avant l'envoi.
+ */
+function ZeroOutBalancesPanel() {
+  const [open, setOpen] = useState(false);
+  const [comptes, setComptes] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [recherche, setRecherche] = useState('');
+  const [filtreSolde, setFiltreSolde] = useState('positif');
+  const [selection, setSelection] = useState(() => new Set());
+  const [motif, setMotif] = useState('');
+  const [confirmation, setConfirmation] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState('');
+
+  const load = () => {
+    setLoading(true);
+    fetchComptesSoldes(recherche, filtreSolde)
+      .then(setComptes)
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, filtreSolde]);
+
+  const search = (e) => {
+    e.preventDefault();
+    load();
+  };
+
+  const toggle = (accountId) => {
+    setSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(accountId)) next.delete(accountId);
+      else next.add(accountId);
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    setSelection((prev) => (
+      prev.size === comptes.length
+        ? new Set()
+        : new Set(comptes.map((c) => c.accountId))
+    ));
+  };
+
+  const submit = async () => {
+    setError('');
+    if (selection.size === 0) {
+      setError('Sélectionnez au moins un compte.');
+      return;
+    }
+    if (motif.trim().length < 5) {
+      setError('Un motif est requis (5 caractères minimum).');
+      return;
+    }
+    if (confirmation.trim().toUpperCase() !== 'CONFIRMER') {
+      setError('Tapez CONFIRMER pour valider cette action irréversible.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await zeroOutAccountBalances([...selection], motif.trim());
+      setResult(r);
+      setSelection(new Set());
+      setMotif('');
+      setConfirmation('');
+      load();
+    } catch (err) {
+      setError(err.message ?? 'Échec de la remise à zéro.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card style={{ padding: 20, marginBottom: 16, border: `1px solid ${colors.danger}`, background: colors.dangerPale }}>
+      <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: colors.danger, fontFamily: fonts.body }}>
+        Zone dangereuse — remise à zéro des soldes
+      </p>
+      <p style={{ margin: '6px 0 14px', fontSize: 12, color: colors.ink, fontFamily: fonts.body }}>
+        Filtre et sélectionne les comptes clients à remettre à 0 — individuellement ou en groupe.
+        Action irréversible : chaque compte sélectionné reçoit une écriture d'ajustement qui annule son solde.
+      </p>
+
+      {result && (
+        <p style={{ margin: '0 0 12px', fontSize: 12, color: colors.forestLight, fontFamily: fonts.body }}>
+          {result.comptesAjustes} compte{result.comptesAjustes > 1 ? 's' : ''} remis à zéro.
+        </p>
+      )}
+
+      {!open && (
+        <button
+          onClick={() => setOpen(true)}
+          style={{ padding: '9px 16px', borderRadius: 9, border: 'none', background: colors.danger, color: '#fff', fontSize: 12, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer' }}
+        >
+          Gérer les soldes clients…
+        </button>
+      )}
+
+      {open && (
+        <div>
+          <form onSubmit={search} style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+            <select
+              value={filtreSolde}
+              onChange={(e) => setFiltreSolde(e.target.value)}
+              style={{ padding: '9px 10px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body }}
+            >
+              <option value="positif">Soldes positifs</option>
+              <option value="negatif">Soldes négatifs</option>
+              <option value="non_nul">Tous les soldes non nuls</option>
+              <option value="">Tous les comptes</option>
+            </select>
+            <input
+              value={recherche}
+              onChange={(e) => setRecherche(e.target.value)}
+              placeholder="Rechercher un client (nom, numéro)…"
+              style={{ flex: 1, padding: '9px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body }}
+            />
+            <button
+              type="submit"
+              style={{ padding: '9px 14px', borderRadius: 9, border: 'none', background: colors.forest, color: '#fff', fontSize: 12, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer' }}
+            >
+              Filtrer
+            </button>
+          </form>
+
+          <div style={{ border: `1px solid ${colors.line}`, borderRadius: 10, background: '#fff', marginBottom: 12, maxHeight: 320, overflowY: 'auto' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderBottom: `1px solid ${colors.line}`, background: colors.bg }}>
+              <input type="checkbox" checked={comptes.length > 0 && selection.size === comptes.length} onChange={toggleAll} disabled={comptes.length === 0} />
+              <span style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+                {loading ? 'Chargement…' : `${comptes.length} compte${comptes.length > 1 ? 's' : ''} · ${selection.size} sélectionné${selection.size > 1 ? 's' : ''}`}
+              </span>
+            </div>
+            {!loading && comptes.length === 0 && (
+              <p style={{ padding: 20, textAlign: 'center', color: colors.muted, fontSize: 12, fontFamily: fonts.body }}>
+                Aucun compte ne correspond à ce filtre.
+              </p>
+            )}
+            {comptes.map((c) => (
+              <label
+                key={c.accountId}
+                style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px', borderBottom: `1px solid ${colors.line}`, cursor: 'pointer' }}
+              >
+                <input type="checkbox" checked={selection.has(c.accountId)} onChange={() => toggle(c.accountId)} />
+                <span style={{ flex: 1, fontSize: 12, color: colors.ink, fontFamily: fonts.body }}>
+                  {c.clientNom} {c.clientNumero ? `· ${c.clientNumero}` : ''}
+                </span>
+                <span style={{ fontSize: 12, fontWeight: 600, fontFamily: fonts.mono, color: c.solde < 0 ? colors.danger : colors.forestLight }}>
+                  {formatFCFA(c.solde)} F
+                </span>
+              </label>
+            ))}
+          </div>
+
+          <input
+            value={motif}
+            onChange={(e) => setMotif(e.target.value)}
+            placeholder="Motif (ex : correction des agios erronés, sur instruction du directeur)"
+            style={{ width: '100%', padding: '10px 12px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body, marginBottom: 8, boxSizing: 'border-box' }}
+          />
+          <input
+            value={confirmation}
+            onChange={(e) => setConfirmation(e.target.value)}
+            placeholder="Tapez CONFIRMER pour valider"
+            style={{ width: '100%', padding: '10px 12px', borderRadius: 9, border: `1px solid ${colors.danger}`, fontSize: 12, fontFamily: fonts.mono, marginBottom: 8, boxSizing: 'border-box' }}
+          />
+          {error && <p style={{ margin: '0 0 8px', fontSize: 11, color: colors.danger, fontFamily: fonts.body }}>{error}</p>}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              onClick={submit}
+              disabled={busy}
+              style={{ padding: '9px 16px', borderRadius: 9, border: 'none', background: colors.danger, color: '#fff', fontSize: 12, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer', opacity: busy ? 0.6 : 1 }}
+            >
+              {busy ? 'Remise à zéro…' : `Remettre à zéro (${selection.size})`}
+            </button>
+            <button
+              onClick={() => { setOpen(false); setError(''); setMotif(''); setConfirmation(''); setSelection(new Set()); }}
+              style={{ padding: '9px 16px', borderRadius: 9, border: 'none', background: 'transparent', color: colors.muted, fontSize: 12, fontFamily: fonts.body, cursor: 'pointer' }}
+            >
+              Fermer
+            </button>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/**
  * Vue en lecture seule des dossiers en attente de validation, pour le
  * gestionnaire — il voit ce qui est en cours de traitement par
  * l'opérateur (niveau 1, puis validé niveau 1 en attente de
@@ -1059,6 +1301,7 @@ function CaisseValidation() {
   return (
     <div>
       <CaissePrincipalePanel />
+      <CaissesCaissiersPanel />
       <BrouillardPanel />
 
       {toast && (
@@ -1496,7 +1739,7 @@ function RapportsSuppressionCredit() {
   );
 }
 
-function UserManagement() {
+function UserManagement({ role }) {
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -1653,6 +1896,8 @@ function UserManagement() {
 
   return (
     <div>
+      {can(role, 'comptes.remettre_a_zero') && <ZeroOutBalancesPanel />}
+
       {toast && (
         <div style={{
           background: colors.goldPale, border: `1px solid ${colors.gold}`, borderRadius: 12,
@@ -2066,6 +2311,127 @@ function PendingAdjustments() {
             <div style={{ display: 'flex', gap: 8 }}>
               <button onClick={() => decide(d, true)} disabled={busyId === d.id} style={actionBtn(colors.forest, '#fff')}>
                 <Check size={12} style={{ marginRight: 4 }} /> Approuver
+              </button>
+              <button
+                onClick={() => setRejectingId(rejectingId === d.id ? null : d.id)}
+                disabled={busyId === d.id}
+                style={actionBtn(colors.dangerPale, colors.danger)}
+              >
+                <X size={12} style={{ marginRight: 4 }} /> Rejeter
+              </button>
+            </div>
+          </div>
+
+          {rejectingId === d.id && (
+            <div style={{ padding: '0 20px 16px', display: 'flex', gap: 8 }}>
+              <input
+                placeholder="Motif du rejet (obligatoire)"
+                value={note} onChange={(e) => setNote(e.target.value)}
+                style={{
+                  flex: 1, padding: '9px 11px', borderRadius: 9, border: `1px solid ${colors.line}`,
+                  fontSize: 12, fontFamily: fonts.body, outline: 'none',
+                }}
+              />
+              <button
+                onClick={() => decide(d, false)}
+                disabled={note.trim().length === 0 || busyId === d.id}
+                style={{ ...actionBtn(colors.danger, '#fff'), opacity: note.trim().length === 0 ? 0.5 : 1 }}
+              >
+                Confirmer le rejet
+              </button>
+            </div>
+          )}
+        </div>
+      ))}
+    </Card>
+  );
+}
+
+/**
+ * Même circuit que PendingCreditDeletions, pour un dossier en
+ * difficulté ou une demande exceptionnelle (commission_items) arrivé
+ * en double validation — le directeur seul confirme ou rejette une
+ * suppression proposée par l'opérateur.
+ */
+function PendingCommissionItemDeletions() {
+  const [demandes, setDemandes] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState(null);
+  const [rejectingId, setRejectingId] = useState(null);
+  const [note, setNote] = useState('');
+  const [toast, setToast] = useState('');
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await fetchPendingCommissionItemDeletionRequests();
+      setDemandes(r);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  React.useEffect(() => { load(); }, []);
+
+  const flash = (text) => {
+    setToast(text);
+    setTimeout(() => setToast(''), 6000);
+  };
+
+  const decide = async (demande, approuver) => {
+    if (!approuver && note.trim().length === 0) return;
+    setBusyId(demande.id);
+    try {
+      await deciderSuppressionCommissionItemDoubleValidation(demande.id, approuver, note.trim());
+      setDemandes((prev) => prev.filter((d) => d.id !== demande.id));
+      setRejectingId(null);
+      setNote('');
+      flash(
+        approuver
+          ? `Suppression confirmée : le point « ${demande.titre} » (${demande.client ?? 'client'}) est annulé.`
+          : `Suppression rejetée pour le point « ${demande.titre} » — rien n'a changé.`
+      );
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <Card style={{ padding: 0, overflow: 'hidden' }}>
+      {toast && (
+        <div style={{
+          margin: 16, background: colors.goldPale, border: `1px solid ${colors.gold}`, borderRadius: 12,
+          padding: '11px 16px', fontSize: 12, color: colors.goldDark, fontFamily: fonts.body,
+        }}>
+          {toast}
+        </div>
+      )}
+
+      <SectionTitle>
+        {loading ? 'Chargement…' : `${demandes.length} demande${demandes.length > 1 ? 's' : ''} de suppression en attente`}
+      </SectionTitle>
+
+      {!loading && demandes.length === 0 && (
+        <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
+          Aucune demande de suppression en attente.
+        </p>
+      )}
+
+      {demandes.map((d) => (
+        <div key={d.id} style={{ borderBottom: `1px solid ${colors.line}` }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, padding: '14px 20px', opacity: busyId === d.id ? 0.5 : 1 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>
+                {d.titre} {d.client ? `· ${d.client}` : ''}
+              </p>
+              <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+                {d.type === 'dossier_difficulte' ? 'Dossier en difficulté' : 'Demande exceptionnelle'}
+                {d.credit_reference ? ` · Réf. ${d.credit_reference}` : ''} · Proposé par {d.demandeur} · {d.motif}
+              </p>
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => decide(d, true)} disabled={busyId === d.id} style={actionBtn(colors.danger, '#fff')}>
+                <Check size={12} style={{ marginRight: 4 }} /> Confirmer la suppression
               </button>
               <button
                 onClick={() => setRejectingId(rejectingId === d.id ? null : d.id)}

@@ -71,6 +71,10 @@ export const PERMISSIONS = {
     // par le directeur.
     'credits.proposer_suppression_double_validation',
 
+    // Même chose pour un dossier en difficulté / une demande
+    // exceptionnelle arrivant en double validation.
+    'commission.proposer_suppression_double_validation',
+
     // Opérations mensuelles : créditer la paie des agents (fichier
     // joint) et vérifier ce que le logiciel a fait seul — les agios
     // et les échéances sont prélevés automatiquement (tâche planifiée
@@ -136,6 +140,12 @@ export const PERMISSIONS = {
     // Confirmer (ou rejeter) une demande de suppression posée par
     // l'opérateur pour un dossier en double validation.
     'credits.decider_suppression_double_validation',
+    // Même chose côté dossiers en difficulté / demandes exceptionnelles.
+    'commission.decider_suppression_double_validation',
+
+    // Remise à zéro de comptes clients sélectionnés — geste
+    // exceptionnel, réservé au directeur seul.
+    'comptes.remettre_a_zero',
     'momo.superviser',
     'audit.lire',
     'credits.simuler',

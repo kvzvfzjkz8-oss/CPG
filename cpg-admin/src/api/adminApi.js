@@ -121,6 +121,25 @@ export async function deciderSuppressionCreditDoubleValidation(requestId, approu
   });
 }
 
+/** L'opérateur propose la suppression d'un point (difficulté/exceptionnelle) en double validation — n'est effective qu'après confirmation du directeur. */
+export async function proposerSuppressionCommissionItemDoubleValidation(itemId, motif) {
+  return apiRequest(`/v1/admin/commission/items/${itemId}/proposer-suppression-double-validation`, { method: 'POST', body: { motif } });
+}
+
+/** Demandes de suppression d'un point de commission (double validation) en attente d'arbitrage du directeur. */
+export async function fetchPendingCommissionItemDeletionRequests() {
+  const { demandes } = await apiRequest('/v1/admin/commission/suppressions-double-validation-items');
+  return demandes;
+}
+
+/** Le directeur confirme ou rejette une demande de suppression d'un point de commission posée par l'opérateur. */
+export async function deciderSuppressionCommissionItemDoubleValidation(requestId, approuver, note) {
+  return apiRequest(`/v1/admin/commission/suppressions-double-validation-items/${requestId}/decider`, {
+    method: 'POST',
+    body: { approuver, note },
+  });
+}
+
 /** Rapports de suppression de crédit (double validation), pour le directeur. */
 export async function fetchRapportsSuppressionCredit() {
   const { rapports } = await apiRequest('/v1/admin/rapports-suppression-credit');
@@ -782,6 +801,31 @@ export async function fetchCaissePrincipale() {
 /** Directeur : injecte des fonds dans la caisse principale. */
 export async function alimenterCaissePrincipale(montant, motif) {
   return apiRequest('/v1/caisse/principale/alimenter', { method: 'POST', body: { montant, motif } });
+}
+
+/** Directeur : solde courant de chaque caissier. */
+export async function fetchToutesLesCaisses() {
+  return apiRequest('/v1/caisse/toutes-caisses');
+}
+
+/** Tâches et messages en attente pour la personne connectée, selon son rôle. */
+export async function fetchNotifications() {
+  return apiRequest('/v1/admin/notifications');
+}
+
+/** Directeur uniquement : liste des comptes clients avec solde, pour filtrer avant remise à zéro. */
+export async function fetchComptesSoldes(recherche, solde) {
+  const params = new URLSearchParams();
+  if (recherche) params.set('recherche', recherche);
+  if (solde) params.set('solde', solde);
+  const qs = params.toString();
+  const { comptes } = await apiRequest(`/v1/admin/operations/comptes${qs ? `?${qs}` : ''}`);
+  return comptes;
+}
+
+/** Directeur uniquement : remet à zéro le solde des comptes sélectionnés (un ou plusieurs). */
+export async function zeroOutAccountBalances(accountIds, motif) {
+  return apiRequest('/v1/admin/operations/comptes/remettre-a-zero', { method: 'POST', body: { accountIds, motif } });
 }
 
 /** Coffres de l'entreprise (frais & agios, remboursements, frais de dossier) — lecture caissière + directeur. */
