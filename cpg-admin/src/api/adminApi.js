@@ -121,6 +121,11 @@ export async function deciderSuppressionCreditDoubleValidation(requestId, approu
   });
 }
 
+/** Suppression directe d'un point (difficulté/exceptionnelle) par le directeur, à n'importe quel stade de validation — pas de confirmation requise. */
+export async function supprimerCommissionItemDoubleValidation(itemId, motif) {
+  return apiRequest(`/v1/admin/commission/items/${itemId}/supprimer-double-validation`, { method: 'POST', body: { motif } });
+}
+
 /** L'opérateur propose la suppression d'un point (difficulté/exceptionnelle) en double validation — n'est effective qu'après confirmation du directeur. */
 export async function proposerSuppressionCommissionItemDoubleValidation(itemId, motif) {
   return apiRequest(`/v1/admin/commission/items/${itemId}/proposer-suppression-double-validation`, { method: 'POST', body: { motif } });

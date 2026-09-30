@@ -91,7 +91,7 @@ export default function SupervisorView({ role }) {
       />
       {tab === 'vue' && <Overview onOuvrirCredits={() => setTab('credits-actifs')} />}
       {tab === 'commission' && <CommissionView role={role} />}
-      {tab === 'demandes' && <DemandesEnAttenteLectureSeule />}
+      {tab === 'demandes' && <DemandesEnAttenteLectureSeule role={role} />}
       {tab === 'credits-actifs' && <CreditsEnCoursPanel role={role} />}
       {tab === 'simulation' && <SimulationPanel />}
       {tab === 'validation' && <FinalValidation />}
@@ -1116,29 +1116,86 @@ function ZeroOutBalancesPanel() {
  * commission), mais ne peut rien y changer : valider ou rejeter reste
  * le rôle de l'opérateur.
  */
-function DemandesEnAttenteLectureSeule() {
+const ETAPE_LABELS = {
+  en_verification: 'En attente de validation niveau 1',
+  valide_niveau1: 'Validé niveau 1 — en attente de commission',
+  en_attente_commission: 'Déposé en commission — en attente de séance',
+  valide_commission: 'Validé en commission — en attente de double validation',
+};
+
+/**
+ * Tous les dossiers pas encore approuvés (ou rejetés) — quel que soit
+ * leur stade. Le directeur peut supprimer un dossier directement à
+ * partir d'ici, peu importe son origine ou son étape, sans passer par
+ * une confirmation puisqu'il est déjà celui qui aurait eu à confirmer.
+ * Le gestionnaire (superviseur) le voit en lecture seule.
+ */
+function DemandesEnAttenteLectureSeule({ role }) {
   const [demandes, setDemandes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [clientOuvert, setClientOuvert] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState(null);
+  const [deleteMotif, setDeleteMotif] = useState('');
+  const [deleteError, setDeleteError] = useState('');
+  const [toast, setToast] = useState('');
 
-  useEffect(() => {
+  const peutSupprimer = can(role, 'credits.supprimer_double_validation');
+
+  const load = () => {
+    setLoading(true);
     Promise.all([
       fetchCreditRequests('en_verification'),
       fetchCreditRequests('valide_niveau1'),
+      fetchCreditRequests('en_attente_commission'),
+      fetchCreditRequests('valide_commission'),
     ])
-      .then(([niveau0, niveau1]) => {
+      .then(([niveau0, niveau1, commission0, commission1]) => {
         const fusion = [
-          ...niveau0.map((d) => ({ ...d, etape: 'En attente de validation niveau 1' })),
-          ...niveau1.map((d) => ({ ...d, etape: 'Validé niveau 1 — en attente de commission' })),
+          ...niveau0.map((d) => ({ ...d, etape: ETAPE_LABELS.en_verification })),
+          ...niveau1.map((d) => ({ ...d, etape: ETAPE_LABELS.valide_niveau1 })),
+          ...commission0.map((d) => ({ ...d, etape: ETAPE_LABELS.en_attente_commission })),
+          ...commission1.map((d) => ({ ...d, etape: ETAPE_LABELS.valide_commission })),
         ];
         fusion.sort((a, b) => a.client.localeCompare(b.client));
         setDemandes(fusion);
       })
       .finally(() => setLoading(false));
-  }, []);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const doDelete = async (d) => {
+    if (deleteMotif.trim().length < 5) {
+      setDeleteError('Précisez le motif (5 caractères minimum).');
+      return;
+    }
+    setBusy(d.id);
+    setDeleteError('');
+    try {
+      await supprimerCreditDoubleValidation(d.id, deleteMotif.trim());
+      setToast(`${d.client} — dossier ${d.reference} supprimé.`);
+      setDemandes((prev) => prev.filter((x) => x.id !== d.id));
+      setConfirmingDeleteId(null);
+      setDeleteMotif('');
+      setTimeout(() => setToast(''), 4000);
+    } catch (e) {
+      setDeleteError(e.message ?? 'Suppression impossible.');
+    } finally {
+      setBusy(null);
+    }
+  };
 
   return (
     <Card style={{ padding: 0, overflow: 'hidden' }}>
+      {toast && (
+        <div style={{
+          margin: 16, background: colors.goldPale, border: `1px solid ${colors.gold}`, borderRadius: 12,
+          padding: '11px 16px', fontSize: 12, color: colors.goldDark, fontFamily: fonts.body,
+        }}>
+          {toast}
+        </div>
+      )}
       <SectionTitle>
         {loading ? 'Chargement…' : `${demandes.length} dossier${demandes.length > 1 ? 's' : ''} en attente de validation`}
       </SectionTitle>
@@ -1155,9 +1212,10 @@ function DemandesEnAttenteLectureSeule() {
           style={{
             display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
             padding: '14px 20px', borderBottom: `1px solid ${colors.line}`,
+            opacity: busy === d.id ? 0.5 : 1,
           }}
         >
-          <div style={{ minWidth: 0 }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <button
                 onClick={() => setClientOuvert({ id: d.client_id, nom: d.client })}
@@ -1172,10 +1230,43 @@ function DemandesEnAttenteLectureSeule() {
               {d.job_title ?? ''}{d.job_title && d.employer ? ' · ' : ''}{d.employer ?? ''}
               {d.client_number ? ` · ${d.client_number}` : ''}
             </p>
+            {confirmingDeleteId === d.id && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
+                <input
+                  value={deleteMotif}
+                  onChange={(e) => setDeleteMotif(e.target.value)}
+                  placeholder="Motif de la suppression"
+                  style={{ padding: '4px 8px', borderRadius: 6, border: `1px solid ${colors.line}`, fontSize: 11, fontFamily: fonts.body, width: 180 }}
+                />
+                <button
+                  onClick={() => doDelete(d)}
+                  disabled={busy === d.id}
+                  style={{ padding: '5px 10px', borderRadius: 7, border: 'none', background: colors.danger, color: '#fff', fontSize: 11, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer' }}
+                >
+                  Confirmer
+                </button>
+                <button
+                  onClick={() => { setConfirmingDeleteId(null); setDeleteMotif(''); setDeleteError(''); }}
+                  style={{ border: 'none', background: 'transparent', color: colors.muted, fontSize: 11, cursor: 'pointer', fontFamily: fonts.body }}
+                >
+                  Annuler
+                </button>
+                {deleteError && <span style={{ fontSize: 10, color: colors.danger, fontFamily: fonts.body }}>{deleteError}</span>}
+              </div>
+            )}
           </div>
           <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: colors.ink, fontFamily: fonts.mono, whiteSpace: 'nowrap' }}>
             {formatFCFA(d.amount)} F
           </p>
+          {peutSupprimer && confirmingDeleteId !== d.id && (
+            <button
+              onClick={() => setConfirmingDeleteId(d.id)}
+              title="Supprimer ce dossier, quel que soit son stade de validation"
+              style={{ border: 'none', background: 'transparent', color: colors.danger, fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: fonts.body, whiteSpace: 'nowrap' }}
+            >
+              Supprimer
+            </button>
+          )}
         </div>
       ))}
 
