@@ -61,6 +61,11 @@ export const PERMISSIONS = {
     // credit_deletion_requests / credits.decider_suppression_double_validation).
     'credits.proposer_suppression_double_validation',
 
+    // Même chose pour un dossier en difficulté / une demande
+    // exceptionnelle arrivant en double validation (commission_items) —
+    // même circuit propose/confirme que pour un crédit.
+    'commission.proposer_suppression_double_validation',
+
     // Déposer une demande au nom d'un client, au guichet ou par
     // téléphone — mêmes règles que si le client l'avait soumise
     // lui-même depuis l'application.
@@ -153,6 +158,12 @@ export const PERMISSIONS = {
     // l'opérateur — seul le directeur peut trancher, jamais
     // l'opérateur qui l'a proposée (imposé aussi en base).
     'credits.decider_suppression_double_validation',
+    // Même chose côté dossiers en difficulté / demandes exceptionnelles.
+    'commission.decider_suppression_double_validation',
+
+    // Remise à zéro de TOUS les soldes clients — geste exceptionnel,
+    // irréversible, réservé au directeur seul.
+    'comptes.remettre_a_zero',
 
     // Simuler un crédit pour expliquer des mensualités à un client au
     // téléphone ou au guichet — aucun enregistrement, un pur calcul,

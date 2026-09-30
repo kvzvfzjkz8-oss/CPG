@@ -9,6 +9,8 @@ import {
   doubleValidateCommissionItem, fetchItemsAwaitingDoubleValidation,
   grantExceptionAuthorization, fetchUnusedExceptionAuthorizations,
   depositDifficultyCase, depositExceptionalRequest, withdrawCommissionItem, fetchCommissionItems,
+  proposeCommissionItemDeletionRequest, fetchPendingCommissionItemDeletionRequests,
+  decideCommissionItemDeletionRequest,
 } from '../services/commissionService.js';
 
 const router = Router();
@@ -293,6 +295,98 @@ router.post(
       const result = await doubleValidateCommissionItem({ itemId: req.params.id, actorId: req.user.id });
       await audit(req, { action: 'commission.item_double_valide', entityType: 'commission_item', entityId: result.id });
       res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/* ═══════════════════════════════════════════════════════════════════
+   SUPPRESSION D'UN POINT EN DOUBLE VALIDATION — propose puis confirme
+   ═══════════════════════════════════════════════════════════════════
+   Même circuit que pour les crédits (voir operations.routes.js) :
+   l'opérateur ne supprime jamais lui-même un dossier en difficulté ou
+   une demande exceptionnelle arrivé en double validation — il propose,
+   et seul le directeur confirme. */
+
+/**
+ * POST /admin/commission/items/:id/proposer-suppression-double-validation
+ * — l'opérateur propose la suppression d'un point en attente de double
+ * validation. Rien n'est supprimé tant que le directeur n'a pas confirmé.
+ */
+router.post(
+  '/items/:id/proposer-suppression-double-validation',
+  requirePermission('commission.proposer_suppression_double_validation'),
+  validate(z.object({ motif: z.string().min(5).max(500) })),
+  async (req, res, next) => {
+    try {
+      const result = await proposeCommissionItemDeletionRequest({
+        itemId: req.params.id,
+        motif: req.body.motif,
+        actorId: req.user.id,
+      });
+
+      await audit(req, {
+        action: 'commission.item_suppression_double_validation_proposee',
+        entityType: 'commission_item',
+        entityId: req.params.id,
+        metadata: { motif: req.body.motif },
+      });
+
+      res.status(201).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * GET /admin/commission/suppressions-double-validation-items — demandes
+ * de suppression d'un point (difficulté / exceptionnelle) en attente
+ * d'arbitrage du directeur. Doit précéder /items/:sessionId, mais comme
+ * ce chemin est distinct (« suppressions-... » et non « items/... »),
+ * aucune ambiguïté avec les routes /items/* ci-dessus.
+ */
+router.get(
+  '/suppressions-double-validation-items',
+  requirePermission('commission.lire'),
+  async (req, res, next) => {
+    try {
+      const demandes = await fetchPendingCommissionItemDeletionRequests();
+      res.json({ demandes });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /admin/commission/suppressions-double-validation-items/:id/decider
+ * — le directeur confirme (le point est annulé, un rapport est ajouté à
+ * la corbeille) ou rejette (rien ne change) une demande de suppression
+ * posée par l'opérateur.
+ */
+router.post(
+  '/suppressions-double-validation-items/:id/decider',
+  requirePermission('commission.decider_suppression_double_validation'),
+  validate(z.object({ approuver: z.boolean(), note: z.string().max(500).optional() })),
+  async (req, res, next) => {
+    try {
+      const result = await decideCommissionItemDeletionRequest({
+        requestId: req.params.id,
+        approve: req.body.approuver,
+        note: req.body.note,
+        actorId: req.user.id,
+      });
+
+      await audit(req, {
+        action: 'commission.item_suppression_double_validation_decidee',
+        entityType: 'commission_item_deletion_request',
+        entityId: req.params.id,
+        metadata: { approuver: req.body.approuver, note: req.body.note },
+      });
+
+      res.status(201).json(result);
     } catch (error) {
       next(error);
     }

@@ -13,7 +13,7 @@ import {
   proposeCreditDeletionRequest, fetchPendingCreditDeletionRequests, decideCreditDeletionRequest,
   fetchInstallmentsByCreditReference, proposeInstallmentAdjustment,
   fetchPendingInstallmentAdjustments, decideInstallmentAdjustment, fetchSchedulerStatus,
-  fetchOverdueInstallments,
+  fetchOverdueInstallments, fetchAccountBalances, zeroOutAccountBalances,
 } from '../services/operationsService.js';
 import { runTenueCompteBatch } from '../services/feeService.js';
 
@@ -639,6 +639,75 @@ router.post(
       });
 
       res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/* ═══════════════════════════════════════════════════════════════════
+   COMPTES CLIENTS — remise à zéro (directeur uniquement)
+   ═══════════════════════════════════════════════════════════════════
+   Les aggios quotidiens font dériver certains soldes, positifs comme
+   négatifs. Le directeur filtre (par solde, par nom) puis choisit lui-
+   même, compte par compte ou en groupe, lesquels remettre à 0 — jamais
+   une remise à zéro globale et automatique. */
+
+/**
+ * GET /admin/operations/comptes — liste les comptes clients avec leur
+ * solde courant, filtrable par signe du solde et par recherche nom/numéro.
+ */
+router.get(
+  '/comptes',
+  requirePermission('comptes.remettre_a_zero'),
+  validate(
+    z.object({
+      recherche: z.string().max(120).optional(),
+      solde: z.enum(['positif', 'negatif', 'non_nul']).optional(),
+    }),
+    'query'
+  ),
+  async (req, res, next) => {
+    try {
+      const comptes = await fetchAccountBalances({
+        recherche: req.query.recherche,
+        filtreSolde: req.query.solde,
+      });
+      res.json({ comptes });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /admin/operations/comptes/remettre-a-zero — remet à 0 le solde
+ * des comptes sélectionnés (un ou plusieurs), via une écriture
+ * d'ajustement compensatoire. Réservé au directeur.
+ */
+router.post(
+  '/comptes/remettre-a-zero',
+  requirePermission('comptes.remettre_a_zero'),
+  validate(z.object({
+    accountIds: z.array(z.string().uuid()).min(1),
+    motif: z.string().min(5).max(500),
+  })),
+  async (req, res, next) => {
+    try {
+      const result = await zeroOutAccountBalances({
+        accountIds: req.body.accountIds,
+        motif: req.body.motif,
+        actorId: req.user.id,
+      });
+
+      await audit(req, {
+        action: 'comptes.remis_a_zero',
+        entityType: 'account_balance',
+        entityId: req.user.id,
+        metadata: { motif: req.body.motif, comptesAjustes: result.comptesAjustes, comptesSelectionnes: result.comptesSelectionnes },
+      });
+
+      res.status(201).json(result);
     } catch (error) {
       next(error);
     }

@@ -481,3 +481,129 @@ export async function fetchUnusedExceptionAuthorizations() {
   );
   return rows;
 }
+
+/**
+ * Propose la suppression d'un dossier en difficulté / demande
+ * exceptionnelle en attente de double validation — même circuit que
+ * pour un crédit (voir proposeCreditDeletionRequest dans
+ * operationsService.js) : l'opérateur propose, seul le directeur
+ * confirme (decideCommissionItemDeletionRequest).
+ */
+export async function proposeCommissionItemDeletionRequest({ itemId, motif, actorId }) {
+  if (!motif || motif.trim().length < 5) {
+    throw new ApiError(422, 'Un motif est requis (5 caractères minimum).');
+  }
+
+  return withTransaction(async (client) => {
+    const { rows: itemRows } = await client.query(
+      `SELECT id, status FROM commission_items WHERE id = $1 FOR UPDATE`,
+      [itemId]
+    );
+    const item = itemRows[0];
+    if (!item) throw new ApiError(404, 'Point introuvable.');
+    if (!['valide', 'valide_double'].includes(item.status)) {
+      throw new ApiError(409, 'Seul un point en attente de double validation peut faire l’objet d’une demande de suppression.');
+    }
+
+    const { rows: existing } = await client.query(
+      `SELECT 1 FROM commission_item_deletion_requests WHERE item_id = $1 AND status = 'en_attente'`,
+      [itemId]
+    );
+    if (existing[0]) {
+      throw new ApiError(409, 'Une demande de suppression est déjà en attente pour ce point.');
+    }
+
+    const { rows: created } = await client.query(
+      `INSERT INTO commission_item_deletion_requests (item_id, motif, requested_by)
+       VALUES ($1, $2, $3)
+       RETURNING id, item_id, motif, status, requested_at`,
+      [itemId, motif.trim(), actorId]
+    );
+
+    return created[0];
+  });
+}
+
+/** Demandes de suppression de point (difficulté/exceptionnel) en attente d'arbitrage du directeur. */
+export async function fetchPendingCommissionItemDeletionRequests() {
+  const { rows } = await query(
+    `SELECT r.id, r.motif, r.requested_at, r.item_id,
+            i.type, i.titre, i.credit_id, i.client_id,
+            c.reference AS credit_reference,
+            u.full_name AS client,
+            demandeur.full_name AS demandeur
+     FROM commission_item_deletion_requests r
+     JOIN commission_items i ON i.id = r.item_id
+     LEFT JOIN credit_requests c ON c.id = i.credit_id
+     LEFT JOIN users u ON u.id = i.client_id
+     JOIN users demandeur ON demandeur.id = r.requested_by
+     WHERE r.status = 'en_attente'
+     ORDER BY r.requested_at`
+  );
+  return rows;
+}
+
+/**
+ * Le directeur tranche une demande de suppression de point : approuver
+ * marque le point 'annule' et archive un rapport (même principe que
+ * credit_deletion_reports), rejeter l'écarte sans y toucher. Le
+ * proposant ne peut pas décider sa propre demande (contrainte
+ * no_self_decision_suppression_item imposée en base également).
+ */
+export async function decideCommissionItemDeletionRequest({ requestId, approve, note, actorId }) {
+  return withTransaction(async (client) => {
+    const { rows } = await client.query(
+      `SELECT * FROM commission_item_deletion_requests WHERE id = $1 FOR UPDATE`,
+      [requestId]
+    );
+    const request = rows[0];
+    if (!request) throw new ApiError(404, 'Demande de suppression introuvable.');
+    if (request.status !== 'en_attente') {
+      throw new ApiError(409, 'Cette demande a déjà été traitée.');
+    }
+    if (request.requested_by === actorId) {
+      throw new ApiError(403, 'Qui a proposé la suppression ne peut pas la valider lui-même.');
+    }
+
+    let resultat = null;
+    if (approve) {
+      const { rows: itemRows } = await client.query(
+        `SELECT i.id, i.type, i.titre, i.status, u.full_name AS client_name
+         FROM commission_items i
+         LEFT JOIN users u ON u.id = i.client_id
+         WHERE i.id = $1 FOR UPDATE`,
+        [request.item_id]
+      );
+      const item = itemRows[0];
+      if (!item) throw new ApiError(404, 'Point introuvable.');
+      const statutAvant = item.status;
+
+      const { rows: updated } = await client.query(
+        `UPDATE commission_items SET status = 'annule'
+         WHERE id = $1 AND status IN ('valide', 'valide_double')
+         RETURNING id`,
+        [item.id]
+      );
+      if (!updated[0]) {
+        throw new ApiError(409, 'Ce point n’est plus dans un état permettant sa suppression (déjà traité entre-temps).');
+      }
+
+      await client.query(
+        `INSERT INTO commission_item_deletion_reports (item_type, titre, client_name, motif, deleted_by, previous_status)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [item.type, item.titre, item.client_name, request.motif, actorId, statutAvant]
+      );
+
+      resultat = { itemId: item.id, statut: 'annule' };
+    }
+
+    await client.query(
+      `UPDATE commission_item_deletion_requests
+       SET status = $2, decided_by = $3, decided_at = now(), decision_note = $4
+       WHERE id = $1`,
+      [requestId, approve ? 'approuve' : 'rejete', actorId, note ?? null]
+    );
+
+    return { statut: approve ? 'approuve' : 'rejete', resultat };
+  });
+}

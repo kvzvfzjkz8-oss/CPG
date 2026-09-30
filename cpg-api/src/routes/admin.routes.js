@@ -13,6 +13,7 @@ import { applyTriggeredFee } from '../services/feeService.js';
 import { notifyUser } from '../services/pushService.js';
 import { audit } from '../services/auditService.js';
 import { restoreDeletedClient, restoreDeletedCredit } from '../services/operationsService.js';
+import { fetchNotifications, markMessagesInternesVus } from '../services/notificationsService.js';
 
 import catalogRoutes from './catalog.routes.js';
 import operationsRoutes from './operations.routes.js';
@@ -1327,9 +1328,30 @@ router.get('/personnel', requirePermission('messagerie_interne.acceder'), async 
  * messages du fil privé entre la personne connectée et ce
  * destinataire précis — jamais mélangés entre eux.
  */
+/**
+ * GET /admin/notifications — à la connexion (et rafraîchi ensuite),
+ * les tâches en attente propres au rôle connecté et le nombre de
+ * messages internes non lus. Toute personne authentifiée y a accès :
+ * chaque tâche est déjà filtrée par rôle côté service, donc un rôle
+ * sans file d'attente reçoit simplement un tableau vide.
+ */
+router.get('/notifications', async (req, res, next) => {
+  try {
+    const notifications = await fetchNotifications({ actorId: req.user.id, role: req.user.role });
+    res.json(notifications);
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/messages-internes', requirePermission('messagerie_interne.acceder'), async (req, res, next) => {
   try {
     const avec = req.query.avec ? String(req.query.avec) : null;
+
+    // Ouvrir la messagerie (quel que soit le fil) vaut lecture : la
+    // pastille de notification ne doit pas rester allumée pour un
+    // message que l'agent vient de voir défiler à l'écran.
+    await markMessagesInternesVus(req.user.id);
 
     const { rows } = await query(
       avec

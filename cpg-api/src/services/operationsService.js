@@ -1059,9 +1059,9 @@ export async function proposeInstallmentAdjustment({ installmentId, nouvelleDate
 /** Demandes de correction d'échéance en attente d'arbitrage du directeur. */
 export async function fetchPendingInstallmentAdjustments() {
   const { rows } = await query(
-    `SELECT r.id, r.nouvelle_date, r.motif, r.requested_at,
-            i.sequence, i.due_date AS date_actuelle, i.amount,
-            c.reference AS credit_reference,
+    `SELECT r.id, r.nouvelle_date AS "nouvelleDate", r.motif, r.requested_at AS "requestedAt",
+            i.sequence, i.due_date AS "dateActuelle", i.amount,
+            c.reference AS "creditReference",
             demandeur.full_name AS demandeur
      FROM installment_adjustment_requests r
      JOIN installments i ON i.id = r.installment_id
@@ -1112,5 +1112,76 @@ export async function decideInstallmentAdjustment({ requestId, approve, note, ac
     );
 
     return { statut: approve ? 'approuve' : 'rejete', installment };
+  });
+}
+
+/**
+ * Liste les comptes clients avec leur solde courant, pour que le
+ * directeur puisse repérer — avant toute remise à zéro — lesquels sont
+ * positifs, négatifs, ou chercher un client précis par nom / numéro.
+ * `filtreSolde` : 'positif' | 'negatif' | 'non_nul' | undefined (tous).
+ */
+export async function fetchAccountBalances({ recherche, filtreSolde } = {}) {
+  const conditions = [`u.role = 'client'`];
+  const params = [];
+
+  if (filtreSolde === 'positif') conditions.push('ab.balance > 0');
+  else if (filtreSolde === 'negatif') conditions.push('ab.balance < 0');
+  else if (filtreSolde === 'non_nul') conditions.push('ab.balance <> 0');
+
+  if (recherche && recherche.trim()) {
+    params.push(`%${recherche.trim()}%`);
+    conditions.push(`(u.full_name ILIKE $${params.length} OR u.client_number ILIKE $${params.length})`);
+  }
+
+  const { rows } = await query(
+    `SELECT ab.account_id AS "accountId", ab.user_id AS "clientId",
+            u.full_name AS "clientNom", u.client_number AS "clientNumero",
+            ab.balance AS solde
+     FROM account_balances ab
+     JOIN users u ON u.id = ab.user_id
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY ab.balance DESC`,
+    params
+  );
+  return rows;
+}
+
+/**
+ * Remet à zéro le solde des comptes sélectionnés — un seul (remise
+ * individuelle) ou plusieurs à la fois (remise groupée), au choix du
+ * directeur après filtrage/recherche côté écran (fetchAccountBalances).
+ * Le solde n'étant jamais stocké directement (voir account_balances,
+ * une vue sur ledger_entries), « remettre à zéro » veut dire : insérer,
+ * pour chaque compte sélectionné dont le solde n'est pas déjà nul, une
+ * écriture d'ajustement qui l'annule exactement. Irréversible au sens
+ * où les écritures déjà existantes ne sont jamais supprimées (journal
+ * append-only) — mais le geste lui-même, une fois exécuté, ne se
+ * défait pas : d'où le motif obligatoire.
+ */
+export async function zeroOutAccountBalances({ accountIds, motif, actorId }) {
+  if (!motif || motif.trim().length < 5) {
+    throw new ApiError(422, 'Un motif est requis (5 caractères minimum).');
+  }
+  if (!Array.isArray(accountIds) || accountIds.length === 0) {
+    throw new ApiError(422, 'Sélectionnez au moins un compte à remettre à zéro.');
+  }
+
+  return withTransaction(async (client) => {
+    const { rows: soldes } = await client.query(
+      `SELECT account_id, balance FROM account_balances
+       WHERE account_id = ANY($1::uuid[]) AND balance <> 0`,
+      [accountIds]
+    );
+
+    for (const s of soldes) {
+      await client.query(
+        `INSERT INTO ledger_entries (account_id, type, amount, label, created_by)
+         VALUES ($1, 'ajustement', $2, $3, $4)`,
+        [s.account_id, -s.balance, motif.trim(), actorId]
+      );
+    }
+
+    return { comptesAjustes: soldes.length, comptesSelectionnes: accountIds.length };
   });
 }

@@ -286,6 +286,31 @@ router.get(
   }
 );
 
+/**
+ * GET /caisse/toutes-caisses — solde courant de chaque caissier, pour
+ * le directeur. Distinct de /ma-caisse (scopée à l'appelant) : ici on
+ * liste tout le monde, d'où la permission dédiée consulter_toutes_caisses
+ * qui n'est accordée qu'au directeur.
+ */
+router.get(
+  '/toutes-caisses',
+  requirePermission('caisse.consulter_toutes_caisses'),
+  async (req, res, next) => {
+    try {
+      const { rows } = await query(
+        `SELECT u.id AS "caissierId", u.full_name AS "caissier", COALESCE(cs.solde, 0) AS solde
+         FROM users u
+         LEFT JOIN caisse_soldes cs ON cs.caissier_id = u.id
+         WHERE u.role = 'caissier' AND u.status = 'actif'
+         ORDER BY u.full_name`
+      );
+      res.json(rows);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
 /** GET /caisse/mes-operations — historique de ses propres demandes. */
 router.get(
   '/mes-operations',
