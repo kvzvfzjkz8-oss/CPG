@@ -655,12 +655,12 @@ export async function cancelCreditAwaitingDoubleValidation({ creditId, motif, ac
 
     const { rows: updated } = await client.query(
       `UPDATE credit_requests SET status = 'annule'
-       WHERE id = $1 AND status IN ('valide_commission', 'valide_double')
+       WHERE id = $1 AND status IN ('en_verification', 'valide_niveau1', 'en_attente_commission', 'valide_commission', 'valide_double')
        RETURNING id`,
       [creditId]
     );
     if (!updated[0]) {
-      throw new ApiError(409, 'Seul un dossier en attente de double validation ou d’approbation finale peut être supprimé ainsi.');
+      throw new ApiError(409, 'Ce dossier n’est plus en attente de validation (déjà actif, rejeté ou déjà supprimé) — utilisez la suppression d’un crédit actif si besoin.');
     }
 
     await client.query(
@@ -693,8 +693,8 @@ export async function proposeCreditDeletionRequest({ creditId, motif, actorId })
     );
     const credit = creditRows[0];
     if (!credit) throw new ApiError(404, 'Dossier introuvable.');
-    if (!['valide_commission', 'valide_double'].includes(credit.status)) {
-      throw new ApiError(409, 'Seul un dossier en attente de double validation ou d’approbation finale peut faire l’objet d’une demande de suppression.');
+    if (!['en_verification', 'valide_niveau1', 'en_attente_commission', 'valide_commission', 'valide_double'].includes(credit.status)) {
+      throw new ApiError(409, 'Ce dossier n’est plus en attente de validation — il est déjà actif, rejeté ou supprimé.');
     }
 
     const { rows: existing } = await client.query(
@@ -771,7 +771,7 @@ export async function decideCreditDeletionRequest({ requestId, approve, note, ac
 
       const { rows: updated } = await client.query(
         `UPDATE credit_requests SET status = 'annule'
-         WHERE id = $1 AND status IN ('valide_commission', 'valide_double')
+         WHERE id = $1 AND status IN ('en_verification', 'valide_niveau1', 'en_attente_commission', 'valide_commission', 'valide_double')
          RETURNING id`,
         [credit.id]
       );

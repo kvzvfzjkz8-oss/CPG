@@ -10,7 +10,7 @@ import {
   grantExceptionAuthorization, fetchUnusedExceptionAuthorizations,
   depositDifficultyCase, depositExceptionalRequest, withdrawCommissionItem, fetchCommissionItems,
   proposeCommissionItemDeletionRequest, fetchPendingCommissionItemDeletionRequests,
-  decideCommissionItemDeletionRequest,
+  decideCommissionItemDeletionRequest, cancelCommissionItemDirectly,
 } from '../services/commissionService.js';
 
 const router = Router();
@@ -308,6 +308,38 @@ router.post(
    l'opérateur ne supprime jamais lui-même un dossier en difficulté ou
    une demande exceptionnelle arrivé en double validation — il propose,
    et seul le directeur confirme. */
+
+/**
+ * POST /admin/commission/items/:id/supprimer-double-validation — le
+ * directeur supprime directement un point (difficulté/exceptionnel), à
+ * n'importe quel stade de validation. Aucune confirmation requise :
+ * c'est déjà le directeur qui agit.
+ */
+router.post(
+  '/items/:id/supprimer-double-validation',
+  requirePermission('commission.supprimer_double_validation'),
+  validate(z.object({ motif: z.string().min(5).max(500) })),
+  async (req, res, next) => {
+    try {
+      const result = await cancelCommissionItemDirectly({
+        itemId: req.params.id,
+        motif: req.body.motif,
+        actorId: req.user.id,
+      });
+
+      await audit(req, {
+        action: 'commission.item_supprime_double_validation',
+        entityType: 'commission_item',
+        entityId: req.params.id,
+        metadata: { motif: req.body.motif },
+      });
+
+      res.status(201).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 /**
  * POST /admin/commission/items/:id/proposer-suppression-double-validation

@@ -483,6 +483,51 @@ export async function fetchUnusedExceptionAuthorizations() {
 }
 
 /**
+ * Suppression directe par le directeur — même principe que
+ * cancelCreditAwaitingDoubleValidation côté crédits : le directeur n'a
+ * besoin d'aucune confirmation puisqu'il est lui-même celui qui aurait
+ * eu à confirmer une demande de l'opérateur. Couvre un point à
+ * n'importe quel stade de validation, quelle que soit son origine
+ * (dossier en difficulté ou demande exceptionnelle).
+ */
+export async function cancelCommissionItemDirectly({ itemId, motif, actorId }) {
+  if (!motif || motif.trim().length < 5) {
+    throw new ApiError(422, 'Un motif est requis (5 caractères minimum).');
+  }
+
+  return withTransaction(async (client) => {
+    const { rows: itemRows } = await client.query(
+      `SELECT i.id, i.type, i.titre, i.status, u.full_name AS client_name
+       FROM commission_items i
+       LEFT JOIN users u ON u.id = i.client_id
+       WHERE i.id = $1 FOR UPDATE`,
+      [itemId]
+    );
+    const item = itemRows[0];
+    if (!item) throw new ApiError(404, 'Point introuvable.');
+    const statutAvant = item.status;
+
+    const { rows: updated } = await client.query(
+      `UPDATE commission_items SET status = 'annule'
+       WHERE id = $1 AND status IN ('en_attente', 'valide', 'valide_double')
+       RETURNING id`,
+      [itemId]
+    );
+    if (!updated[0]) {
+      throw new ApiError(409, 'Ce point n’est plus en attente de validation — il est déjà rejeté ou supprimé.');
+    }
+
+    await client.query(
+      `INSERT INTO commission_item_deletion_reports (item_type, titre, client_name, motif, deleted_by, previous_status)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [item.type, item.titre, item.client_name, motif.trim(), actorId, statutAvant]
+    );
+
+    return { itemId, statut: 'annule' };
+  });
+}
+
+/**
  * Propose la suppression d'un dossier en difficulté / demande
  * exceptionnelle en attente de double validation — même circuit que
  * pour un crédit (voir proposeCreditDeletionRequest dans
@@ -501,8 +546,8 @@ export async function proposeCommissionItemDeletionRequest({ itemId, motif, acto
     );
     const item = itemRows[0];
     if (!item) throw new ApiError(404, 'Point introuvable.');
-    if (!['valide', 'valide_double'].includes(item.status)) {
-      throw new ApiError(409, 'Seul un point en attente de double validation peut faire l’objet d’une demande de suppression.');
+    if (!['en_attente', 'valide', 'valide_double'].includes(item.status)) {
+      throw new ApiError(409, 'Ce point n’est plus en attente de validation — il est déjà rejeté ou supprimé.');
     }
 
     const { rows: existing } = await client.query(
@@ -580,7 +625,7 @@ export async function decideCommissionItemDeletionRequest({ requestId, approve, 
 
       const { rows: updated } = await client.query(
         `UPDATE commission_items SET status = 'annule'
-         WHERE id = $1 AND status IN ('valide', 'valide_double')
+         WHERE id = $1 AND status IN ('en_attente', 'valide', 'valide_double')
          RETURNING id`,
         [item.id]
       );

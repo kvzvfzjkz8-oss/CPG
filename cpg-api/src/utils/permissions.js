@@ -160,6 +160,10 @@ export const PERMISSIONS = {
     'credits.decider_suppression_double_validation',
     // Même chose côté dossiers en difficulté / demandes exceptionnelles.
     'commission.decider_suppression_double_validation',
+    // Suppression directe d'un point (difficulté/exceptionnel) par le
+    // directeur lui-même, à n'importe quel stade de validation — pas
+    // besoin de confirmation puisqu'il est déjà celui qui confirme.
+    'commission.supprimer_double_validation',
 
     // Remise à zéro de TOUS les soldes clients — geste exceptionnel,
     // irréversible, réservé au directeur seul.
