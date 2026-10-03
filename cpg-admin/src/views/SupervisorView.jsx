@@ -30,6 +30,7 @@ import {
 import { can } from '../auth/roles';
 import CatalogView from './CatalogView';
 import CommissionView from './CommissionView';
+import CommissionHistoryView from './CommissionHistoryView';
 
 export default function SupervisorView({ role }) {
   const [tab, setTab] = useState('vue');
@@ -39,6 +40,7 @@ export default function SupervisorView({ role }) {
   ];
   if (can(role, 'commission.lire')) {
     tabs.push({ key: 'commission', label: 'Commission', icon: Gavel });
+    tabs.push({ key: 'seances', label: 'Historique des séances', icon: History });
   }
   if (can(role, 'demandes.lire')) {
     tabs.push({ key: 'demandes', label: 'Demandes en attente', icon: Inbox });
@@ -91,6 +93,7 @@ export default function SupervisorView({ role }) {
       />
       {tab === 'vue' && <Overview onOuvrirCredits={() => setTab('credits-actifs')} />}
       {tab === 'commission' && <CommissionView role={role} />}
+      {tab === 'seances' && <CommissionHistoryView />}
       {tab === 'demandes' && <DemandesEnAttenteLectureSeule role={role} />}
       {tab === 'credits-actifs' && <CreditsEnCoursPanel role={role} />}
       {tab === 'simulation' && <SimulationPanel />}

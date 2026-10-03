@@ -619,6 +619,17 @@ export async function rescheduleCommissionSession(sessionId, dateHeure) {
   return apiRequest(`/v1/admin/commission/seance/${sessionId}`, { method: 'PATCH', body: { dateHeure } });
 }
 
+/** Toutes les séances de commission, la plus récente d'abord, avec le décompte des décisions. */
+export async function fetchCommissionSessions(limite = 100) {
+  const { seances } = await apiRequest(`/v1/admin/commission/seances?limite=${limite}`);
+  return seances;
+}
+
+/** Détail d'une séance : dossiers de crédit et points de l'ordre du jour, avec la décision prise sur chacun. */
+export async function fetchCommissionSessionDetail(sessionId) {
+  return apiRequest(`/v1/admin/commission/seances/${sessionId}`);
+}
+
 /** Dossiers validés niveau 1, prêts à être déposés en commission. */
 export async function fetchLevel1Credits() {
   const { credits } = await apiRequest('/v1/admin/credits?statut=valide_niveau1');

@@ -449,6 +449,126 @@ export async function doubleValidateCredit({ creditId, actorId }) {
  * points déjà passés par l'ancien circuit.
  */
 
+/* ═══════════════════════════════════════════════════════════════════
+   HISTORIQUE DES SÉANCES
+   ═══════════════════════════════════════════════════════════════════
+
+   Jusqu'ici, seule la séance « planifiee » était consultable : une fois
+   tenue, elle et ses décisions n'étaient plus lisibles nulle part.
+
+   La décision prise sur un crédit n'est pas stockée telle quelle — il
+   n'y a pas de colonne « décision », seulement le statut qui a continué
+   d'évoluer après la séance. Elle se déduit de façon fiable :
+
+     • commission_decision_by renseigné + status = 'rejete'  → refusé
+     • commission_decision_by renseigné + tout autre statut  → validé
+     • commission_decision_by vide                           → déposé,
+       jamais tranché (séance annulée avant d'être tenue)
+
+   Un dossier rejeté AVANT la commission ne peut pas être confondu avec
+   un refus en séance : il n'a pas de commission_session_id. Et 'rejete'
+   est terminal, donc un dossier validé en séance ne peut pas y tomber
+   ensuite.
+
+   Pour un point de l'ordre du jour, le statut porte directement la
+   décision ('valide'/'valide_double' validé, 'rejete' refusé,
+   'annule' supprimé après coup, 'en_attente' jamais tranché). */
+
+/** Toutes les séances, la plus récente d'abord, avec le décompte des décisions. */
+export async function fetchAllSessions({ limite = 100 } = {}) {
+  const { rows } = await query(
+    `SELECT s.id, s.scheduled_for, s.status, s.held_at, s.note, s.created_at,
+            programmeur.full_name AS programmee_par,
+            president.full_name   AS tenue_par,
+            (SELECT count(*) FROM credit_requests c
+              WHERE c.commission_session_id = s.id
+                AND c.commission_decision_by IS NOT NULL
+                AND c.status <> 'rejete')::int AS credits_valides,
+            (SELECT count(*) FROM credit_requests c
+              WHERE c.commission_session_id = s.id
+                AND c.commission_decision_by IS NOT NULL
+                AND c.status = 'rejete')::int AS credits_refuses,
+            (SELECT count(*) FROM credit_requests c
+              WHERE c.commission_session_id = s.id
+                AND c.commission_decision_by IS NULL)::int AS credits_non_tranches,
+            (SELECT count(*) FROM commission_items i
+              WHERE i.session_id = s.id
+                AND i.status IN ('valide', 'valide_double'))::int AS points_valides,
+            (SELECT count(*) FROM commission_items i
+              WHERE i.session_id = s.id AND i.status = 'rejete')::int AS points_refuses,
+            (SELECT count(*) FROM commission_items i
+              WHERE i.session_id = s.id AND i.status = 'en_attente')::int AS points_non_tranches,
+            (SELECT count(*) FROM commission_items i
+              WHERE i.session_id = s.id AND i.status = 'annule')::int AS points_supprimes
+     FROM commission_sessions s
+     JOIN users programmeur ON programmeur.id = s.scheduled_by
+     LEFT JOIN users president ON president.id = s.held_by
+     ORDER BY s.scheduled_for DESC
+     LIMIT $1`,
+    [limite]
+  );
+  return rows;
+}
+
+/**
+ * Détail d'une séance : les dossiers de crédit et les points de l'ordre
+ * du jour, avec la décision prise sur chacun et son statut actuel —
+ * celui-ci a pu évoluer depuis (approuvé, soldé, annulé).
+ */
+export async function fetchSessionDetail({ sessionId }) {
+  const { rows: sessionRows } = await query(
+    `SELECT s.id, s.scheduled_for, s.status, s.held_at, s.note, s.created_at,
+            programmeur.full_name AS programmee_par,
+            president.full_name   AS tenue_par
+     FROM commission_sessions s
+     JOIN users programmeur ON programmeur.id = s.scheduled_by
+     LEFT JOIN users president ON president.id = s.held_by
+     WHERE s.id = $1`,
+    [sessionId]
+  );
+  if (!sessionRows[0]) throw new ApiError(404, 'Séance introuvable.');
+
+  const { rows: credits } = await query(
+    `SELECT c.id, c.reference, c.amount, c.duration_months, c.status AS statut_actuel,
+            c.commission_note, c.commission_decision_note, c.commission_decided_at,
+            u.full_name AS client, u.employer, u.job_title,
+            decideur.full_name AS decide_par,
+            CASE
+              WHEN c.commission_decision_by IS NULL THEN 'non_tranche'
+              WHEN c.status = 'rejete'              THEN 'refuse'
+              ELSE 'valide'
+            END AS decision
+     FROM credit_requests c
+     JOIN users u ON u.id = c.user_id
+     LEFT JOIN users decideur ON decideur.id = c.commission_decision_by
+     WHERE c.commission_session_id = $1
+     ORDER BY u.full_name`,
+    [sessionId]
+  );
+
+  const { rows: points } = await query(
+    `SELECT i.id, i.type, i.titre, i.note, i.status, i.decision_note, i.decided_at,
+            ref.reference AS credit_reference,
+            u.full_name AS client,
+            decideur.full_name AS decide_par,
+            CASE i.status
+              WHEN 'rejete'     THEN 'refuse'
+              WHEN 'en_attente' THEN 'non_tranche'
+              WHEN 'annule'     THEN 'supprime'
+              ELSE 'valide'
+            END AS decision
+     FROM commission_items i
+     LEFT JOIN credit_requests ref ON ref.id = i.credit_id
+     LEFT JOIN users u ON u.id = i.client_id
+     LEFT JOIN users decideur ON decideur.id = i.decision_by
+     WHERE i.session_id = $1
+     ORDER BY u.full_name`,
+    [sessionId]
+  );
+
+  return { seance: sessionRows[0], credits, points };
+}
+
 /**
  * Autorisation d'exception : permet à un client qui a déjà un crédit
  * actif de repasser en commission pour un second dossier. Réservée au

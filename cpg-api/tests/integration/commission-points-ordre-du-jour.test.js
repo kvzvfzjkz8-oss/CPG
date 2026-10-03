@@ -312,3 +312,107 @@ describe(
     });
   }
 );
+
+/* ═══════════════════════════════════════════════════════════════════
+   HISTORIQUE DES SÉANCES
+
+   S'appuie sur les séances tenues par les deux séries ci-dessus : une
+   demande exceptionnelle validée, un dossier en difficulté validé, et
+   plusieurs crédits tranchés au passage.
+   ═══════════════════════════════════════════════════════════════════ */
+
+describe(
+  'historique des séances : toutes les séances et les décisions prises dans chacune',
+  { skip: !hasTestDatabase() && 'DATABASE_URL ne pointe pas vers une base de test' },
+  () => {
+    let seances;
+
+    before(async () => {
+      const { body } = await api('/v1/admin/commission/seances', {
+        token: await loginStaff('gestionnaire'),
+      });
+      seances = body.seances;
+    });
+
+    test('la liste contient les séances tenues, la plus récente d’abord', async () => {
+      assert.ok(seances.length >= 2, `au moins deux séances attendues, reçu ${seances.length}`);
+      assert.ok(seances.some((s) => s.status === 'tenue'), 'au moins une séance tenue');
+
+      const dates = seances.map((s) => new Date(s.scheduled_for).getTime());
+      const triees = [...dates].sort((a, b) => b - a);
+      assert.deepEqual(dates, triees, 'les séances doivent être triées par date décroissante');
+    });
+
+    test('chaque séance porte qui l’a programmée et ses compteurs de décisions', async () => {
+      for (const s of seances) {
+        assert.ok(s.programmee_par, 'programmee_par doit être renseigné');
+        for (const champ of [
+          'credits_valides', 'credits_refuses', 'credits_non_tranches',
+          'points_valides', 'points_refuses', 'points_non_tranches', 'points_supprimes',
+        ]) {
+          assert.equal(typeof s[champ], 'number', `${champ} doit être un nombre`);
+        }
+      }
+      // Une séance tenue a forcément été tenue par quelqu'un.
+      for (const s of seances.filter((x) => x.status === 'tenue')) {
+        assert.ok(s.tenue_par, 'une séance tenue doit porter tenue_par');
+        assert.ok(s.held_at, 'une séance tenue doit porter held_at');
+      }
+    });
+
+    test('au moins une séance a tranché un point validé', async () => {
+      assert.ok(
+        seances.some((s) => s.points_valides > 0),
+        'les séries précédentes ont validé une demande exceptionnelle et un dossier en difficulté'
+      );
+    });
+
+    test('le détail d’une séance rend les décisions, crédits et points', async () => {
+      const avecPoint = seances.find((s) => s.points_valides > 0);
+      const { status, body } = await api(`/v1/admin/commission/seances/${avecPoint.id}`, {
+        token: await loginStaff('gestionnaire'),
+      });
+      assert.equal(status, 200);
+      assert.equal(body.seance.id, avecPoint.id);
+      assert.ok(Array.isArray(body.credits));
+      assert.ok(Array.isArray(body.points));
+
+      const valides = body.points.filter((p) => p.decision === 'valide');
+      assert.ok(valides.length > 0, 'le point validé doit apparaître comme validé');
+      for (const p of valides) {
+        assert.ok(p.decide_par, 'un point tranché porte le nom du décideur');
+        assert.ok(['dossier_difficulte', 'demande_exceptionnelle'].includes(p.type));
+      }
+
+      // Chaque décision appartient au vocabulaire fermé attendu.
+      for (const d of [...body.credits, ...body.points].map((x) => x.decision)) {
+        assert.ok(['valide', 'refuse', 'non_tranche', 'supprime'].includes(d), `décision inattendue : ${d}`);
+      }
+    });
+
+    test('un crédit tranché expose sa décision et son statut actuel', async () => {
+      for (const s of seances) {
+        const { body } = await api(`/v1/admin/commission/seances/${s.id}`, {
+          token: await loginStaff('gestionnaire'),
+        });
+        for (const c of body.credits) {
+          assert.ok(c.reference && c.client, 'référence et client attendus');
+          assert.ok(c.statut_actuel, 'statut_actuel attendu');
+          if (c.decision === 'refuse') assert.equal(c.statut_actuel, 'rejete');
+          if (c.decision === 'non_tranche') assert.equal(c.decide_par, null);
+        }
+      }
+    });
+
+    test('un identifiant de séance inconnu renvoie 404, un identifiant mal formé 422', async () => {
+      const token = await loginStaff('gestionnaire');
+      const { status: inconnu } = await api(
+        '/v1/admin/commission/seances/00000000-0000-0000-0000-000000000000', { token }
+      );
+      assert.equal(inconnu, 404);
+
+      const { status: malforme } = await api('/v1/admin/commission/seances/pas-un-uuid', { token });
+      assert.equal(malforme, 422);
+    });
+  }
+);

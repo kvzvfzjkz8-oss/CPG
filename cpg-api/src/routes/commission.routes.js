@@ -10,6 +10,7 @@ import {
   depositDifficultyCase, depositExceptionalRequest, withdrawCommissionItem, fetchCommissionItems,
   proposeCommissionItemDeletionRequest, fetchPendingCommissionItemDeletionRequests,
   decideCommissionItemDeletionRequest, cancelCommissionItemDirectly,
+  fetchAllSessions, fetchSessionDetail,
 } from '../services/commissionService.js';
 
 const router = Router();
@@ -74,6 +75,43 @@ router.patch(
       const session = await rescheduleSession({ sessionId: req.params.id, scheduledFor: req.body.dateHeure });
       await audit(req, { action: 'commission.reprogrammee', entityType: 'commission_session', entityId: session.id });
       res.json(session);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/* ═══════════════════════════════════════════════════════════════════
+   HISTORIQUE DES SÉANCES — lecture seule
+   ═══════════════════════════════════════════════════════════════════
+   /seance (singulier) ne renvoie que la séance programmée. Ces deux
+   routes donnent accès à toutes les séances, tenues et annulées
+   comprises, et aux décisions prises dans chacune. */
+
+/** GET /admin/commission/seances — toutes les séances, la plus récente d'abord. */
+router.get(
+  '/seances',
+  requirePermission('commission.lire'),
+  validate(z.object({ limite: z.coerce.number().int().min(1).max(500).default(100) }), 'query'),
+  async (req, res, next) => {
+    try {
+      const seances = await fetchAllSessions({ limite: req.query.limite });
+      res.json({ seances });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/** GET /admin/commission/seances/:sessionId — dossiers et points tranchés dans une séance. */
+router.get(
+  '/seances/:sessionId',
+  requirePermission('commission.lire'),
+  validate(z.object({ sessionId: z.string().uuid() }), 'params'),
+  async (req, res, next) => {
+    try {
+      const detail = await fetchSessionDetail({ sessionId: req.params.sessionId });
+      res.json(detail);
     } catch (error) {
       next(error);
     }
