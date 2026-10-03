@@ -555,6 +555,25 @@ export async function fetchOverdueInstallments() {
 }
 
 /**
+ * Échéances à prélever ce mois-ci, avec le solde de chaque client.
+ * `recherche` filtre sur le nom du client, son employeur, son numéro
+ * client ou la référence du crédit — c'est ce qui permet de sortir
+ * tous les agents d'une entreprise d'un coup.
+ */
+export async function fetchMonthInstallments(recherche = '') {
+  const q = recherche.trim().length >= 2 ? `?recherche=${encodeURIComponent(recherche.trim())}` : '';
+  return apiRequest(`/v1/admin/operations/echeances/du-mois${q}`);
+}
+
+/** Prélève les échéances désignées — une ligne, ou toute une sélection. */
+export async function preleverEcheances(echeanceIds) {
+  return apiRequest('/v1/admin/operations/echeances/prelever', {
+    method: 'POST',
+    body: { echeanceIds },
+  });
+}
+
+/**
  * Relance la collecte des échéances arrivées à terme (normalement
  * automatique chaque jour à 6h) — filet de rattrapage pour prélever
  * tout de suite ce qui est devenu collectable (ex. juste après un

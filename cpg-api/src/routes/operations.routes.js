@@ -14,6 +14,7 @@ import {
   fetchInstallmentsByCreditReference, proposeInstallmentAdjustment,
   fetchPendingInstallmentAdjustments, decideInstallmentAdjustment, fetchSchedulerStatus,
   fetchOverdueInstallments, fetchAccountBalances, zeroOutAccountBalances,
+  fetchMonthInstallments, collectInstallments,
 } from '../services/operationsService.js';
 import { runTenueCompteBatch } from '../services/feeService.js';
 
@@ -200,6 +201,68 @@ router.post(
         metadata: {
           verifiees: result.checked, payees: result.paid.length,
           retards: result.late.length, total: result.totalCollected,
+        },
+      });
+
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/* ═══════════════════════════════════════════════════════════════════
+   PRÉLÈVEMENTS DU MOIS — PILOTÉS PAR L'OPÉRATEUR
+   ═══════════════════════════════════════════════════════════════════
+   Le prélèvement global passe sur tout le monde d'un coup. Ces deux
+   routes permettent à l'opérateur de cibler : voir qui est prélevable
+   ce mois-ci (en cherchant par client ou par entreprise) et lancer les
+   prélèvements au fur et à mesure que les salaires tombent. */
+
+/** GET /admin/operations/echeances/du-mois — échéances à prélever ce mois-ci, filtrables. */
+router.get(
+  '/echeances/du-mois',
+  requirePermission('operations.lire'),
+  validate(z.object({
+    recherche: z.string().max(100).optional(),
+    asOf: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  }), 'query'),
+  async (req, res, next) => {
+    try {
+      const result = await fetchMonthInstallments({
+        recherche: req.query.recherche,
+        asOf: req.query.asOf,
+      });
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/** POST /admin/operations/echeances/prelever — prélève les échéances désignées. */
+router.post(
+  '/echeances/prelever',
+  requirePermission('operations.executer_echeances'),
+  validate(z.object({
+    echeanceIds: z.array(z.string().uuid()).min(1).max(200),
+  })),
+  async (req, res, next) => {
+    try {
+      const result = await collectInstallments({
+        echeanceIds: req.body.echeanceIds,
+        actorId: req.user.id,
+      });
+
+      await audit(req, {
+        action: 'operations.echeances_prelevees_ciblees',
+        entityType: 'echeance',
+        entityId: req.body.echeanceIds.length === 1 ? req.body.echeanceIds[0] : 'lot',
+        metadata: {
+          demandees: req.body.echeanceIds.length,
+          prelevees: result.preleves.length,
+          echecs: result.echecs.length,
+          total: result.totalPreleve,
         },
       });
 

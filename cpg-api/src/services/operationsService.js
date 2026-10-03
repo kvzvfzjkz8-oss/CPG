@@ -219,23 +219,117 @@ export async function creditAgentSalariesFromCsv({ csvText, employeur, periode, 
 }
 
 /**
- * Prélève les échéances de crédit arrivées à terme.
+ * Prélève UNE échéance, dans la transaction fournie. Cœur commun au
+ * prélèvement automatique de fin de mois et au prélèvement individuel
+ * lancé par l'opérateur : les deux doivent se comporter exactement
+ * pareil — même contrôle de provision, même écriture au grand livre,
+ * même passage du crédit en « soldé » à la dernière échéance.
+ *
+ * Renvoie { ok: true, … } si l'échéance a été réglée, sinon
+ * { ok: false, … } avec le solde disponible. Une échéance dont la date
+ * est passée et que le compte ne couvre pas bascule « en retard » ;
+ * une échéance pas encore échue est simplement laissée en place, sans
+ * mouvement — l'opérateur peut la prélever d'avance quand le salaire
+ * est tombé, mais une provision insuffisante avant terme n'est pas un
+ * retard.
+ */
+async function collecterUneEcheance(client, echeance, actorId) {
+  // FOR UPDATE sur le compte : si l'opérateur relance la collecte
+  // pendant qu'une transaction Mobile Money est en cours sur le
+  // même compte, on attend plutôt que de lire un solde obsolète.
+  const { rows: account } = await client.query(
+    `SELECT a.id AS account_id, b.balance
+     FROM accounts a
+     JOIN account_balances b ON b.account_id = a.id
+     WHERE a.user_id = $1
+     ORDER BY a.created_at LIMIT 1
+     FOR UPDATE OF a`,
+    [echeance.user_id]
+  );
+
+  if (!account[0] || account[0].balance < echeance.amount) {
+    const echue = new Date(echeance.due_date).toISOString().slice(0, 10)
+      <= new Date().toISOString().slice(0, 10);
+    if (echue && echeance.status !== 'en_retard') {
+      await client.query(`UPDATE installments SET status = 'en_retard' WHERE id = $1`, [echeance.id]);
+    }
+    return {
+      ok: false,
+      id: echeance.id,
+      reference: echeance.reference,
+      sequence: echeance.sequence,
+      amount: echeance.amount,
+      soldeDisponible: account[0]?.balance ?? 0,
+      motif: 'provision insuffisante',
+    };
+  }
+
+  const { rows: entry } = await client.query(
+    `INSERT INTO ledger_entries (account_id, type, amount, label, reference, created_by)
+     VALUES ($1, 'paiement_credit', $2, $3, $4, $5)
+     RETURNING id`,
+    [
+      account[0].account_id, -echeance.amount,
+      `Échéance ${echeance.sequence}/${echeance.duration_months} — crédit ${echeance.reference}`,
+      echeance.reference, actorId,
+    ]
+  );
+
+  await client.query(
+    `UPDATE installments SET status = 'payee', paid_at = now(), ledger_entry_id = $2 WHERE id = $1`,
+    [echeance.id, entry[0].id]
+  );
+
+  // Dernière échéance réglée : le crédit passe soldé. On revérifie
+  // depuis la base plutôt que de compter sur ce lot, au cas où une
+  // échéance antérieure aurait été réglée hors de cette collecte.
+  const { rows: remaining } = await client.query(
+    `SELECT count(*) AS restantes FROM installments
+     WHERE credit_id = $1 AND status <> 'payee'`,
+    [echeance.credit_id]
+  );
+  let soldeLeCredit = false;
+  if (Number(remaining[0].restantes) === 0) {
+    await client.query(`UPDATE credit_requests SET status = 'solde' WHERE id = $1`, [echeance.credit_id]);
+    soldeLeCredit = true;
+  }
+
+  return {
+    ok: true,
+    id: echeance.id,
+    reference: echeance.reference,
+    sequence: echeance.sequence,
+    amount: echeance.amount,
+    creditSolde: soldeLeCredit,
+  };
+}
+
+/**
+ * Prélève les échéances de crédit arrivées à terme — passage global,
+ * déclenché par la tâche planifiée ou relancé à la main.
  *
  * Pour chaque échéance encore « à_venir » dont la date est dépassée :
  * si le compte a la provision suffisante, l'échéance est débitée et
  * marquée payée ; sinon elle passe en retard, sans mouvement d'argent.
  * Un crédit dont la dernière échéance est réglée passe automatiquement
  * au statut « soldé ».
+ *
+ * Le détail de chaque prélèvement est dans collecterUneEcheance, qui
+ * sert aussi aux prélèvements ciblés de l'opérateur.
  */
 export async function runInstallmentCollection({ asOf, actorId }) {
   const cutoff = asOf ?? new Date().toISOString().slice(0, 10);
 
+  // c.status = 'approuve' : un crédit annulé ou suspendu ne se prélève
+  // plus. Ni l'annulation ni la suspension ne touchent l'échéancier —
+  // sans ce filtre, la collecte continuait de débiter le client.
   const { rows: due } = await query(
-    `SELECT i.id, i.credit_id, i.sequence, i.amount, i.due_date,
+    `SELECT i.id, i.credit_id, i.sequence, i.amount, i.due_date, i.status,
             c.reference, c.duration_months, c.user_id
      FROM installments i
      JOIN credit_requests c ON c.id = i.credit_id
      WHERE i.status = 'a_venir' AND i.due_date <= $1
+       AND c.status = 'approuve'
      ORDER BY i.due_date`,
     [cutoff]
   );
@@ -245,66 +339,17 @@ export async function runInstallmentCollection({ asOf, actorId }) {
 
   for (const installment of due) {
     await withTransaction(async (client) => {
-      // FOR UPDATE sur le compte : si l'opérateur relance la collecte
-      // pendant qu'une transaction Mobile Money est en cours sur le
-      // même compte, on attend plutôt que de lire un solde obsolète.
-      const { rows: account } = await client.query(
-        `SELECT a.id AS account_id, b.balance
-         FROM accounts a
-         JOIN account_balances b ON b.account_id = a.id
-         WHERE a.user_id = $1
-         ORDER BY a.created_at LIMIT 1
-         FOR UPDATE OF a`,
-        [installment.user_id]
-      );
-
-      if (!account[0] || account[0].balance < installment.amount) {
-        await client.query(
-          `UPDATE installments SET status = 'en_retard' WHERE id = $1`,
-          [installment.id]
-        );
-        late.push({
-          reference: installment.reference, sequence: installment.sequence,
-          amount: installment.amount, soldeDisponible: account[0]?.balance ?? 0,
+      const issue = await collecterUneEcheance(client, installment, actorId);
+      if (issue.ok) {
+        paid.push({
+          reference: issue.reference, sequence: issue.sequence, amount: issue.amount,
         });
-        return;
+      } else {
+        late.push({
+          reference: issue.reference, sequence: issue.sequence,
+          amount: issue.amount, soldeDisponible: issue.soldeDisponible,
+        });
       }
-
-      const { rows: entry } = await client.query(
-        `INSERT INTO ledger_entries (account_id, type, amount, label, reference, created_by)
-         VALUES ($1, 'paiement_credit', $2, $3, $4, $5)
-         RETURNING id`,
-        [
-          account[0].account_id, -installment.amount,
-          `Échéance ${installment.sequence}/${installment.duration_months} — crédit ${installment.reference}`,
-          installment.reference, actorId,
-        ]
-      );
-
-      await client.query(
-        `UPDATE installments SET status = 'payee', paid_at = now(), ledger_entry_id = $2 WHERE id = $1`,
-        [installment.id, entry[0].id]
-      );
-
-      // Dernière échéance réglée : le crédit passe soldé. On revérifie
-      // depuis la base plutôt que de compter sur ce lot, au cas où une
-      // échéance antérieure aurait été réglée hors de cette collecte.
-      const { rows: remaining } = await client.query(
-        `SELECT count(*) AS restantes FROM installments
-         WHERE credit_id = $1 AND status <> 'payee'`,
-        [installment.credit_id]
-      );
-      if (Number(remaining[0].restantes) === 0) {
-        await client.query(
-          `UPDATE credit_requests SET status = 'solde' WHERE id = $1`,
-          [installment.credit_id]
-        );
-      }
-
-      paid.push({
-        reference: installment.reference, sequence: installment.sequence,
-        amount: installment.amount,
-      });
     });
   }
 
@@ -313,6 +358,163 @@ export async function runInstallmentCollection({ asOf, actorId }) {
     paid,
     late,
     totalCollected: paid.reduce((sum, p) => sum + p.amount, 0),
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   PRÉLÈVEMENTS DU MOIS — PILOTÉS PAR L'OPÉRATEUR
+   ═══════════════════════════════════════════════════════════════════
+
+   Le prélèvement automatique passe sur tout le monde à la fois. Dans
+   les faits, les salaires des entreprises partenaires n'arrivent pas
+   le même jour : l'opérateur a besoin de voir qui est prélevable
+   maintenant, entreprise par entreprise, et de lancer les
+   prélèvements au fur et à mesure.
+
+   La liste couvre le mois en cours et tout ce qui traîne derrière :
+     • les échéances du mois, échues ou non (prélevables d'avance dès
+       que le compte est provisionné)
+     • les échéances en retard des mois précédents, signalées comme
+       telles
+     • les échéances déjà réglées ce mois-ci, pour que l'opérateur
+       suive son avancement sans se demander ce qu'il a déjà fait
+
+   Seul un crédit « approuve » est prélevable : un crédit annulé ou
+   suspendu n'a plus rien à prélever, même si son échéancier existe
+   toujours en base. */
+
+/** Bornes du mois contenant la date donnée (défaut : aujourd'hui). */
+function bornesDuMois(asOf) {
+  const base = asOf ? new Date(`${asOf}T00:00:00Z`) : new Date();
+  const debut = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), 1));
+  const finExclue = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + 1, 1));
+  return { debut: debut.toISOString().slice(0, 10), finExclue: finExclue.toISOString().slice(0, 10) };
+}
+
+/**
+ * Les échéances à prélever ce mois-ci, avec le solde du compte de
+ * chaque client — l'opérateur voit d'avance si le prélèvement passera.
+ * `recherche` filtre sur le nom du client, son employeur, son numéro
+ * client ou la référence du crédit : c'est ce qui permet de sortir
+ * tous les agents d'une entreprise d'un coup.
+ */
+export async function fetchMonthInstallments({ recherche, asOf } = {}) {
+  const { debut, finExclue } = bornesDuMois(asOf);
+  const motif = recherche && recherche.trim().length >= 2 ? `%${recherche.trim()}%` : null;
+
+  const { rows } = await query(
+    `SELECT i.id, i.sequence, i.amount, i.due_date, i.status, i.paid_at,
+            c.id AS credit_id, c.reference, c.duration_months, c.status AS credit_status,
+            u.id AS client_id, u.full_name AS client, u.employer, u.client_number, u.phone,
+            COALESCE(solde.balance, 0) AS solde,
+            (c.status = 'approuve' AND i.status IN ('a_venir', 'en_retard')) AS prelevable,
+            (COALESCE(solde.balance, 0) >= i.amount) AS provision_suffisante,
+            (i.due_date < $1::date) AS echue_avant_ce_mois
+     FROM installments i
+     JOIN credit_requests c ON c.id = i.credit_id
+     JOIN users u ON u.id = c.user_id
+     LEFT JOIN LATERAL (
+       SELECT b.balance
+       FROM accounts a
+       JOIN account_balances b ON b.account_id = a.id
+       WHERE a.user_id = u.id
+       ORDER BY a.created_at
+       LIMIT 1
+     ) solde ON true
+     WHERE c.status IN ('approuve', 'solde')
+       AND (
+         (i.status IN ('a_venir', 'en_retard') AND i.due_date < $2::date)
+         -- Déjà réglée : on la montre si elle appartient au mois
+         -- consulté OU si elle a été prélevée pendant ce mois. Les
+         -- deux cas diffèrent dès que l'opérateur prélève d'avance :
+         -- sans la première condition, une échéance encaissée en
+         -- avance disparaissait de la liste de son propre mois et
+         -- l'opérateur ne pouvait plus voir qu'il l'avait faite.
+         OR (i.status = 'payee' AND (
+              (i.due_date >= $1::date AND i.due_date < $2::date)
+              OR (i.paid_at >= $1::date AND i.paid_at < $2::date)
+            ))
+       )
+       AND (
+         $3::text IS NULL
+         OR u.full_name ILIKE $3 OR u.employer ILIKE $3
+         OR u.client_number ILIKE $3 OR c.reference ILIKE $3
+       )
+     ORDER BY u.employer NULLS LAST, u.full_name, i.due_date`,
+    [debut, finExclue, motif]
+  );
+
+  return {
+    mois: debut.slice(0, 7),
+    echeances: rows,
+    totaux: {
+      aPrelever: rows.filter((r) => r.prelevable).length,
+      montantAPrelever: rows.filter((r) => r.prelevable).reduce((t, r) => t + Number(r.amount), 0),
+      dejaPrelevees: rows.filter((r) => r.status === 'payee').length,
+      enRetard: rows.filter((r) => r.status === 'en_retard').length,
+      sansProvision: rows.filter((r) => r.prelevable && !r.provision_suffisante).length,
+    },
+  };
+}
+
+/**
+ * Prélève une ou plusieurs échéances désignées par l'opérateur — le
+ * bouton « Prélever » d'une ligne, ou la sélection de tous les agents
+ * d'une entreprise. Chaque échéance est traitée dans sa propre
+ * transaction : l'échec de l'une (provision insuffisante) n'annule
+ * pas les autres.
+ */
+export async function collectInstallments({ echeanceIds, actorId }) {
+  if (!Array.isArray(echeanceIds) || echeanceIds.length === 0) {
+    throw new ApiError(422, 'Aucune échéance sélectionnée.');
+  }
+
+  const { rows: echeances } = await query(
+    `SELECT i.id, i.credit_id, i.sequence, i.amount, i.due_date, i.status,
+            c.reference, c.duration_months, c.user_id, c.status AS credit_status,
+            u.full_name AS client
+     FROM installments i
+     JOIN credit_requests c ON c.id = i.credit_id
+     JOIN users u ON u.id = c.user_id
+     WHERE i.id = ANY($1::uuid[])
+     ORDER BY u.full_name, i.due_date`,
+    [echeanceIds]
+  );
+
+  const introuvables = echeanceIds.filter((id) => !echeances.some((e) => e.id === id));
+  const preleves = [];
+  const echecs = introuvables.map((id) => ({ id, motif: 'échéance introuvable' }));
+
+  for (const echeance of echeances) {
+    if (echeance.credit_status !== 'approuve') {
+      echecs.push({
+        id: echeance.id, client: echeance.client, reference: echeance.reference,
+        motif: echeance.credit_status === 'suspendu'
+          ? 'crédit suspendu'
+          : `crédit ${echeance.credit_status} — plus rien à prélever`,
+      });
+      continue;
+    }
+    if (echeance.status === 'payee') {
+      echecs.push({
+        id: echeance.id, client: echeance.client, reference: echeance.reference,
+        motif: 'échéance déjà réglée',
+      });
+      continue;
+    }
+
+    const issue = await withTransaction((client) => collecterUneEcheance(client, echeance, actorId));
+    if (issue.ok) {
+      preleves.push({ ...issue, client: echeance.client });
+    } else {
+      echecs.push({ ...issue, client: echeance.client });
+    }
+  }
+
+  return {
+    preleves,
+    echecs,
+    totalPreleve: preleves.reduce((t, p) => t + Number(p.amount), 0),
   };
 }
 

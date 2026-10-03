@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, Tabs, SectionTitle } from '../components/UI';
+import MonthlyCollectionsView from './MonthlyCollectionsView';
 import {
   validateLevel1, rejectCredit, sendAdvisorReply,
   fetchDoubleValidationQueue, doubleValidateCredit,
@@ -53,6 +54,7 @@ export default function OperatorView() {
         onChange={setTab}
         options={[
           { key: 'demandes', label: 'Demandes entrantes', icon: Inbox },
+          { key: 'prelevements', label: 'Prélèvements du mois', icon: Wallet },
           { key: 'echeances-retard', label: 'Échéances en retard', icon: AlertTriangle, badge: overdueCount },
           { key: 'credits-actifs', label: 'Crédits en cours', icon: Wallet },
           { key: 'double-validation', label: 'Double validation', icon: Gavel },
@@ -62,6 +64,9 @@ export default function OperatorView() {
         ]}
       />
       {tab === 'demandes' && <IncomingRequests />}
+      {tab === 'prelevements' && <MonthlyCollectionsView onChanged={() => {
+        fetchOverdueInstallments().then((list) => setOverdueCount(list.length)).catch(() => {});
+      }} />}
       {tab === 'echeances-retard' && <OverdueInstallments onChanged={() => {
         fetchOverdueInstallments().then((list) => setOverdueCount(list.length)).catch(() => {});
       }} />}
