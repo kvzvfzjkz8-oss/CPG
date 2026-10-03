@@ -691,16 +691,10 @@ export async function doubleValidateCredit(creditId) {
   return apiRequest(`/v1/admin/commission/credits/${creditId}/valider-double`, { method: 'POST' });
 }
 
-/** Dossiers en difficulté / demandes exceptionnelles validés par le directeur, en attente de double validation. */
-export async function fetchItemsAwaitingDoubleValidation() {
-  const { points } = await apiRequest('/v1/admin/commission/items/a-double-valider');
-  return points;
-}
-
-/** Double validation par l'opérateur d'un dossier en difficulté ou d'une demande exceptionnelle. */
-export async function doubleValidateCommissionItem(itemId) {
-  return apiRequest(`/v1/admin/commission/items/${itemId}/valider-double`, { method: 'POST' });
-}
+/* Les points de l'ordre du jour (difficulté, demande exceptionnelle) ne
+   passent plus par une double validation : la décision du directeur en
+   séance est définitive. Les endpoints correspondants ont été retirés
+   côté API. */
 
 /** Dossiers prêts pour l'approbation finale du directeur. */
 export async function fetchFinalApprovalQueue() {

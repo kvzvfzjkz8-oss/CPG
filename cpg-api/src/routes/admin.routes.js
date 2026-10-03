@@ -52,10 +52,23 @@ router.get(
       const { statut, limite } = req.query;
 
       const { rows } = await query(
+        // credit_en_cours / autorisation_exception_disponible : les deux
+        // conditions que depositToCommission vérifie au moment du dépôt
+        // en commission. Les exposer ici permet au back-office de dire
+        // pourquoi un dépôt est impossible, au lieu de laisser le
+        // gestionnaire découvrir un refus en cliquant.
         `SELECT c.id, c.reference, c.amount, c.duration_months, c.status, c.created_at,
                 c.level1_at, c.approved_at, c.purpose,
                 u.id AS client_id, u.full_name AS client, u.job_title, u.employer, u.client_number, u.phone,
-                p.name AS produit
+                p.name AS produit,
+                EXISTS (
+                  SELECT 1 FROM credit_requests autre
+                  WHERE autre.user_id = c.user_id AND autre.status = 'approuve'
+                ) AS credit_en_cours,
+                EXISTS (
+                  SELECT 1 FROM commission_exception_authorizations a
+                  WHERE a.client_user_id = c.user_id AND a.used_at IS NULL
+                ) AS autorisation_exception_disponible
          FROM credit_requests c
          JOIN users u ON u.id = c.user_id
          LEFT JOIN product_versions pv ON pv.id = c.product_version_id

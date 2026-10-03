@@ -8,9 +8,7 @@ import { Card, Badge, Tabs, SectionTitle } from '../components/UI';
 import {
   validateLevel1, rejectCredit, sendAdvisorReply,
   fetchDoubleValidationQueue, doubleValidateCredit,
-  fetchItemsAwaitingDoubleValidation, doubleValidateCommissionItem,
   proposerSuppressionCreditDoubleValidation, fetchPendingCreditDeletionRequests,
-  proposerSuppressionCommissionItemDoubleValidation, fetchPendingCommissionItemDeletionRequests,
   fetchCreditRequests, fetchCreditDetail, fetchConversations, fetchConversationMessages,
   searchClientPourDemande, creerDemandePourClient,
   fetchOverdueInstallments, executerEcheances, proposeInstallmentAdjustment,
@@ -288,32 +286,23 @@ function OverdueInstallments({ onChanged }) {
  */
 function DoubleValidation() {
   const [pending, setPending] = useState([]);
-  const [pendingItems, setPendingItems] = useState([]);
   const [demandesSuppression, setDemandesSuppression] = useState([]);
-  const [demandesSuppressionItems, setDemandesSuppressionItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(null);
   const [toast, setToast] = useState('');
   const [confirmingDeleteId, setConfirmingDeleteId] = useState(null);
   const [deleteMotif, setDeleteMotif] = useState('');
   const [deleteError, setDeleteError] = useState('');
-  const [confirmingDeleteItemId, setConfirmingDeleteItemId] = useState(null);
-  const [deleteItemMotif, setDeleteItemMotif] = useState('');
-  const [deleteItemError, setDeleteItemError] = useState('');
 
   const load = async () => {
     setLoading(true);
     try {
-      const [queue, items, demandes, demandesItems] = await Promise.all([
+      const [queue, demandes] = await Promise.all([
         fetchDoubleValidationQueue(),
-        fetchItemsAwaitingDoubleValidation(),
         fetchPendingCreditDeletionRequests(),
-        fetchPendingCommissionItemDeletionRequests(),
       ]);
       setPending(queue);
-      setPendingItems(items);
       setDemandesSuppression(demandes);
-      setDemandesSuppressionItems(demandesItems);
     } finally {
       setLoading(false);
     }
@@ -324,7 +313,6 @@ function DoubleValidation() {
   // Dossiers pour lesquels une demande de suppression est déjà posée,
   // en attente que le directeur la confirme ou la rejette.
   const suppressionEnAttente = (creditId) => demandesSuppression.find((d) => d.credit_id === creditId);
-  const suppressionItemEnAttente = (itemId) => demandesSuppressionItems.find((d) => d.item_id === itemId);
 
   const handle = async (r) => {
     setBusy(r.id);
@@ -362,43 +350,7 @@ function DoubleValidation() {
     }
   };
 
-  const handleItem = async (it) => {
-    setBusy(it.id);
-    try {
-      await doubleValidateCommissionItem(it.id);
-      setToast(`${it.client} — dossier traité.`);
-      setPendingItems((prev) => prev.filter((x) => x.id !== it.id));
-      setTimeout(() => setToast(''), 4000);
-    } catch (e) {
-      setToast(e.message);
-      setTimeout(() => setToast(''), 4000);
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const doDeleteItem = async (it) => {
-    if (deleteItemMotif.trim().length < 5) {
-      setDeleteItemError('Précisez le motif (5 caractères minimum).');
-      return;
-    }
-    setBusy(it.id);
-    setDeleteItemError('');
-    try {
-      const demande = await proposerSuppressionCommissionItemDoubleValidation(it.id, deleteItemMotif.trim());
-      setToast(`${it.client} — demande de suppression envoyée au directeur, en attente de sa confirmation.`);
-      setDemandesSuppressionItems((prev) => [...prev, { id: demande.id, item_id: it.id }]);
-      setConfirmingDeleteItemId(null);
-      setDeleteItemMotif('');
-      setTimeout(() => setToast(''), 4000);
-    } catch (e) {
-      setDeleteItemError(e.message ?? 'Suppression impossible.');
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const totalEnAttente = pending.length + pendingItems.length;
+  const totalEnAttente = pending.length;
 
   return (
     <div>
@@ -419,83 +371,6 @@ function DoubleValidation() {
             Aucun dossier en attente de double validation.
           </p>
         )}
-        {pendingItems.map((it) => {
-          const demandeItemEnAttente = suppressionItemEnAttente(it.id);
-          return (
-          <div
-            key={`item-${it.id}`}
-            style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 20,
-              padding: '16px 20px', borderBottom: `1px solid ${colors.line}`,
-              opacity: busy === it.id ? 0.5 : 1,
-            }}
-          >
-            <div style={{ flex: 1 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>{it.client}</p>
-                <Badge tone={it.type === 'dossier_difficulte' ? 'danger' : 'gold'}>
-                  {it.type === 'dossier_difficulte' ? 'Dossier en difficulté' : 'Demande exceptionnelle'}
-                </Badge>
-              </div>
-              <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
-                {it.credit_reference ? `Réf. ${it.credit_reference} · ` : ''}validé par {it.decide_par}
-                {it.note ? ` — ${it.note}` : ''}
-              </p>
-              {demandeItemEnAttente && (
-                <p style={{ margin: '5px 0 0', fontSize: 11, color: colors.danger, fontFamily: fonts.body, fontWeight: 600 }}>
-                  Suppression demandée — en attente de confirmation du directeur
-                </p>
-              )}
-              {confirmingDeleteItemId === it.id && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
-                  <input
-                    value={deleteItemMotif}
-                    onChange={(e) => setDeleteItemMotif(e.target.value)}
-                    placeholder="Motif de la suppression"
-                    style={{ padding: '4px 8px', borderRadius: 6, border: `1px solid ${colors.line}`, fontSize: 11, fontFamily: fonts.body, width: 180 }}
-                  />
-                  <button
-                    onClick={() => doDeleteItem(it)}
-                    disabled={busy === it.id}
-                    style={{ padding: '5px 10px', borderRadius: 7, border: 'none', background: colors.danger, color: '#fff', fontSize: 11, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer' }}
-                  >
-                    Confirmer
-                  </button>
-                  <button
-                    onClick={() => { setConfirmingDeleteItemId(null); setDeleteItemMotif(''); setDeleteItemError(''); }}
-                    style={{ border: 'none', background: 'transparent', color: colors.muted, fontSize: 11, cursor: 'pointer', fontFamily: fonts.body }}
-                  >
-                    Annuler
-                  </button>
-                  {deleteItemError && <span style={{ fontSize: 10, color: colors.danger, fontFamily: fonts.body }}>{deleteItemError}</span>}
-                </div>
-              )}
-            </div>
-            {!demandeItemEnAttente && confirmingDeleteItemId !== it.id && (
-              <button
-                onClick={() => setConfirmingDeleteItemId(it.id)}
-                title="Demander la suppression de ce point (créé en double) — le directeur devra confirmer"
-                style={{ border: 'none', background: 'transparent', color: colors.danger, fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: fonts.body }}
-              >
-                Supprimer
-              </button>
-            )}
-            {!demandeItemEnAttente && (
-              <button
-                onClick={() => handleItem(it)}
-                disabled={busy === it.id}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 9,
-                  border: 'none', background: colors.forest, color: '#fff', fontSize: 12, fontWeight: 600,
-                  fontFamily: fonts.body, cursor: 'pointer',
-                }}
-              >
-                <Check size={12} /> Revalider
-              </button>
-            )}
-          </div>
-          );
-        })}
         {pending.map((r) => {
           const demandeEnAttente = suppressionEnAttente(r.id);
           return (

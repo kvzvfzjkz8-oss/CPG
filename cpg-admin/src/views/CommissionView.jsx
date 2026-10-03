@@ -339,32 +339,61 @@ function NewCreditsDeposit({ hasOpenSession }) {
           Aucun dossier en attente de dépôt.
         </p>
       )}
-      {credits.map((c) => (
-        <div key={c.id} style={{ padding: '14px 20px', borderBottom: `1px solid ${colors.line}` }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, marginBottom: 8 }}>
-            <div>
-              <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>
-                {c.client} · {c.id}
-              </p>
-              <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
-                {c.job_title ?? c.employer ?? '—'} · {formatFCFA(c.amount)} F sur {c.duration_months} mois
-              </p>
+      {credits.map((c) => {
+        // Un client déjà en crédit ne repasse en commission qu'avec une
+        // autorisation d'exception du directeur, accordée en validant une
+        // demande exceptionnelle en séance. Tant qu'elle manque, le
+        // serveur refusera le dépôt : autant le dire avant le clic.
+        const autorisationManquante = c.credit_en_cours && !c.autorisation_exception_disponible;
+        const depotImpossible = !hasOpenSession || autorisationManquante;
+
+        return (
+          <div key={c.id} style={{ padding: '14px 20px', borderBottom: `1px solid ${colors.line}` }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, marginBottom: 8 }}>
+              <div>
+                <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>
+                  {c.client} · {c.id}
+                </p>
+                <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+                  {c.job_title ?? c.employer ?? '—'} · {formatFCFA(c.amount)} F sur {c.duration_months} mois
+                </p>
+                {c.credit_en_cours && (
+                  <p
+                    style={{
+                      margin: '4px 0 0',
+                      fontSize: 11,
+                      fontWeight: 500,
+                      color: autorisationManquante ? '#9A3412' : colors.forest,
+                      fontFamily: fonts.body,
+                    }}
+                  >
+                    {autorisationManquante
+                      ? 'Crédit en cours — en attente d’une demande exceptionnelle validée par le directeur'
+                      : 'Crédit en cours — autorisation exceptionnelle accordée, dépôt possible'}
+                  </p>
+                )}
+              </div>
+              <button
+                onClick={() => deposit(c)}
+                disabled={depotImpossible || busyId === c.id}
+                title={
+                  autorisationManquante
+                    ? 'Ce client a déjà un crédit en cours. Déposez une demande exceptionnelle et faites-la valider par le directeur en séance.'
+                    : undefined
+                }
+                style={{ ...actionBtn(colors.forest, '#fff'), opacity: depotImpossible ? 0.5 : 1 }}
+              >
+                <Inbox size={12} /> Déposer
+              </button>
             </div>
-            <button
-              onClick={() => deposit(c)}
-              disabled={!hasOpenSession || busyId === c.id}
-              style={{ ...actionBtn(colors.forest, '#fff'), opacity: hasOpenSession ? 1 : 0.5 }}
-            >
-              <Inbox size={12} /> Déposer
-            </button>
+            <input
+              style={input} placeholder="Note d'analyse pour la commission (optionnel)"
+              value={notes[c.id] ?? ''}
+              onChange={(e) => setNotes((prev) => ({ ...prev, [c.id]: e.target.value }))}
+            />
           </div>
-          <input
-            style={input} placeholder="Note d'analyse pour la commission (optionnel)"
-            value={notes[c.id] ?? ''}
-            onChange={(e) => setNotes((prev) => ({ ...prev, [c.id]: e.target.value }))}
-          />
-        </div>
-      ))}
+        );
+      })}
     </Card>
   );
 }

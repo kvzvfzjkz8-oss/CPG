@@ -370,10 +370,31 @@ export async function holdSession({ sessionId, decisions, actorId }) {
           `UPDATE commission_items
            SET status = $2, decision_by = $3, decided_at = now(), decision_note = $4
            WHERE id = $1
-           RETURNING id, type, titre, status`,
+           RETURNING id, type, titre, status, client_id`,
           [entry.itemId, entry.decision, actorId, entry.note ?? null]
         );
-        resultats.push({ kind: 'item', ...updated[0] });
+        const item = updated[0];
+
+        // Une demande exceptionnelle validée en séance EST l'autorisation
+        // du directeur : elle ouvre immédiatement le droit de déposer un
+        // nouveau dossier pour ce client, même s'il a déjà un crédit en
+        // cours. Sans cette ligne, la demande était validée puis ne
+        // produisait rien — le dossier restait bloqué en « validé niveau
+        // 1 », refusé au dépôt par depositToCommission, et la demande
+        // elle-même disparaissait de tous les écrans.
+        if (item.type === 'demande_exceptionnelle' && entry.decision === 'valide' && item.client_id) {
+          await client.query(
+            `INSERT INTO commission_exception_authorizations (client_user_id, motif, granted_by)
+             VALUES ($1, $2, $3)`,
+            [
+              item.client_id,
+              `Demande exceptionnelle validée en séance du ${new Date(session.scheduled_for).toISOString().slice(0, 10)} — ${item.titre}`,
+              actorId,
+            ]
+          );
+        }
+
+        resultats.push({ kind: 'item', ...item });
       } else {
         throw new ApiError(422, `Type de décision invalide : « kind » doit être « credit » ou « item ».`);
       }
@@ -408,42 +429,25 @@ export async function doubleValidateCredit({ creditId, actorId }) {
   return rows[0];
 }
 
-/**
- * Double validation par l'opérateur d'un dossier en difficulté ou
- * d'une demande exceptionnelle — même circuit que pour un crédit
- * normal : le directeur tranche en séance, l'opérateur confirme
- * ensuite avant que ce soit considéré comme définitivement traité.
+/*
+ * Les points de l'ordre du jour — dossiers en difficulté comme
+ * demandes exceptionnelles — ne passent plus par une double validation
+ * de l'opérateur : la décision du directeur en séance est définitive.
+ *
+ * Elle l'était déjà en pratique. Pour une demande exceptionnelle, le
+ * directeur est seul détenteur de « commission.autoriser_exception » :
+ * rien à confirmer après lui. Pour un dossier en difficulté, la séance
+ * arrête une orientation et les actions concrètes (décaler une
+ * échéance, par exemple) se font ensuite avec les outils dédiés, qui
+ * ont leurs propres contrôles. L'étape intermédiaire n'ajoutait aucun
+ * contrôle réel et faisait sortir le point de tous les écrans sans
+ * aucune suite — c'est elle qui avait bloqué 5 dossiers.
+ *
+ * doubleValidateCommissionItem et fetchItemsAwaitingDoubleValidation
+ * ont donc été retirées. Le statut 'valide_double' reste dans l'énum
+ * (migration 030) et dans les flux de suppression, qui couvrent les
+ * points déjà passés par l'ancien circuit.
  */
-export async function doubleValidateCommissionItem({ itemId, actorId }) {
-  const { rows } = await query(
-    `UPDATE commission_items
-     SET status = 'valide_double', double_validated_by = $2, double_validated_at = now()
-     WHERE id = $1 AND status = 'valide'
-     RETURNING id, type, titre, status`,
-    [itemId, actorId]
-  );
-  if (!rows[0]) {
-    throw new ApiError(409, 'Ce dossier doit d’abord être validé par le directeur en séance.');
-  }
-  return rows[0];
-}
-
-/** Dossiers en difficulté / demandes exceptionnelles validés par le directeur, en attente de double validation. */
-export async function fetchItemsAwaitingDoubleValidation() {
-  const { rows } = await query(
-    `SELECT i.id, i.type, i.titre, i.note, i.credit_id, i.decided_at,
-            c.reference AS credit_reference,
-            u.full_name AS client,
-            d.full_name AS decide_par
-     FROM commission_items i
-     LEFT JOIN credit_requests c ON c.id = i.credit_id
-     LEFT JOIN users u ON u.id = i.client_id
-     LEFT JOIN users d ON d.id = i.decision_by
-     WHERE i.status = 'valide'
-     ORDER BY u.full_name`
-  );
-  return rows;
-}
 
 /**
  * Autorisation d'exception : permet à un client qui a déjà un crédit

@@ -6,7 +6,6 @@ import { audit } from '../services/auditService.js';
 import {
   scheduleSession, cancelSession, rescheduleSession, fetchPlannedSession, depositToCommission,
   withdrawFromCommission, fetchCommissionQueue, holdSession, doubleValidateCredit,
-  doubleValidateCommissionItem, fetchItemsAwaitingDoubleValidation,
   grantExceptionAuthorization, fetchUnusedExceptionAuthorizations,
   depositDifficultyCase, depositExceptionalRequest, withdrawCommissionItem, fetchCommissionItems,
   proposeCommissionItemDeletionRequest, fetchPendingCommissionItemDeletionRequests,
@@ -125,6 +124,7 @@ router.post(
 router.get(
   '/file-attente/:sessionId',
   requirePermission('commission.lire'),
+  validate(z.object({ sessionId: z.string().uuid() }), 'params'),
   async (req, res, next) => {
     try {
       const dossiers = await fetchCommissionQueue({ sessionId: req.params.sessionId });
@@ -204,24 +204,18 @@ router.post(
   }
 );
 
-/** GET /admin/commission/items/a-double-valider — dossiers difficulté/exceptionnels validés en séance, en attente de l'opérateur. Doit précéder /items/:sessionId, sinon Express confond « a-double-valider » avec un identifiant de séance. */
-router.get(
-  '/items/a-double-valider',
-  requirePermission('demandes.valider_double'),
-  async (req, res, next) => {
-    try {
-      const points = await fetchItemsAwaitingDoubleValidation();
-      res.json({ points });
-    } catch (error) {
-      next(error);
-    }
-  }
-);
-
-/** GET /admin/commission/items/:sessionId — dossiers en difficulté et demandes exceptionnelles d'une séance. */
+/**
+ * GET /admin/commission/items/:sessionId — dossiers en difficulté et
+ * demandes exceptionnelles d'une séance.
+ *
+ * L'identifiant est validé ici : sans ce contrôle, une URL qui n'est
+ * pas un UUID descend jusqu'à PostgreSQL et remonte en erreur 500
+ * (« invalid input syntax for type uuid ») au lieu d'un refus propre.
+ */
 router.get(
   '/items/:sessionId',
   requirePermission('commission.lire'),
+  validate(z.object({ sessionId: z.string().uuid() }), 'params'),
   async (req, res, next) => {
     try {
       const points = await fetchCommissionItems({ sessionId: req.params.sessionId });
@@ -286,20 +280,9 @@ router.post(
   }
 );
 
-/** POST /admin/commission/items/:id/valider-double — revalidation par l'opérateur d'un dossier difficulté/exceptionnel. */
-router.post(
-  '/items/:id/valider-double',
-  requirePermission('demandes.valider_double'),
-  async (req, res, next) => {
-    try {
-      const result = await doubleValidateCommissionItem({ itemId: req.params.id, actorId: req.user.id });
-      await audit(req, { action: 'commission.item_double_valide', entityType: 'commission_item', entityId: result.id });
-      res.json(result);
-    } catch (error) {
-      next(error);
-    }
-  }
-);
+/* Un point de l'ordre du jour (dossier en difficulté ou demande
+   exceptionnelle) ne passe plus par la double validation : la décision
+   du directeur en séance est définitive. Voir commissionService.js. */
 
 /* ═══════════════════════════════════════════════════════════════════
    SUPPRESSION D'UN POINT EN DOUBLE VALIDATION — propose puis confirme

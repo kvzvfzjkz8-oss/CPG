@@ -68,10 +68,9 @@ async function fetchTasksForRole(role) {
       'double_validation_credits', 'Dossiers de crédit à revalider',
       `SELECT count(*)::int AS n FROM credit_requests WHERE status = 'valide_commission'`
     );
-    await add(
-      'double_validation_items', 'Dossiers difficulté/exceptionnels à revalider',
-      `SELECT count(*)::int AS n FROM commission_items WHERE status = 'valide'`
-    );
+    // Plus de file « points à revalider » : ni un dossier en difficulté
+    // ni une demande exceptionnelle n'attendent l'opérateur, la décision
+    // du directeur en séance étant définitive pour les deux.
     await add(
       'echeances_en_retard', 'Échéances en retard à relancer',
       `SELECT count(*)::int AS n FROM installments WHERE status = 'en_retard'`
