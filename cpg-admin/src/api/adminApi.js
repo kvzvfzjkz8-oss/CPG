@@ -187,6 +187,19 @@ export async function fetchUsers() {
   return utilisateurs;
 }
 
+/** Situation du compte en PDF : solde, crédits en cours et échéances restantes, sur une page. */
+export async function imprimerSituationClient(clientId, clientNumber) {
+  const blob = await apiRequestBlob(`/v1/admin/clients/${clientId}/situation/pdf`);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Situation-${clientNumber ?? clientId}.pdf`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 /** Fiche complète d'un client : ses informations et l'historique de tous ses crédits. */
 export async function fetchClientDetail(clientId) {
   return apiRequest(`/v1/admin/clients/${clientId}`);

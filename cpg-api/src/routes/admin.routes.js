@@ -5,6 +5,7 @@ import { query, withTransaction } from '../db/index.js';
 import { requireAuth, requirePermission } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { ApiError } from '../middleware/errorHandler.js';
+import { genererSituationPDF } from '../services/situationService.js';
 import { computeSchedule, buildInstallments, computeFileFee, generateReference, DEFAULT_MONTHLY_RATE } from '../services/creditService.js';
 import { genererContratPDF } from '../services/contractService.js';
 import { getActiveScale } from '../services/productService.js';
@@ -583,29 +584,96 @@ router.post(
  * des dossiers de crédit — c'est le même niveau d'information, juste
  * regroupé par client plutôt que par dossier.
  */
+/**
+ * Situation d'un client : identité, solde, crédits et — c'est ce qui
+ * manquait — l'état de chaque échéancier. Sans les échéances, le
+ * gestionnaire voyait bien qu'un crédit était « en cours » sans
+ * pouvoir dire ce qu'il restait à payer ni quand.
+ */
+async function chargerSituationClient(clientId) {
+  const { rows: client } = await query(
+    `SELECT u.id, u.full_name, u.phone, u.client_number, u.job_title, u.employer,
+            u.status, u.created_at, COALESCE(b.balance, 0) AS balance
+     FROM users u
+     LEFT JOIN LATERAL (
+       SELECT a.id FROM accounts a WHERE a.user_id = u.id ORDER BY a.created_at LIMIT 1
+     ) a ON true
+     LEFT JOIN account_balances b ON b.account_id = a.id
+     WHERE u.id = $1 AND u.role = 'client'`,
+    [clientId]
+  );
+  if (!client[0]) throw new ApiError(404, 'Client introuvable.');
+
+  const { rows: credits } = await query(
+    `SELECT c.id, c.reference, c.amount, c.duration_months, c.status, c.monthly_payment,
+            c.created_at, c.level1_at, c.approved_at,
+            (SELECT count(*)::int FROM installments i WHERE i.credit_id = c.id) AS total_echeances,
+            (SELECT count(*)::int FROM installments i
+              WHERE i.credit_id = c.id AND i.status = 'payee') AS payees,
+            (SELECT count(*)::int FROM installments i
+              WHERE i.credit_id = c.id AND i.status <> 'payee') AS restantes,
+            (SELECT count(*)::int FROM installments i
+              WHERE i.credit_id = c.id AND i.status = 'en_retard') AS en_retard,
+            (SELECT COALESCE(sum(i.amount), 0)::bigint FROM installments i
+              WHERE i.credit_id = c.id AND i.status <> 'payee') AS reste_du,
+            (SELECT min(i.due_date) FROM installments i
+              WHERE i.credit_id = c.id AND i.status <> 'payee') AS prochaine_echeance
+     FROM credit_requests c
+     WHERE c.user_id = $1
+     ORDER BY c.created_at DESC`,
+    [clientId]
+  );
+
+  // Le détail échéance par échéance n'est joint que pour les dossiers
+  // encore vivants : c'est le seul cas où le gestionnaire en a besoin,
+  // et ça garde la fiche lisible.
+  const vivants = credits.filter((c) => ['approuve', 'suspendu'].includes(c.status));
+  if (vivants.length) {
+    const { rows: echeances } = await query(
+      `SELECT credit_id, id, sequence, due_date, amount, status, paid_at
+       FROM installments
+       WHERE credit_id = ANY($1::uuid[])
+       ORDER BY credit_id, sequence`,
+      [vivants.map((c) => c.id)]
+    );
+    for (const c of credits) {
+      c.echeances = echeances.filter((e) => e.credit_id === c.id);
+    }
+  }
+
+  const actifs = credits.filter((c) => ['approuve', 'suspendu'].includes(c.status));
+  const totaux = {
+    creditsEnCours: actifs.length,
+    resteDu: actifs.reduce((t, c) => t + Number(c.reste_du), 0),
+    enRetard: actifs.reduce((t, c) => t + c.en_retard, 0),
+    prochaineEcheance: actifs
+      .map((c) => c.prochaine_echeance)
+      .filter(Boolean)
+      .sort()[0] ?? null,
+  };
+
+  return { client: client[0], credits, totaux };
+}
+
 router.get('/clients/:id', requirePermission('demandes.lire'), async (req, res, next) => {
   try {
-    const { rows: client } = await query(
-      `SELECT u.id, u.full_name, u.phone, u.client_number, u.job_title, u.employer,
-              u.status, u.created_at, b.balance
-       FROM users u
-       LEFT JOIN accounts a ON a.user_id = u.id
-       LEFT JOIN account_balances b ON b.account_id = a.id
-       WHERE u.id = $1 AND u.role = 'client'`,
-      [req.params.id]
-    );
-    if (!client[0]) throw new ApiError(404, 'Client introuvable.');
+    res.json(await chargerSituationClient(req.params.id));
+  } catch (error) {
+    next(error);
+  }
+});
 
-    const { rows: credits } = await query(
-      `SELECT id, reference, amount, duration_months, status, monthly_payment,
-              created_at, level1_at, approved_at
-       FROM credit_requests
-       WHERE user_id = $1
-       ORDER BY created_at DESC`,
-      [req.params.id]
+/** GET /admin/clients/:id/situation/pdf — la même situation, sur une page imprimable. */
+router.get('/clients/:id/situation/pdf', requirePermission('demandes.lire'), async (req, res, next) => {
+  try {
+    const { client, credits, totaux } = await chargerSituationClient(req.params.id);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="Situation-${client.client_number ?? client.id}.pdf"`
     );
-
-    res.json({ client: client[0], credits });
+    const doc = genererSituationPDF({ client, credits, totaux, editePar: req.user?.full_name ?? null });
+    doc.pipe(res);
   } catch (error) {
     next(error);
   }

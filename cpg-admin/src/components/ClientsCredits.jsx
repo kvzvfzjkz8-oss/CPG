@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X } from 'lucide-react';
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, SectionTitle } from './UI';
-import { fetchCreditRequests, fetchClientDetail, supprimerCreditActif, suspendreCreditActif, reactiverCreditSuspendu, fetchHistoriqueClient, imprimerHistoriqueClient } from '../api/adminApi';
+import { fetchCreditRequests, fetchClientDetail, supprimerCreditActif, suspendreCreditActif, reactiverCreditSuspendu, fetchHistoriqueClient, imprimerHistoriqueClient, imprimerSituationClient } from '../api/adminApi';
 
 const STATUT_LABEL = {
   en_verification: 'En attente de validation niveau 1',
@@ -258,6 +258,7 @@ export function ClientDetailModal({ clientId, nom, onClose }) {
   const [historique, setHistorique] = useState(null);
   const [historiqueOuvert, setHistoriqueOuvert] = useState(false);
   const [imprBusy, setImprBusy] = useState(false);
+  const [situBusy, setSituBusy] = useState(false);
 
   useEffect(() => {
     if (!clientId) { setLoading(false); setError('Identifiant client indisponible pour ce dossier.'); return; }
@@ -281,6 +282,15 @@ export function ClientDetailModal({ clientId, nom, onClose }) {
       await imprimerHistoriqueClient(clientId, detail?.client.client_number);
     } finally {
       setImprBusy(false);
+    }
+  };
+
+  const imprimerSituation = async () => {
+    setSituBusy(true);
+    try {
+      await imprimerSituationClient(clientId, detail?.client.client_number);
+    } finally {
+      setSituBusy(false);
     }
   };
 
@@ -316,7 +326,31 @@ export function ClientDetailModal({ clientId, nom, onClose }) {
               <InfoLigne label="Statut" valeur={detail.client.status === 'actif' ? 'Actif' : detail.client.status === 'suspendu' ? 'Suspendu' : 'Fermé'} />
             </div>
 
-            <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+            {detail.totaux && detail.totaux.creditsEnCours > 0 && (
+              <div style={{
+                display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10,
+                padding: '12px 14px', marginBottom: 18, borderRadius: 12,
+                background: colors.bg, border: `1px solid ${colors.line}`,
+              }}>
+                <Synthese libelle="Crédits en cours" valeur={String(detail.totaux.creditsEnCours)} />
+                <Synthese libelle="Reste à rembourser" valeur={`${formatFCFA(detail.totaux.resteDu)} F`} />
+                <Synthese
+                  libelle="Échéances en retard"
+                  valeur={String(detail.totaux.enRetard)}
+                  couleur={detail.totaux.enRetard > 0 ? colors.danger : undefined}
+                />
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
+              <button
+                onClick={imprimerSituation}
+                disabled={situBusy}
+                title="Solde, crédits en cours et échéances restantes — une page"
+                style={{ padding: '7px 14px', borderRadius: 9, border: 'none', background: colors.forest, color: '#fff', fontSize: 12, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer' }}
+              >
+                {situBusy ? 'Génération…' : 'Imprimer la situation'}
+              </button>
               <button
                 onClick={voirHistorique}
                 style={{ padding: '7px 14px', borderRadius: 9, border: `1px solid ${colors.line}`, background: '#fff', color: colors.forestLight, fontSize: 12, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer' }}
@@ -326,9 +360,10 @@ export function ClientDetailModal({ clientId, nom, onClose }) {
               <button
                 onClick={imprimer}
                 disabled={imprBusy}
-                style={{ padding: '7px 14px', borderRadius: 9, border: 'none', background: colors.forest, color: '#fff', fontSize: 12, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer' }}
+                title="Toutes les transactions du compte"
+                style={{ padding: '7px 14px', borderRadius: 9, border: `1px solid ${colors.line}`, background: '#fff', color: colors.forestLight, fontSize: 12, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer' }}
               >
-                {imprBusy ? 'Génération…' : 'Imprimer'}
+                {imprBusy ? 'Génération…' : 'Imprimer l’historique'}
               </button>
             </div>
 
@@ -382,6 +417,41 @@ export function ClientDetailModal({ clientId, nom, onClose }) {
                       Demandé le {new Date(c.created_at).toLocaleDateString('fr-FR')}
                       {c.approved_at ? ` · Débloqué le ${new Date(c.approved_at).toLocaleDateString('fr-FR')}` : ''}
                     </p>
+                    {c.total_echeances > 0 && (
+                      <div style={{ marginTop: 6, paddingTop: 6, borderTop: `1px solid ${colors.line}` }}>
+                        <p style={{ margin: 0, fontSize: 11, color: colors.ink, fontFamily: fonts.body }}>
+                          <strong>{c.payees}/{c.total_echeances}</strong> échéance{c.total_echeances > 1 ? 's' : ''} réglée{c.payees > 1 ? 's' : ''}
+                          {Number(c.reste_du) > 0 && <> · reste <strong>{formatFCFA(c.reste_du)} F</strong></>}
+                          {c.monthly_payment ? <> · mensualité {formatFCFA(c.monthly_payment)} F</> : null}
+                        </p>
+                        {c.prochaine_echeance && (
+                          <p style={{ margin: '2px 0 0', fontSize: 11, color: c.en_retard > 0 ? colors.danger : colors.muted, fontFamily: fonts.body }}>
+                            {c.en_retard > 0
+                              ? `${c.en_retard} échéance${c.en_retard > 1 ? 's' : ''} en retard · prochaine le ${new Date(c.prochaine_echeance).toLocaleDateString('fr-FR')}`
+                              : `Prochaine échéance le ${new Date(c.prochaine_echeance).toLocaleDateString('fr-FR')}`}
+                          </p>
+                        )}
+                        {Array.isArray(c.echeances) && c.echeances.filter((e) => e.status !== 'payee').length > 0 && (
+                          <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            {c.echeances.filter((e) => e.status !== 'payee').slice(0, 4).map((e) => (
+                              <div key={e.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, fontFamily: fonts.body }}>
+                                <span style={{ color: colors.muted }}>
+                                  n°{e.sequence} · {new Date(e.due_date).toLocaleDateString('fr-FR')}
+                                  {e.status === 'en_retard' && <span style={{ color: colors.danger, fontWeight: 600 }}> · en retard</span>}
+                                </span>
+                                <span style={{ color: colors.ink, fontFamily: fonts.mono }}>{formatFCFA(e.amount)} F</span>
+                              </div>
+                            ))}
+                            {c.echeances.filter((e) => e.status !== 'payee').length > 4 && (
+                              <span style={{ fontSize: 10, color: colors.muted, fontFamily: fonts.body, fontStyle: 'italic' }}>
+                                … et {c.echeances.filter((e) => e.status !== 'payee').length - 4} autre
+                                {c.echeances.filter((e) => e.status !== 'payee').length - 4 > 1 ? 's' : ''} — voir la situation imprimée
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -389,6 +459,19 @@ export function ClientDetailModal({ clientId, nom, onClose }) {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+function Synthese({ libelle, valeur, couleur }) {
+  return (
+    <div>
+      <p style={{ margin: 0, fontSize: 9, color: colors.muted, fontFamily: fonts.body, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+        {libelle}
+      </p>
+      <p style={{ margin: '3px 0 0', fontSize: 15, fontWeight: 600, color: couleur ?? colors.ink, fontFamily: fonts.display }}>
+        {valeur}
+      </p>
     </div>
   );
 }
