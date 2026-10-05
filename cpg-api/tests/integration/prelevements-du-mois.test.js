@@ -90,6 +90,7 @@ describe(
      * calcul des bornes du mois.
      */
     let asOf;
+    let premiereEcheance;
 
     const duMois = async (token, recherche = EMPLOYEUR) => api(
       `/v1/admin/operations/echeances/du-mois?asOf=${asOf}`
@@ -106,7 +107,10 @@ describe(
         `/v1/admin/operations/echeances?reference=${agentA.reference}`,
         { token: await loginStaff('operateur') }
       );
-      asOf = echeancier.installments[0].due_date.slice(0, 10);
+      premiereEcheance = echeancier.installments[0].due_date.slice(0, 10);
+      // Les échéances pas encore échues ne s'affichent qu'à partir du 25
+      // du mois : on se place à cette date pour voir tout le mois.
+      asOf = `${premiereEcheance.slice(0, 8)}25`;
 
       // Seuls A et B reçoivent leur salaire. C reste à découvert, ce
       // qui doit être signalé sans rien débiter.
@@ -121,6 +125,33 @@ describe(
           ],
         },
       });
+    });
+
+    test('avant le 25, une échéance pas encore échue n’apparaît pas', async () => {
+      const operateurToken = await loginStaff('operateur');
+      const debutDeMois = `${premiereEcheance.slice(0, 8)}01`;
+      const { body } = await api(
+        `/v1/admin/operations/echeances/du-mois?asOf=${debutDeMois}`
+        + `&recherche=${encodeURIComponent(EMPLOYEUR)}`,
+        { token: operateurToken }
+      );
+      assert.equal(body.moisOuvert, false, 'le mois ne doit pas encore être ouvert');
+      assert.equal(body.jourOuverture, 25);
+      assert.ok(
+        body.echeances.every((e) => e.due_date.slice(0, 10) <= debutDeMois),
+        'aucune échéance postérieure au jour consulté ne doit remonter'
+      );
+
+      const { body: ouvert } = await api(
+        `/v1/admin/operations/echeances/du-mois?asOf=${asOf}`
+        + `&recherche=${encodeURIComponent(EMPLOYEUR)}`,
+        { token: operateurToken }
+      );
+      assert.equal(ouvert.moisOuvert, true);
+      assert.ok(
+        ouvert.echeances.length >= body.echeances.length,
+        'le 25 doit montrer au moins autant d’échéances que le 1er'
+      );
     });
 
     test('la recherche par entreprise sort les agents de cette entreprise', async () => {

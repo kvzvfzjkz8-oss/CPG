@@ -398,9 +398,19 @@ function bornesDuMois(asOf) {
  * client ou la référence du crédit : c'est ce qui permet de sortir
  * tous les agents d'une entreprise d'un coup.
  */
+/**
+ * Jour du mois à partir duquel les échéances pas encore échues du mois
+ * s'affichent. Avant cette date, l'opérateur ne voit que ce qui est
+ * réellement à traiter — une échéance du 27 qui apparaît dès le 5 noie
+ * le travail du jour. Demande de l'opératrice, 05/10/2026.
+ */
+const JOUR_OUVERTURE_DU_MOIS = 25;
+
 export async function fetchMonthInstallments({ recherche, asOf } = {}) {
   const { debut, finExclue } = bornesDuMois(asOf);
   const motif = recherche && recherche.trim().length >= 2 ? `%${recherche.trim()}%` : null;
+  const aujourdhui = asOf ?? new Date().toISOString().slice(0, 10);
+  const ouvert = Number(aujourdhui.slice(8, 10)) >= JOUR_OUVERTURE_DU_MOIS;
 
   const { rows } = await query(
     `SELECT i.id, i.sequence, i.amount, i.due_date, i.status, i.paid_at,
@@ -423,7 +433,13 @@ export async function fetchMonthInstallments({ recherche, asOf } = {}) {
      ) solde ON true
      WHERE c.status IN ('approuve', 'solde')
        AND (
-         (i.status IN ('a_venir', 'en_retard') AND i.due_date < $2::date)
+         -- Une échéance pas encore échue n'apparaît qu'à partir du 25
+         -- du mois ; celle qui est arrivée à terme ou en retard reste
+         -- visible en permanence, sinon le travail du jour
+         -- disparaîtrait de l'écran.
+         (i.status IN ('a_venir', 'en_retard')
+            AND i.due_date < $2::date
+            AND (i.due_date <= $4::date OR $5::boolean))
          -- Déjà réglée : on la montre si elle appartient au mois
          -- consulté OU si elle a été prélevée pendant ce mois. Les
          -- deux cas diffèrent dès que l'opérateur prélève d'avance :
@@ -441,11 +457,13 @@ export async function fetchMonthInstallments({ recherche, asOf } = {}) {
          OR u.client_number ILIKE $3 OR c.reference ILIKE $3
        )
      ORDER BY u.employer NULLS LAST, u.full_name, i.due_date`,
-    [debut, finExclue, motif]
+    [debut, finExclue, motif, aujourdhui, ouvert]
   );
 
   return {
     mois: debut.slice(0, 7),
+    jourOuverture: JOUR_OUVERTURE_DU_MOIS,
+    moisOuvert: ouvert,
     echeances: rows,
     totaux: {
       aPrelever: rows.filter((r) => r.prelevable).length,

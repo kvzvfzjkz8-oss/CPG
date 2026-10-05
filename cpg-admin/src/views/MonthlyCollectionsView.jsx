@@ -151,11 +151,22 @@ export default function MonthlyCollectionsView({ onChanged }) {
         <p style={{ margin: '0 0 4px', fontSize: 14, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
           Prélèvements {moisAvecPreposition(donnees?.mois)}
         </p>
-        <p style={{ margin: '0 0 14px', fontSize: 12, color: colors.muted, fontFamily: fonts.body }}>
-          Les échéances du mois, les retards des mois précédents, et ce qui a déjà été prélevé.
-          Cherchez une entreprise pour sortir tous ses agents, puis lancez les prélèvements —
-          individuellement ou d’un coup.
+        <p style={{ margin: '0 0 10px', fontSize: 12, color: colors.muted, fontFamily: fonts.body }}>
+          Les échéances arrivées à terme, les retards des mois précédents, et ce qui a déjà été
+          prélevé. Cherchez une entreprise pour sortir tous ses agents, puis lancez les
+          prélèvements — individuellement ou d’un coup.
         </p>
+        {donnees && !donnees.moisOuvert && (
+          <p style={{
+            margin: '0 0 14px', padding: '8px 12px', borderRadius: 9,
+            background: colors.goldPale, border: `1px solid ${colors.gold}`,
+            fontSize: 11, color: colors.goldDark, fontFamily: fonts.body,
+          }}>
+            Les échéances du mois pas encore arrivées à terme s’afficheront à partir du{' '}
+            {donnees.jourOuverture} du mois. Seul ce qui est réellement à prélever aujourd’hui
+            est listé ci-dessous.
+          </p>
+        )}
         <form onSubmit={lancerRecherche} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <div style={{ position: 'relative', flex: '1 1 320px' }}>
             <Search size={14} color={colors.muted} style={{ position: 'absolute', left: 11, top: 11 }} />
