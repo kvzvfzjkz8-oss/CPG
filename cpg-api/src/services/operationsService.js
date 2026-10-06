@@ -225,13 +225,17 @@ export async function creditAgentSalariesFromCsv({ csvText, employeur, periode, 
  * pareil — même contrôle de provision, même écriture au grand livre,
  * même passage du crédit en « soldé » à la dernière échéance.
  *
- * Renvoie { ok: true, … } si l'échéance a été réglée, sinon
- * { ok: false, … } avec le solde disponible. Une échéance dont la date
- * est passée et que le compte ne couvre pas bascule « en retard » ;
- * une échéance pas encore échue est simplement laissée en place, sans
- * mouvement — l'opérateur peut la prélever d'avance quand le salaire
- * est tombé, mais une provision insuffisante avant terme n'est pas un
- * retard.
+ * Le prélèvement peut mettre le compte au négatif, mais seulement
+ * pour un agent DONT LE SALAIRE EST TOMBÉ ce mois-ci et qui reste
+ * malgré tout en dessous du montant dû. Décision de la direction du
+ * 06/10/2026 : ce découvert-là est un signal — l'agent a été payé et
+ * ne couvre pas son échéance. À l'inverse, un compte vide parce que
+ * la paie de son entreprise n'est pas encore passée n'a rien de
+ * douteux : on ne le met pas à découvert, l'échéance reste en retard
+ * comme avant.
+ *
+ * Renvoie { ok: true, … }, avec `decouvert` à vrai quand l'opération
+ * a mis le compte au négatif.
  */
 async function collecterUneEcheance(client, echeance, actorId) {
   // FOR UPDATE sur le compte : si l'opérateur relance la collecte
@@ -247,21 +251,48 @@ async function collecterUneEcheance(client, echeance, actorId) {
     [echeance.user_id]
   );
 
-  if (!account[0] || account[0].balance < echeance.amount) {
-    const echue = new Date(echeance.due_date).toISOString().slice(0, 10)
-      <= new Date().toISOString().slice(0, 10);
-    if (echue && echeance.status !== 'en_retard') {
-      await client.query(`UPDATE installments SET status = 'en_retard' WHERE id = $1`, [echeance.id]);
-    }
+  if (!account[0]) {
     return {
       ok: false,
       id: echeance.id,
       reference: echeance.reference,
       sequence: echeance.sequence,
       amount: echeance.amount,
-      soldeDisponible: account[0]?.balance ?? 0,
-      motif: 'provision insuffisante',
+      soldeDisponible: 0,
+      motif: 'aucun compte rattaché à ce client',
     };
+  }
+
+  const soldeAvant = Number(account[0].balance);
+  const soldeApres = soldeAvant - Number(echeance.amount);
+
+  if (soldeApres < 0) {
+    // Le découvert n'est autorisé que si l'agent a bien été payé ce
+    // mois-ci : c'est ce qui distingue un mauvais payeur d'un agent
+    // dont l'entreprise n'a pas encore versé les salaires.
+    const { rows: paye } = await client.query(
+      `SELECT 1 FROM ledger_entries
+       WHERE account_id = $1 AND type = 'salaire'
+         AND created_at >= date_trunc('month', CURRENT_DATE)
+       LIMIT 1`,
+      [account[0].account_id]
+    );
+    if (!paye[0]) {
+      const echue = new Date(echeance.due_date).toISOString().slice(0, 10)
+        <= new Date().toISOString().slice(0, 10);
+      if (echue && echeance.status !== 'en_retard') {
+        await client.query(`UPDATE installments SET status = 'en_retard' WHERE id = $1`, [echeance.id]);
+      }
+      return {
+        ok: false,
+        id: echeance.id,
+        reference: echeance.reference,
+        sequence: echeance.sequence,
+        amount: echeance.amount,
+        soldeDisponible: soldeAvant,
+        motif: 'salaire du mois non encore versé',
+      };
+    }
   }
 
   const { rows: entry } = await client.query(
@@ -301,6 +332,9 @@ async function collecterUneEcheance(client, echeance, actorId) {
     sequence: echeance.sequence,
     amount: echeance.amount,
     creditSolde: soldeLeCredit,
+    soldeAvant,
+    soldeApres,
+    decouvert: soldeApres < 0,
   };
 }
 
@@ -336,6 +370,9 @@ export async function runInstallmentCollection({ asOf, actorId }) {
 
   const paid = [];
   const late = [];
+  // Prélèvements qui ont mis le compte au négatif : la direction veut
+  // les voir ressortir du lot, ce sont eux qui deviendront douteux.
+  const overdrafts = [];
 
   for (const installment of due) {
     await withTransaction(async (client) => {
@@ -343,11 +380,16 @@ export async function runInstallmentCollection({ asOf, actorId }) {
       if (issue.ok) {
         paid.push({
           reference: issue.reference, sequence: issue.sequence, amount: issue.amount,
+          decouvert: issue.decouvert, soldeApres: issue.soldeApres,
+        });
+        if (issue.decouvert) overdrafts.push({
+          reference: issue.reference, sequence: issue.sequence,
+          amount: issue.amount, soldeApres: issue.soldeApres,
         });
       } else {
         late.push({
           reference: issue.reference, sequence: issue.sequence,
-          amount: issue.amount, soldeDisponible: issue.soldeDisponible,
+          amount: issue.amount, soldeDisponible: issue.soldeDisponible, motif: issue.motif,
         });
       }
     });
@@ -357,6 +399,7 @@ export async function runInstallmentCollection({ asOf, actorId }) {
     checked: due.length,
     paid,
     late,
+    overdrafts,
     totalCollected: paid.reduce((sum, p) => sum + p.amount, 0),
   };
 }
@@ -532,7 +575,89 @@ export async function collectInstallments({ echeanceIds, actorId }) {
   return {
     preleves,
     echecs,
+    enDecouvert: preleves.filter((p) => p.decouvert),
     totalPreleve: preleves.reduce((t, p) => t + Number(p.amount), 0),
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   CLIENTS DOUTEUX — DÉCOUVERT INSTALLÉ
+   ═══════════════════════════════════════════════════════════════════
+
+   Depuis que le prélèvement encaisse même sans provision, un compte à
+   découvert est le signal que le client doit de l'argent. Mais être à
+   découvert le lendemain d'un prélèvement n'a rien d'inquiétant : le
+   salaire tombe, le compte se redresse. Ce qui alerte, c'est un
+   découvert qui dure.
+
+   Seuil retenu par la direction : 40 jours, soit plus d'un cycle de
+   paie complet. Un client encore négatif après ça n'a pas été
+   régularisé par sa paie — c'est celui-là qu'on veut voir en rouge.
+
+   La date d'entrée en découvert n'est stockée nulle part : on la
+   reconstitue depuis le journal, en cherchant la dernière fois où le
+   solde cumulé est repassé à zéro ou au-dessus. Ce qui suit est le
+   début du découvert en cours. */
+
+const JOURS_AVANT_DOUTEUX = 40;
+
+/**
+ * Clients dont le compte est négatif de façon continue depuis au moins
+ * `jours` jours. Rendus du plus ancien découvert au plus récent : le
+ * plus inquiétant en premier.
+ */
+export async function fetchClientsDouteux({ jours = JOURS_AVANT_DOUTEUX } = {}) {
+  const { rows } = await query(
+    `WITH cumul AS (
+       SELECT le.account_id,
+              le.created_at,
+              sum(le.amount) OVER (
+                PARTITION BY le.account_id ORDER BY le.created_at, le.id
+              ) AS solde_courant
+       FROM ledger_entries le
+     ),
+     -- Dernier instant où le compte était à zéro ou créditeur : le
+     -- découvert en cours commence juste après.
+     retour_a_flot AS (
+       SELECT account_id, max(created_at) AS le_dernier
+       FROM cumul WHERE solde_courant >= 0
+       GROUP BY account_id
+     ),
+     depuis AS (
+       SELECT c.account_id,
+              min(c.created_at) AS negatif_depuis
+       FROM cumul c
+       LEFT JOIN retour_a_flot r ON r.account_id = c.account_id
+       WHERE c.solde_courant < 0
+         AND (r.le_dernier IS NULL OR c.created_at > r.le_dernier)
+       GROUP BY c.account_id
+     )
+     SELECT u.id AS client_id, btrim(u.full_name) AS client, u.client_number,
+            u.employer, u.phone,
+            b.balance::bigint AS solde,
+            d.negatif_depuis,
+            (CURRENT_DATE - d.negatif_depuis::date) AS jours_de_decouvert,
+            (SELECT count(*)::int FROM credit_requests c
+              WHERE c.user_id = u.id AND c.status = 'approuve') AS credits_en_cours,
+            (SELECT COALESCE(sum(i.amount), 0)::bigint
+               FROM installments i
+               JOIN credit_requests c ON c.id = i.credit_id
+              WHERE c.user_id = u.id AND c.status = 'approuve' AND i.status <> 'payee') AS reste_du
+     FROM depuis d
+     JOIN accounts a ON a.id = d.account_id
+     JOIN account_balances b ON b.account_id = a.id
+     JOIN users u ON u.id = a.user_id
+     WHERE u.role = 'client' AND u.status = 'actif'
+       AND b.balance < 0
+       AND (CURRENT_DATE - d.negatif_depuis::date) >= $1
+     ORDER BY d.negatif_depuis`,
+    [jours]
+  );
+
+  return {
+    seuilJours: jours,
+    clients: rows,
+    totalDecouvert: rows.reduce((t, r) => t + Number(r.solde), 0),
   };
 }
 

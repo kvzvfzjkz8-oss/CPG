@@ -82,7 +82,8 @@ describe(
     // montant débloqué, net des frais de dossier et de la commission.
     let agentA;   // provisionné — prélèvement individuel
     let agentB;   // provisionné — prélèvement par entreprise
-    let agentC;   // à découvert
+    let agentC;   // à découvert, sans salaire versé
+    let agentD;   // à découvert, salaire versé mais insuffisant
     /**
      * Un crédit approuvé aujourd'hui a sa première échéance le mois
      * suivant : on interroge donc le mois de cette échéance, via le
@@ -102,6 +103,7 @@ describe(
       agentA = await clientAvecCredit('Agent Rails Alpha', 120000, 4);
       agentB = await clientAvecCredit('Agent Rails Beta', 120000, 4);
       agentC = await clientAvecCredit('Agent Rails Demuni', 100000, 1, 'EXPRESS');
+      agentD = await clientAvecCredit('Agent Rails Decouvert', 100000, 1, 'EXPRESS');
 
       const { body: echeancier } = await api(
         `/v1/admin/operations/echeances?reference=${agentA.reference}`,
@@ -222,7 +224,7 @@ describe(
       assert.match(r.echecs[0].motif, /déjà réglée/);
     });
 
-    test('une provision insuffisante est signalée sans débiter le compte', async () => {
+    test('sans salaire versé ce mois-ci, une provision insuffisante bloque le prélèvement', async () => {
       const operateurToken = await loginStaff('operateur');
       const { body } = await duMois(operateurToken);
       const cible = body.echeances.find((e) => e.client === agentC.nom && e.status !== 'payee');
@@ -231,10 +233,42 @@ describe(
       const { body: r } = await api('/v1/admin/operations/echeances/prelever', {
         method: 'POST', token: operateurToken, body: { echeanceIds: [cible.id] },
       });
-      assert.equal(r.preleves.length, 0);
+      assert.equal(r.preleves.length, 0, 'rien ne doit être prélevé');
       assert.equal(r.echecs.length, 1);
-      assert.match(r.echecs[0].motif, /provision/);
+      assert.match(r.echecs[0].motif, /salaire/, 'le motif doit pointer le salaire manquant');
       assert.equal(Number(r.totalPreleve), 0);
+    });
+
+    test('salaire versé mais insuffisant : le prélèvement passe et met le compte à découvert', async () => {
+      const operateurToken = await loginStaff('operateur');
+
+      // On verse à l'agent D un salaire volontairement trop faible pour
+      // couvrir son échéance : c'est exactement le cas que la direction
+      // veut voir basculer en découvert. L'agent C reste sans salaire,
+      // pour les tests suivants.
+      const { status: paie } = await api('/v1/admin/operations/salaires', {
+        method: 'POST', token: operateurToken,
+        body: {
+          employeur: EMPLOYEUR,
+          periode: new Date().toISOString().slice(0, 7),
+          lignes: [{ identifiant: agentD.numero, montant: 1000 }],
+        },
+      });
+      assert.equal(paie, 201);
+
+      const { body } = await duMois(operateurToken);
+      const cible = body.echeances.find((e) => e.client === agentD.nom && e.status !== 'payee');
+      assert.ok(cible, 'l’échéance doit toujours être listée');
+      assert.equal(cible.provision_suffisante, false, 'la provision reste insuffisante');
+
+      const { body: r } = await api('/v1/admin/operations/echeances/prelever', {
+        method: 'POST', token: operateurToken, body: { echeanceIds: [cible.id] },
+      });
+      assert.equal(r.echecs.length, 0, 'plus aucun refus une fois le salaire versé');
+      assert.equal(r.preleves.length, 1);
+      assert.equal(r.preleves[0].decouvert, true, 'le prélèvement doit être signalé comme à découvert');
+      assert.ok(r.preleves[0].soldeApres < 0, 'le compte doit finir au négatif');
+      assert.equal(r.enDecouvert.length, 1);
     });
 
     test('un lot mêlant une échéance prélevable et une autre qui ne l’est pas traite chacune pour ce qu’elle est', async () => {

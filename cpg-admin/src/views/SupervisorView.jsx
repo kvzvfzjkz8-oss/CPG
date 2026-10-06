@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   LayoutDashboard, ShieldCheck, Users, Wallet, UserCog, Bell, Package, CalendarClock, Check, X,
-  Gavel, KeyRound, History, Calculator, Inbox, Info, Trash2,
+  Gavel, KeyRound, History, Calculator, Inbox, Info, Trash2, AlertTriangle,
 } from 'lucide-react';
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -23,7 +23,7 @@ import {
   fetchComptesSoldes, zeroOutAccountBalances,
   simulateCredit, fetchProducts, creerDemandePourClient, searchClientPourDemande,
   fetchCreditApprouvePourClient, ouvrirContratCredit, ouvrirBrouillardCaisse, ouvrirJustificatifCaisse,
-  fetchCreditRequests, fetchClientDetail, supprimerClient,
+  fetchCreditRequests, fetchClientDetail, supprimerClient, fetchClientsDouteux,
   fetchRapportsSuppression, archiverRapportSuppression, restaurerRapportSuppression,
   fetchRapportsSuppressionCredit, archiverRapportSuppressionCredit, restaurerRapportSuppressionCredit,
 } from '../api/adminApi';
@@ -127,10 +127,14 @@ const tooltipStyle = {
 
 function Overview({ onOuvrirCredits }) {
   const [stats, setStats] = useState(null);
+  const [douteux, setDouteux] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetchStatistics().then(setStats).finally(() => setLoading(false));
+    // En tête de page, avant tout le reste : ce sont les dossiers qui
+    // demandent une action, pas des statistiques à contempler.
+    fetchClientsDouteux().then(setDouteux).catch(() => setDouteux(null));
   }, []);
 
   if (loading || !stats) {
@@ -152,6 +156,49 @@ function Overview({ onOuvrirCredits }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {douteux && douteux.clients.length > 0 && (
+        <Card style={{ padding: 0, overflow: 'hidden', border: `1.5px solid ${colors.danger}` }}>
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            gap: 12, padding: '12px 20px', background: colors.dangerPale,
+            borderBottom: `1px solid ${colors.danger}`,
+          }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, fontWeight: 700, color: colors.danger, fontFamily: fonts.body }}>
+              <AlertTriangle size={16} />
+              {douteux.clients.length} client{douteux.clients.length > 1 ? 's' : ''} douteux
+            </span>
+            <span style={{ fontSize: 12, color: colors.danger, fontFamily: fonts.body }}>
+              {formatFCFA(douteux.totalDecouvert)} F de découvert · négatifs depuis plus de {douteux.seuilJours} jours
+            </span>
+          </div>
+          {douteux.clients.map((c) => (
+            <div key={c.client_id} style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              gap: 16, padding: '11px 20px', borderBottom: `1px solid ${colors.line}`,
+            }}>
+              <div style={{ minWidth: 0 }}>
+                <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: colors.danger, fontFamily: fonts.body }}>
+                  {c.client}
+                </p>
+                <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+                  {c.client_number} · {c.employer ?? '—'}
+                  {c.credits_en_cours > 0 && ` · ${c.credits_en_cours} crédit${c.credits_en_cours > 1 ? 's' : ''} en cours`}
+                  {Number(c.reste_du) > 0 && ` · reste ${formatFCFA(c.reste_du)} F à rembourser`}
+                </p>
+              </div>
+              <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                <p style={{ margin: 0, fontSize: 14, fontWeight: 700, color: colors.danger, fontFamily: fonts.mono }}>
+                  {formatFCFA(c.solde)} F
+                </p>
+                <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.danger, fontFamily: fonts.body }}>
+                  depuis {c.jours_de_decouvert} jours
+                </p>
+              </div>
+            </div>
+          ))}
+        </Card>
+      )}
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
         {kpiCards.map((c) => (
           c.label === 'Crédits actifs' ? (

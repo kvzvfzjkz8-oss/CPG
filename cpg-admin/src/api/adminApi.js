@@ -578,6 +578,14 @@ export async function fetchMonthInstallments(recherche = '') {
   return apiRequest(`/v1/admin/operations/echeances/du-mois${q}`);
 }
 
+/**
+ * Clients dont le compte est négatif depuis au moins 40 jours — leur
+ * paie ne les a pas régularisés. À surveiller en priorité.
+ */
+export async function fetchClientsDouteux() {
+  return apiRequest('/v1/admin/operations/clients-douteux');
+}
+
 /** Prélève les échéances désignées — une ligne, ou toute une sélection. */
 export async function preleverEcheances(echeanceIds) {
   return apiRequest('/v1/admin/operations/echeances/prelever', {

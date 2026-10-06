@@ -14,7 +14,7 @@ import {
   fetchInstallmentsByCreditReference, proposeInstallmentAdjustment,
   fetchPendingInstallmentAdjustments, decideInstallmentAdjustment, fetchSchedulerStatus,
   fetchOverdueInstallments, fetchAccountBalances, zeroOutAccountBalances,
-  fetchMonthInstallments, collectInstallments,
+  fetchMonthInstallments, collectInstallments, fetchClientsDouteux,
 } from '../services/operationsService.js';
 import { runTenueCompteBatch } from '../services/feeService.js';
 
@@ -267,6 +267,25 @@ router.post(
       });
 
       res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * GET /admin/operations/clients-douteux — clients dont le compte est
+ * négatif sans interruption depuis au moins 40 jours, soit plus d'un
+ * cycle de paie. Leur paie ne les a pas régularisés : c'est le signal
+ * que la direction veut voir remonter en premier.
+ */
+router.get(
+  '/clients-douteux',
+  requirePermission('demandes.lire'),
+  validate(z.object({ jours: z.coerce.number().int().min(1).max(365).optional() }), 'query'),
+  async (req, res, next) => {
+    try {
+      res.json(await fetchClientsDouteux({ jours: req.query.jours }));
     } catch (error) {
       next(error);
     }

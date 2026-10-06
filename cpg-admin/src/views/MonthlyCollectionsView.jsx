@@ -42,14 +42,24 @@ function moisAvecPreposition(mois) {
   return /^[aeiouyàâéèêîôû]/i.test(libelle) ? `d’${libelle}` : `de ${libelle}`;
 }
 
-/** Ce qui empêche de prélever une ligne, en clair. Null si elle est prélevable. */
+/**
+ * Ce qui empêche de prélever une ligne, en clair. Null si elle est
+ * prélevable. Une provision insuffisante n'est plus un blocage : le
+ * prélèvement passe et met le compte à découvert, à condition que le
+ * salaire du mois soit tombé. C'est l'API qui tranche — ici on se
+ * contente d'avertir.
+ */
 function blocage(e) {
   if (e.status === 'payee') return 'Déjà prélevée';
   if (e.credit_status !== 'approuve') {
     return e.credit_status === 'suspendu' ? 'Crédit suspendu' : 'Crédit clôturé';
   }
-  if (!e.provision_suffisante) return 'Provision insuffisante';
   return null;
+}
+
+/** Prélever cette ligne mettrait le compte au négatif. */
+function metEnDecouvert(e) {
+  return e.status !== 'payee' && e.credit_status === 'approuve' && !e.provision_suffisante;
 }
 
 function Tuile({ libelle, valeur, couleur }) {
@@ -223,7 +233,7 @@ export default function MonthlyCollectionsView({ onChanged }) {
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
           <Tuile libelle="À prélever" valeur={String(t.aPrelever)} />
           <Tuile libelle="Montant à prélever" valeur={`${formatFCFA(t.montantAPrelever)} F`} />
-          <Tuile libelle="Sans provision" valeur={String(t.sansProvision)} couleur={t.sansProvision ? colors.danger : undefined} />
+          <Tuile libelle="Passeraient à découvert" valeur={String(t.sansProvision)} couleur={t.sansProvision ? '#9A3412' : undefined} />
           <Tuile libelle="En retard" valeur={String(t.enRetard)} couleur={t.enRetard ? colors.danger : undefined} />
           <Tuile libelle="Déjà prélevées" valeur={String(t.dejaPrelevees)} couleur={colors.forestLight} />
         </div>
@@ -250,6 +260,12 @@ export default function MonthlyCollectionsView({ onChanged }) {
             <p style={{ margin: '6px 0 0', fontSize: 11, color: colors.forestLight, fontFamily: fonts.body, fontWeight: 600 }}>
               {compteRendu.preleves.filter((p) => p.creditSolde).length} crédit(s) entièrement soldé(s) :{' '}
               {compteRendu.preleves.filter((p) => p.creditSolde).map((p) => p.reference).join(', ')}
+            </p>
+          )}
+          {compteRendu.enDecouvert && compteRendu.enDecouvert.length > 0 && (
+            <p style={{ margin: '6px 0 0', fontSize: 11, fontWeight: 600, color: '#9A3412', fontFamily: fonts.body }}>
+              {compteRendu.enDecouvert.length} compte{compteRendu.enDecouvert.length > 1 ? 's' : ''} mis à découvert :{' '}
+              {compteRendu.enDecouvert.map((p) => `${p.client} (${formatFCFA(p.soldeApres)} F)`).join(', ')}
             </p>
           )}
           {compteRendu.echecs.length > 0 && (
@@ -394,6 +410,11 @@ export default function MonthlyCollectionsView({ onChanged }) {
                       Solde du compte : {formatFCFA(e.solde)} F
                       {raison ? ` — ${raison}` : ''}
                     </p>
+                    {!raison && metEnDecouvert(e) && (
+                      <p style={{ margin: '2px 0 0', fontSize: 11, fontWeight: 600, color: '#9A3412', fontFamily: fonts.body }}>
+                        Prélèvement à découvert — le compte passerait à {formatFCFA(Number(e.solde) - Number(e.amount))} F
+                      </p>
+                    )}
                   </div>
                   <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.mono, whiteSpace: 'nowrap' }}>
                     {formatFCFA(e.amount)} F
