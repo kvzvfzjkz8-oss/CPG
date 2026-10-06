@@ -489,7 +489,16 @@ export async function fetchMonthInstallments({ recherche, asOf } = {}) {
          -- sans la première condition, une échéance encaissée en
          -- avance disparaissait de la liste de son propre mois et
          -- l'opérateur ne pouvait plus voir qu'il l'avait faite.
-         OR (i.status = 'payee' AND (
+         --
+         -- ledger_entry_id NOT NULL : seule une échéance dont l'argent
+         -- a réellement circulé a sa place dans une liste de
+         -- prélèvement. Celles réglées hors logiciel — reprises de
+         -- l'ancien fichier, soldées avant la mise en service — sont
+         -- marquées payées sans écriture au journal ; les afficher
+         -- faisait apparaître le même agent deux fois le même mois,
+         -- une ligne pour le prélèvement réel et une pour un règlement
+         -- qui n'a jamais touché la caisse.
+         OR (i.status = 'payee' AND i.ledger_entry_id IS NOT NULL AND (
               (i.due_date >= $1::date AND i.due_date < $2::date)
               OR (i.paid_at >= $1::date AND i.paid_at < $2::date)
             ))
