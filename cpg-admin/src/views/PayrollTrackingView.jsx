@@ -235,6 +235,9 @@ export default function PayrollTrackingView() {
         retire: agents.reduce((t, x) => t + x.retire, 0),
         preleve: agents.reduce((t, x) => t + x.preleve, 0),
         reste: agents.reduce((t, x) => t + Math.max(0, x.resteAPayer), 0),
+        // Les comptes a decouvert ne se compensent pas avec ceux qui ont
+        // encore de l'argent : la caisse doit les voir a part.
+        debiteurs: agents.reduce((t, x) => t + Math.min(0, x.resteAPayer), 0),
         servis: agents.filter((x) => x.soldeTout).length,
       }))
       .sort((a, b) => b.salaire - a.salaire);
@@ -352,6 +355,7 @@ export default function PayrollTrackingView() {
                       <th style={{ padding: '10px', fontWeight: 500 }}>Salaires versés</th>
                       <th style={{ padding: '10px', fontWeight: 500 }}>Argent sorti</th>
                       <th style={{ padding: '10px', fontWeight: 500 }}>Prélevé</th>
+                      <th style={{ padding: '10px', fontWeight: 500 }}>Soldes débiteurs</th>
                       <th style={{ padding: '10px 14px', fontWeight: 500 }}>Reste à payer</th>
                     </tr>
                   </thead>
@@ -377,6 +381,9 @@ export default function PayrollTrackingView() {
                         <td style={{ padding: '10px', fontFamily: fonts.mono, color: colors.muted }}>
                           {formatFCFA(g.preleve)}
                         </td>
+                        <td style={{ padding: '10px', fontFamily: fonts.mono, color: g.debiteurs < 0 ? colors.danger : colors.muted }}>
+                          {g.debiteurs < 0 ? formatFCFA(g.debiteurs) : '—'}
+                        </td>
                         <td style={{ padding: '10px 14px', fontFamily: fonts.mono, fontWeight: 600,
                           color: g.reste > 0 ? colors.danger : colors.muted }}>
                           {formatFCFA(g.reste)}
@@ -395,7 +402,10 @@ export default function PayrollTrackingView() {
                         {formatFCFA(t.retire)}
                       </td>
                       <td style={{ padding: '11px', fontFamily: fonts.mono, fontWeight: 600 }}>{formatFCFA(t.preleve)}</td>
-                      <td style={{ padding: '11px 14px', fontFamily: fonts.mono, fontWeight: 600, color: colors.danger }}>
+                      <td style={{ padding: '11px', fontFamily: fonts.mono, fontWeight: 600, color: colors.danger }}>
+                        {formatFCFA(groupes.reduce((x, g) => x + g.debiteurs, 0))}
+                      </td>
+                      <td style={{ padding: '11px 14px', fontFamily: fonts.mono, fontWeight: 600, color: colors.forestLight }}>
                         {formatFCFA(t.resteAPayer)}
                       </td>
                     </tr>
@@ -431,6 +441,7 @@ export default function PayrollTrackingView() {
                       <th style={{ padding: '8px 10px', fontWeight: 500 }}>Salaire</th>
                       <th style={{ padding: '8px 10px', fontWeight: 500 }}>Déjà retiré</th>
                       <th style={{ padding: '8px 10px', fontWeight: 500 }}>Prélevé</th>
+                      <th style={{ padding: '8px 10px', fontWeight: 500 }}>Solde</th>
                       <th style={{ padding: '8px 14px', fontWeight: 500 }}>Reste à payer</th>
                     </tr>
                   </thead>
@@ -456,10 +467,16 @@ export default function PayrollTrackingView() {
                           {a.preleve > 0 ? formatFCFA(a.preleve) : '—'}
                         </td>
                         <td style={{
-                          padding: '9px 14px', fontFamily: fonts.mono, fontWeight: 600,
-                          color: a.resteAPayer < 0 ? colors.danger : a.resteAPayer === 0 ? colors.muted : colors.forestLight,
+                          padding: '9px 10px', fontFamily: fonts.mono,
+                          color: a.resteAPayer < 0 ? colors.danger : colors.ink,
                         }}>
                           {formatFCFA(a.resteAPayer)}
+                        </td>
+                        <td style={{
+                          padding: '9px 14px', fontFamily: fonts.mono, fontWeight: 600,
+                          color: a.resteAPayer > 0 ? colors.forestLight : colors.muted,
+                        }}>
+                          {a.resteAPayer > 0 ? formatFCFA(a.resteAPayer) : a.resteAPayer < 0 ? 'à découvert' : 'servi'}
                         </td>
                       </tr>
                     ))}
