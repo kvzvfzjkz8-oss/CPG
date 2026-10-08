@@ -783,6 +783,24 @@ export async function searchClientPourDemande(q) {
 }
 
 /** Solde courant de la caisse de l'agent connecté, et bilan du jour. */
+/**
+ * Suivi de la paie du mois : qui a été payé, ce qu'il a déjà retiré,
+ * et ce que la caisse lui doit encore. `mois` au format AAAA-MM.
+ */
+export async function fetchSuiviPaie({ mois, recherche } = {}) {
+  const params = new URLSearchParams();
+  if (mois) params.set('mois', mois);
+  if (recherche && recherche.trim().length >= 2) params.set('recherche', recherche.trim());
+  const q = params.toString();
+  return apiRequest(`/v1/caisse/suivi-paie${q ? `?${q}` : ''}`);
+}
+
+/** Detail date d'un agent sur le mois : salaire, prelevements, retraits. */
+export async function fetchSuiviPaieClient(clientId, mois) {
+  const q = mois ? `?mois=${encodeURIComponent(mois)}` : '';
+  return apiRequest(`/v1/caisse/suivi-paie/${clientId}${q}`);
+}
+
 export async function fetchMaCaisse() {
   return apiRequest('/v1/caisse/ma-caisse');
 }

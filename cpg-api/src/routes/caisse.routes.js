@@ -1031,4 +1031,186 @@ router.post(
   }
 );
 
+/**
+ * ═══════════════════════════════════════════════════════════════════
+ *  SUIVI DE LA PAIE — qui a été payé, et que leur doit-on encore
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * GET /caisse/suivi-paie?mois=AAAA-MM&recherche=...
+ *
+ * La question posée au guichet et à la direction pendant une paie :
+ * l'agent a reçu tant, il a déjà retiré tant, la caisse lui doit
+ * encore tant. On ne liste donc que les agents effectivement payés
+ * sur le mois demandé — un compte sans salaire n'a rien à voir avec
+ * le décaissement en cours.
+ *
+ * « Reste à payer » est le solde du compte, pas un calcul maison :
+ * c'est exactement ce que l'agent peut venir réclamer. Les échéances
+ * de crédit et les frais déjà prélevés en sont donc déduits, ce qui
+ * évite d'annoncer au guichet une somme qui n'est plus disponible.
+ *
+ * Les écritures extournées sont ignorées partout : un prélèvement
+ * annulé n'a jamais eu lieu du point de vue de l'agent.
+ */
+const suiviPaieSchema = z.object({
+  mois: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+  recherche: z.string().max(100).optional(),
+});
+
+router.get(
+  '/suivi-paie',
+  requirePermission('caisse.suivi_paie'),
+  validate(suiviPaieSchema, 'query'),
+  async (req, res, next) => {
+    try {
+      const mois = req.query.mois ?? new Date().toISOString().slice(0, 7);
+      const debut = `${mois}-01`;
+      const motif = req.query.recherche && req.query.recherche.trim().length >= 2
+        ? `%${req.query.recherche.trim()}%`
+        : null;
+
+      const { rows } = await query(
+        `WITH vivantes AS (
+           SELECT le.*
+           FROM ledger_entries le
+           WHERE le.created_at >= $1::date
+             AND le.created_at < ($1::date + interval '1 month')
+             AND NOT EXISTS (
+               SELECT 1 FROM ledger_entries r WHERE r.reversed_entry_id = le.id
+             )
+         )
+         SELECT u.id AS client_id, btrim(u.full_name) AS nom, u.client_number,
+                u.employer, u.phone,
+                COALESCE(b.balance, 0)::bigint AS reste_a_payer,
+                COALESCE((SELECT sum(v.amount) FROM vivantes v
+                          WHERE v.account_id = a.id AND v.type = 'salaire'), 0)::bigint AS salaire,
+                COALESCE((SELECT sum(-v.amount) FROM vivantes v
+                          WHERE v.account_id = a.id AND v.type = 'retrait'), 0)::bigint AS retire,
+                COALESCE((SELECT sum(-v.amount) FROM vivantes v
+                          WHERE v.account_id = a.id AND v.type = 'paiement_credit'), 0)::bigint AS preleve,
+                COALESCE((SELECT sum(-v.amount) FROM vivantes v
+                          WHERE v.account_id = a.id AND v.type = 'frais'), 0)::bigint AS frais
+         FROM users u
+         JOIN accounts a ON a.user_id = u.id
+         LEFT JOIN account_balances b ON b.account_id = a.id
+         WHERE u.role = 'client'
+           AND EXISTS (SELECT 1 FROM vivantes v WHERE v.account_id = a.id AND v.type = 'salaire')
+           AND ($2::text IS NULL
+                OR u.full_name ILIKE $2 OR u.employer ILIKE $2 OR u.client_number ILIKE $2)
+         ORDER BY u.employer NULLS LAST, u.full_name`,
+        [debut, motif]
+      );
+
+      const nombre = (v) => Number(v ?? 0);
+      const agents = rows.map((r) => ({
+        ...r,
+        salaire: nombre(r.salaire),
+        retire: nombre(r.retire),
+        preleve: nombre(r.preleve),
+        frais: nombre(r.frais),
+        resteAPayer: nombre(r.reste_a_payer),
+        soldeTout: nombre(r.reste_a_payer) <= 0,
+      }));
+
+      const cumul = (champ) => agents.reduce((t, x) => t + x[champ], 0);
+      const parEmployeur = [...agents.reduce((m, x) => {
+        const cle = x.employer ?? '—';
+        const e = m.get(cle) ?? { employeur: cle, agents: 0, salaire: 0, retire: 0, preleve: 0, resteAPayer: 0 };
+        e.agents += 1;
+        e.salaire += x.salaire;
+        e.retire += x.retire;
+        e.preleve += x.preleve;
+        e.resteAPayer += Math.max(0, x.resteAPayer);
+        m.set(cle, e);
+        return m;
+      }, new Map()).values()].sort((a, b) => b.salaire - a.salaire);
+
+      res.json({
+        mois,
+        agents,
+        parEmployeur,
+        totaux: {
+          agents: agents.length,
+          salaire: cumul('salaire'),
+          retire: cumul('retire'),
+          preleve: cumul('preleve'),
+          frais: cumul('frais'),
+          // Un compte à découvert ne se « rembourse » pas : il ne doit
+          // pas venir gonfler ce que la caisse a encore à décaisser.
+          resteAPayer: agents.reduce((t, x) => t + Math.max(0, x.resteAPayer), 0),
+          soldesTout: agents.filter((x) => x.soldeTout).length,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * GET /caisse/suivi-paie/:clientId?mois=AAAA-MM
+ *
+ * Le detail date d'un agent sur le mois : quand son salaire est tombe,
+ * quand on l'a preleve, quand il est passe au guichet. C'est la reponse
+ * a la question posee de vive voix — « il a touche quoi, et quand ? » —
+ * sans avoir a ouvrir le grand livre complet du client.
+ *
+ * Les ecritures extournees sont marquees comme telles plutot que
+ * masquees : au guichet, savoir qu'un prelevement a eu lieu PUIS ete
+ * annule vaut mieux que de ne rien voir du tout.
+ */
+router.get(
+  '/suivi-paie/:clientId',
+  requirePermission('caisse.suivi_paie'),
+  validate(z.object({ clientId: z.string().uuid() }), 'params'),
+  validate(z.object({ mois: z.string().regex(/^\d{4}-\d{2}$/).optional() }), 'query'),
+  async (req, res, next) => {
+    try {
+      const mois = req.query.mois ?? new Date().toISOString().slice(0, 7);
+      const debut = `${mois}-01`;
+
+      const { rows: client } = await query(
+        `SELECT u.id, btrim(u.full_name) AS nom, u.client_number, u.employer, u.phone,
+                COALESCE(b.balance, 0)::bigint AS solde, a.id AS account_id
+         FROM users u
+         JOIN accounts a ON a.user_id = u.id
+         LEFT JOIN account_balances b ON b.account_id = a.id
+         WHERE u.id = $1 AND u.role = 'client'`,
+        [req.params.clientId]
+      );
+      if (!client[0]) throw new ApiError(404, 'Client introuvable.');
+
+      const { rows: mouvements } = await query(
+        `SELECT le.id, le.type::text AS type, le.amount::bigint AS montant, le.label, le.reference,
+                le.created_at,
+                EXISTS (SELECT 1 FROM ledger_entries r WHERE r.reversed_entry_id = le.id) AS extournee,
+                le.reversed_entry_id IS NOT NULL AS est_une_annulation
+         FROM ledger_entries le
+         WHERE le.account_id = $1
+           AND le.created_at >= $2::date
+           AND le.created_at < ($2::date + interval '1 month')
+         ORDER BY le.created_at`,
+        [client[0].account_id, debut]
+      );
+
+      const { rows: credits } = await query(
+        `SELECT c.reference, c.status::text AS statut, c.amount::bigint AS montant,
+                c.monthly_payment::bigint AS mensualite,
+                (SELECT count(*)::int FROM installments i
+                  WHERE i.credit_id = c.id AND i.status <> 'payee') AS echeances_restantes,
+                (SELECT min(i.due_date) FROM installments i
+                  WHERE i.credit_id = c.id AND i.status <> 'payee') AS prochaine_echeance
+         FROM credit_requests c
+         WHERE c.user_id = $1 AND c.status IN ('approuve', 'solde', 'suspendu')
+         ORDER BY c.created_at`,
+        [req.params.clientId]
+      );
+
+      res.json({ mois, client: client[0], mouvements, credits });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
 export default router;

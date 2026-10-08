@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   Search, Printer, Wallet, TrendingDown, TrendingUp, Clock, ArrowDownCircle,
-  ArrowUpCircle, ShoppingBag, Banknote, Lock, CheckCircle2,
+  ArrowUpCircle, ShoppingBag, Banknote, Lock, CheckCircle2, HandCoins,
 } from 'lucide-react';
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, SectionTitle } from '../components/UI';
@@ -13,6 +13,7 @@ import {
 } from '../api/adminApi';
 import { CreditsEnCoursPanel } from '../components/ClientsCredits';
 import { CoffresPanel } from '../components/Coffres';
+import PayrollTrackingView from './PayrollTrackingView';
 
 const actionBtn = (bg, fg) => ({
   padding: '10px 18px',
@@ -49,6 +50,9 @@ export default function CaissierView() {
   const [loading, setLoading] = useState(true);
   const [activeOp, setActiveOp] = useState(null); // 'retrait_client' | 'encaissement_client' | 'depense' | 'appro' | null
   const [toast, setToast] = useState('');
+  // Le suivi de la paie interroge toute la base des salaires du mois :
+  // on ne le charge qu'a la demande, pas a chaque ouverture du guichet.
+  const [suiviPaieOuvert, setSuiviPaieOuvert] = useState(false);
   const [reminderPulse, setReminderPulse] = useState(0); // change de valeur = redéclenche l'animation
 
   const flash = (text) => {
@@ -284,6 +288,35 @@ export default function CaissierView() {
           </div>
         ))}
       </Card>
+
+      <div style={{ marginTop: 16 }}>
+        <Card>
+          <button
+            type="button"
+            onClick={() => setSuiviPaieOuvert((v) => !v)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 9, width: '100%', padding: 0,
+              border: 'none', background: 'none', cursor: 'pointer', textAlign: 'left',
+            }}
+          >
+            <HandCoins size={17} color={colors.forestLight} />
+            <span style={{ fontFamily: fonts.display, fontSize: 14, color: colors.forest, fontWeight: 600 }}>
+              Suivi de la paie
+            </span>
+            <span style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+              qui a été payé, ce qu'il a retiré, ce qu'on lui doit encore
+            </span>
+            <span style={{ marginLeft: 'auto', fontSize: 12, color: colors.forestLight, fontFamily: fonts.body }}>
+              {suiviPaieOuvert ? 'Masquer' : 'Afficher'}
+            </span>
+          </button>
+        </Card>
+        {suiviPaieOuvert && (
+          <div style={{ marginTop: 12 }}>
+            <PayrollTrackingView />
+          </div>
+        )}
+      </div>
 
       <div style={{ marginTop: 16 }}>
         <CreditsEnCoursPanel />

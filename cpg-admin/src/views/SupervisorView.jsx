@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   LayoutDashboard, ShieldCheck, Users, Wallet, UserCog, Bell, Package, CalendarClock, Check, X,
-  Gavel, KeyRound, History, Calculator, Inbox, Info, Trash2, AlertTriangle,
+  Gavel, KeyRound, History, Calculator, Inbox, Info, Trash2, AlertTriangle, HandCoins,
 } from 'lucide-react';
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -31,6 +31,7 @@ import { can } from '../auth/roles';
 import CatalogView from './CatalogView';
 import CommissionView from './CommissionView';
 import CommissionHistoryView from './CommissionHistoryView';
+import PayrollTrackingView from './PayrollTrackingView';
 
 export default function SupervisorView({ role }) {
   const [tab, setTab] = useState('vue');
@@ -74,6 +75,9 @@ export default function SupervisorView({ role }) {
   if (can(role, 'caisse.valider')) {
     tabs.push({ key: 'caisse', label: 'Validations caisse', icon: Wallet });
   }
+  if (can(role, 'caisse.suivi_paie')) {
+    tabs.push({ key: 'suivi-paie', label: 'Suivi de la paie', icon: HandCoins });
+  }
   if (can(role, 'coffres.lire')) {
     tabs.push({ key: 'coffres', label: 'Coffres', icon: Package });
   }
@@ -106,6 +110,7 @@ export default function SupervisorView({ role }) {
       {tab === 'suppressions-commission' && <PendingCommissionItemDeletions />}
       {tab === 'exceptions' && <ExceptionAuthorizations />}
       {tab === 'caisse' && <CaisseValidation />}
+      {tab === 'suivi-paie' && <PayrollTrackingView />}
       {tab === 'coffres' && <CoffresPanel role={role} />}
       {tab === 'audit' && <AuditLog />}
       {tab === 'rapports-suppression' && (

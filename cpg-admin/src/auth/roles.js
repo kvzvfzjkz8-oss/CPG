@@ -121,6 +121,10 @@ export const PERMISSIONS = {
     // Lecture du relevé de contrôle mensuel, pour la supervision — le
     // déclenchement au jour le jour reste au poste de l'opérateur.
     'operations.lire',
+
+    // Suivi de la paie en lecture : répondre aux agents qui appellent
+    // pour savoir où en est leur salaire, sans déranger le guichet.
+    'caisse.suivi_paie',
   ],
   // Le directeur ajoute l'autorité de barème : activer un produit,
   // fixer un taux hors marge, trancher les propositions du gestionnaire,
@@ -191,6 +195,7 @@ export const PERMISSIONS = {
     'caisse.valider',
     'caisse.consulter_toutes_caisses',
     'caisse.gerer_principale',
+    'caisse.suivi_paie',
   ],
 
   // La caissière sert les retraits au guichet, dans la limite de son
@@ -203,6 +208,7 @@ export const PERMISSIONS = {
     'caisse.demander_appro',
     'caisse.consulter_sa_caisse',
     'caisse.imprimer_rib',
+    'caisse.suivi_paie',
     'demandes.lire',
     'coffres.lire',
   ],
