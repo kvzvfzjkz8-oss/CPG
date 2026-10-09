@@ -16,6 +16,17 @@ const moisFr = [
   'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre',
 ];
 
+/**
+ * Le tableau a une largeur fixe : un nom trop long passait a la ligne
+ * et decalait toute la ligne, montant et solde compris. On coupe donc
+ * nous-memes, en gardant le debut du nom qui suffit a identifier
+ * l'agent.
+ */
+function tronquer(texte, max) {
+  const t = String(texte ?? '').trim();
+  return t.length <= max ? t : `${t.slice(0, max - 1)}…`;
+}
+
 function formatDateFr(d) {
   const date = new Date(d);
   return `${date.getDate()} ${moisFr[date.getMonth()]} ${date.getFullYear()}`;
@@ -54,26 +65,36 @@ export function genererBrouillardPDF({ caissiere, date, soldeOuverture, operatio
   doc.moveDown(1.2);
 
   let solde = soldeOuverture;
-  const lignes = [['—', 'Solde d\'ouverture', '', formatFCFA(solde)]];
+  const lignes = [['—', 'Solde d\'ouverture', '', '', '', formatFCFA(solde)]];
   operations.forEach((op) => {
     const signe = ENTREE.has(op.type) ? 1 : -1;
     solde += signe * op.montant;
     const heure = new Date(op.decidee_le ?? op.demandee_le).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    // Une depense ou un reapprovisionnement n'a pas de client : plutot
+    // qu'une case vide, on y met le motif, qui dit a quoi l'argent a
+    // servi. Sinon le brouillard laisse des sorties inexpliquees.
+    const tiers = op.client
+      ? tronquer(op.client, 26)
+      : tronquer(op.motif ?? '—', 26);
     lignes.push([
       heure,
-      LABELS[op.type] ?? op.type,
-      `${signe > 0 ? '+' : '-'}${formatFCFA(op.montant)} F`,
-      `${formatFCFA(solde)} F`,
+      tronquer(LABELS[op.type] ?? op.type, 20),
+      tiers,
+      op.client_number ?? '',
+      `${signe > 0 ? '+' : '-'}${formatFCFA(op.montant)}`,
+      formatFCFA(solde),
     ]);
   });
   const soldeCloture = solde;
 
   const tableTop = doc.y;
   const cols = [
-    { label: 'Heure', x: 50, w: 60 },
-    { label: 'Opération', x: 110, w: 230 },
-    { label: 'Montant', x: 340, w: 100 },
-    { label: 'Solde', x: 440, w: 105 },
+    { label: 'Heure', x: 50, w: 42 },
+    { label: 'Opération', x: 92, w: 118 },
+    { label: 'Client', x: 210, w: 128 },
+    { label: 'N° compte', x: 338, w: 68 },
+    { label: 'Montant', x: 406, w: 76 },
+    { label: 'Solde', x: 482, w: 63 },
   ];
   doc.rect(50, tableTop, 495, 20).fill(FOREST);
   cols.forEach((c) => {
@@ -81,17 +102,31 @@ export function genererBrouillardPDF({ caissiere, date, soldeOuverture, operatio
   });
 
   let y = tableTop + 20;
-  lignes.forEach(([heure, label, montant, soldeLigne], i) => {
+  lignes.forEach(([heure, label, tiers, numero, montant, soldeLigne], i) => {
     const bg = i % 2 === 0 ? '#F7F9F6' : '#FFFFFF';
     doc.rect(50, y, 495, 18).fill(bg);
-    doc.fillColor(INK).fontSize(9).font(i === 0 ? 'Helvetica-Bold' : 'Helvetica');
-    doc.text(heure, cols[0].x + 4, y + 4, { width: cols[0].w - 8 });
-    doc.text(label, cols[1].x + 4, y + 4, { width: cols[1].w - 8 });
-    doc.fillColor(montant.startsWith('-') ? DANGER : FOREST)
-      .text(montant, cols[2].x + 4, y + 4, { width: cols[2].w - 8 });
-    doc.fillColor(INK).text(soldeLigne, cols[3].x + 4, y + 4, { width: cols[3].w - 8 });
+    doc.fillColor(INK).fontSize(8.5).font(i === 0 ? 'Helvetica-Bold' : 'Helvetica');
+    doc.text(heure, cols[0].x + 4, y + 5, { width: cols[0].w - 8 });
+    doc.text(label, cols[1].x + 4, y + 5, { width: cols[1].w - 8, ellipsis: true, lineBreak: false });
+    doc.text(tiers, cols[2].x + 4, y + 5, { width: cols[2].w - 8, ellipsis: true, lineBreak: false });
+    doc.fillColor(MUTED).fontSize(7.5)
+      .text(numero, cols[3].x + 4, y + 5.5, { width: cols[3].w - 8, lineBreak: false });
+    doc.fontSize(8.5).fillColor(montant.startsWith('-') ? DANGER : FOREST)
+      .text(montant, cols[4].x + 4, y + 5, { width: cols[4].w - 8, lineBreak: false });
+    doc.fillColor(INK).text(soldeLigne, cols[5].x + 4, y + 5, { width: cols[5].w - 8, lineBreak: false });
     y += 18;
-    if (y > 720 && i < lignes.length - 1) { doc.addPage(); y = 50; }
+    // Nouvelle page : on redessine l'en-tete, sinon les colonnes du bas
+    // n'ont plus de titre et le document devient illisible.
+    if (y > 720 && i < lignes.length - 1) {
+      doc.addPage();
+      y = 50;
+      doc.rect(50, y, 495, 20).fill(FOREST);
+      cols.forEach((c) => {
+        doc.fillColor('#fff').fontSize(9).font('Helvetica-Bold')
+          .text(c.label, c.x + 4, y + 6, { width: c.w - 8 });
+      });
+      y += 20;
+    }
   });
   doc.strokeColor(LINE).lineWidth(0.5).rect(50, tableTop, 495, y - tableTop).stroke();
 

@@ -902,10 +902,15 @@ router.get(
       const soldeOuverture = Number(ouvertureRows[0]?.solde ?? 0);
 
       const { rows: operations } = await query(
-        `SELECT type, montant, demandee_le, decidee_le
-         FROM caisse_operations
-         WHERE caissier_id = $1 AND statut = 'validee' AND demandee_le::date = $2::date
-         ORDER BY demandee_le`,
+        // Le nom du client est repris sur chaque ligne : sans lui, le
+        // brouillard aligne des montants sans dire a qui l'argent a ete
+        // remis, et le directeur ne peut rien verifier.
+        `SELECT o.type, o.montant, o.demandee_le, o.decidee_le, o.motif,
+                btrim(c.full_name) AS client, c.client_number
+         FROM caisse_operations o
+         LEFT JOIN users c ON c.id = o.client_id
+         WHERE o.caissier_id = $1 AND o.statut = 'validee' AND o.demandee_le::date = $2::date
+         ORDER BY o.demandee_le`,
         [caissierId, date]
       );
 
