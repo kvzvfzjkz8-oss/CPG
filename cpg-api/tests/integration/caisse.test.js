@@ -364,7 +364,11 @@ describe(
       assert.ok(valide.momo_transaction_id);
     });
 
-    test('la caisse de la caissière diminue même pour un paiement Mobile Money', async () => {
+    // L'argent d'un paiement Mobile Money part du telephone de la
+    // caissiere, pas de son tiroir. Le decompter des especes faisait
+    // afficher des caisses faussement a sec — au 09/10/2026, 1 233 374 F
+    // d'ecart sur une seule caisse.
+    test('un paiement Mobile Money ne touche pas aux espèces de la caissière', async () => {
       await api('/v1/caisse/encaissements', {
         method: 'POST', token: caissierToken, body: { clientId, montant: 60000 },
       });
@@ -377,7 +381,45 @@ describe(
       await api(`/v1/caisse/operations/${retrait.id}/valider`, { method: 'POST', token: directeurToken });
 
       const { body: apres } = await api('/v1/caisse/ma-caisse', { token: caissierToken });
-      assert.equal(apres.solde, avant.solde - 15000);
+      assert.equal(apres.solde, avant.solde, 'les espèces ne doivent pas bouger');
+    });
+
+    // Le pendant du precedent : la caisse ne peut pas verser des
+    // especes qu'elle n'a pas. Avant ce controle, seul le solde du
+    // CLIENT etait verifie, et une caissiere a pu decaisser plus que
+    // son stock.
+    test('un retrait en espèces au-delà du stock de la caisse est refusé', async () => {
+      // Le client doit avoir de quoi retirer SANS que la caisse ait de
+      // quoi le servir. Un encaissement alimente les deux a la fois :
+      // on provisionne donc le client, puis on vide la caisse par une
+      // depense avant de tenter le retrait.
+      await api('/v1/caisse/encaissements', {
+        method: 'POST', token: caissierToken, body: { clientId, montant: 120000 },
+      });
+      const { body: avant } = await api('/v1/caisse/ma-caisse', { token: caissierToken });
+
+      const { body: depense } = await api('/v1/caisse/depenses', {
+        method: 'POST', token: caissierToken,
+        body: { montant: Number(avant.solde), motif: 'Vidage de caisse pour le test' },
+      });
+      await api(`/v1/caisse/operations/${depense.id}/valider`, { method: 'POST', token: directeurToken });
+
+      const { body: vide } = await api('/v1/caisse/ma-caisse', { token: caissierToken });
+      assert.equal(Number(vide.solde), 0, 'la caisse doit être vide avant le test');
+
+      const { body: retrait } = await api('/v1/caisse/retraits', {
+        method: 'POST', token: caissierToken, body: { clientId, montant: 120000 },
+      });
+      const refus = await api(`/v1/caisse/operations/${retrait.id}/valider`, {
+        method: 'POST', token: directeurToken,
+      });
+      assert.equal(refus.status, 422);
+      assert.match(refus.body.error, /caisse/i);
+
+      // La demande reste en attente : au directeur de la rejeter ou de
+      // reapprovisionner, jamais au logiciel de trancher a sa place.
+      const { body: apres } = await api('/v1/caisse/ma-caisse', { token: caissierToken });
+      assert.ok(Number(apres.solde) >= 0, 'la caisse ne doit jamais passer sous zéro');
     });
   }
 );

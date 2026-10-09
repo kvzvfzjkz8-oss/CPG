@@ -43,6 +43,15 @@ const LABELS = {
 const ENTREE = new Set(['encaissement_client', 'appro']);
 
 /**
+ * Un paiement Mobile Money sort bien de la main de la caissiere, mais
+ * pas de son tiroir : il figure donc au brouillard, a sa place dans la
+ * chronologie, sans faire bouger le solde d'especes. Son total est
+ * repris a part en bas de page — la caissiere voit ainsi TOUT ce qui
+ * est sorti d'elle ce jour-la, sans confondre les deux caisses.
+ */
+const sortMobileMoney = (op) => op.mode_paiement && op.mode_paiement !== 'especes';
+
+/**
  * Brouillard de caisse — relevé quotidien d'une caissière : solde
  * d'ouverture, chaque opération validée de la journée avec le solde
  * courant après chacune, solde de clôture. Un seul document par
@@ -66,9 +75,11 @@ export function genererBrouillardPDF({ caissiere, date, soldeOuverture, operatio
 
   let solde = soldeOuverture;
   const lignes = [['—', 'Solde d\'ouverture', '', '', '', formatFCFA(solde)]];
+  let totalMobileMoney = 0;
   operations.forEach((op) => {
     const signe = ENTREE.has(op.type) ? 1 : -1;
-    solde += signe * op.montant;
+    if (sortMobileMoney(op)) totalMobileMoney += op.montant;
+    else solde += signe * op.montant;
     const heure = new Date(op.decidee_le ?? op.demandee_le).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
     // Une depense ou un reapprovisionnement n'a pas de client : plutot
     // qu'une case vide, on y met le motif, qui dit a quoi l'argent a
@@ -82,7 +93,7 @@ export function genererBrouillardPDF({ caissiere, date, soldeOuverture, operatio
       tiers,
       op.client_number ?? '',
       `${signe > 0 ? '+' : '-'}${formatFCFA(op.montant)}`,
-      formatFCFA(solde),
+      sortMobileMoney(op) ? `(${op.mode_paiement})` : formatFCFA(solde),
     ]);
   });
   const soldeCloture = solde;
@@ -135,6 +146,12 @@ export function genererBrouillardPDF({ caissiere, date, soldeOuverture, operatio
     .text(`Solde de clôture : ${formatFCFA(soldeCloture)} F`, 50, y);
   doc.fillColor(MUTED).fontSize(9).font('Helvetica')
     .text(`${operations.length} opération(s) validée(s) sur la journée.`, 50, y + 18);
+  if (totalMobileMoney > 0) {
+    doc.fillColor(INK).fontSize(9).font('Helvetica-Bold')
+      .text(`Dont ${formatFCFA(totalMobileMoney)} F payés par Mobile Money`, 50, y + 32, { continued: true })
+      .font('Helvetica').fillColor(MUTED)
+      .text(" — sortis du téléphone, pas de la caisse : le solde ci-dessus n'en tient pas compte.");
+  }
 
   y += 70;
   doc.fillColor(INK).fontSize(10).font('Helvetica-Bold').text('Caissière', 80, y).text('Vérifié par (Directeur)', 350, y);

@@ -141,7 +141,7 @@ export default function CaissierView() {
       {/* Solde bien visible en tête de page, comme demandé. */}
       <Card style={{ padding: 22, background: colors.forest }}>
         <p style={{ margin: 0, fontSize: 11, color: colors.onForest ?? '#B7CFC2', fontFamily: fonts.body }}>
-          Solde de ma caisse
+          Solde de ma caisse — espèces
         </p>
         <p style={{ margin: '6px 0 0', fontSize: 32, fontWeight: 700, color: '#fff', fontFamily: fonts.mono }}>
           {loading ? '—' : `${formatFCFA(info.solde)} F`}
@@ -152,6 +152,17 @@ export default function CaissierView() {
               <p style={{ margin: 0, fontSize: 10, color: '#B7CFC2', fontFamily: fonts.body }}>Payé aujourd'hui</p>
               <p style={{ margin: '2px 0 0', fontSize: 14, fontWeight: 600, color: '#fff', fontFamily: fonts.mono }}>
                 {formatFCFA(info.bilanJour.retraits + info.bilanJour.depenses)} F
+              </p>
+            </div>
+            {/* Le Mobile Money sort du téléphone, pas du tiroir : il ne
+                compte pas dans le solde d'espèces, mais la caissière doit
+                voir tout ce qui est sorti de sa main dans la journée. */}
+            <div>
+              <p style={{ margin: 0, fontSize: 10, color: '#B7CFC2', fontFamily: fonts.body }}>
+                dont Mobile Money
+              </p>
+              <p style={{ margin: '2px 0 0', fontSize: 14, fontWeight: 600, color: colors.gold, fontFamily: fonts.mono }}>
+                {formatFCFA(info.bilanJour.mobile_money ?? 0)} F
               </p>
             </div>
             <div>

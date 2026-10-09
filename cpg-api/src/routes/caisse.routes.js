@@ -279,7 +279,7 @@ router.get(
   async (req, res, next) => {
     try {
       const { rows: solde } = await query(
-        'SELECT solde FROM caisse_soldes WHERE caissier_id = $1',
+        'SELECT solde, sorties_mobile_money FROM caisse_soldes WHERE caissier_id = $1',
         [req.user.id]
       );
 
@@ -288,6 +288,11 @@ router.get(
            COALESCE(SUM(CASE WHEN type = 'retrait_client' THEN montant ELSE 0 END), 0)::BIGINT AS retraits,
            COALESCE(SUM(CASE WHEN type = 'depense' THEN montant ELSE 0 END), 0)::BIGINT AS depenses,
            COALESCE(SUM(CASE WHEN type = 'encaissement_client' THEN montant ELSE 0 END), 0)::BIGINT AS encaissements,
+           -- Les sorties Mobile Money du jour, a part : elles ne vident
+           -- pas le tiroir, mais la caissiere doit les voir pour savoir
+           -- tout ce qui est sorti de sa main.
+           COALESCE(SUM(CASE WHEN type = 'retrait_client' AND mode_paiement <> 'especes'
+                             THEN montant ELSE 0 END), 0)::BIGINT AS mobile_money,
            count(*) FILTER (WHERE type IN ('retrait_client', 'depense'))::INT AS nombre_sorties
          FROM caisse_operations
          WHERE caissier_id = $1 AND statut = 'validee'
@@ -303,6 +308,7 @@ router.get(
 
       res.json({
         solde: solde[0]?.solde ?? 0,
+        sortiesMobileMoney: solde[0]?.sorties_mobile_money ?? 0,
         bilanJour: bilanJour[0],
         demandesEnAttente: enAttente[0].nombre,
       });
@@ -734,6 +740,37 @@ router.post(
         }
 
         let ledgerEntryId = null;
+
+        // ─────────────────────────────────────────────────────────────
+        // Une caisse ne peut pas verser des especes qu'elle n'a pas.
+        //
+        // Jusqu'ici seul le solde du CLIENT etait verifie, jamais celui
+        // de la caisse : le 09/10/2026 la caissiere a decaisse 139 326 F
+        // de plus qu'elle n'avait recu, et rien ne l'a signale. Le
+        // controle porte sur les seules sorties en especes — un
+        // paiement Mobile Money part du telephone, pas du tiroir, et ne
+        // doit donc pas etre bloque par le niveau de la caisse.
+        //
+        // On lit le solde dans la meme transaction que la validation :
+        // deux directeurs validant en meme temps ne peuvent pas vider
+        // la caisse chacun de leur cote.
+        const sortEnEspeces =
+          ['retrait_client', 'depense', 'retour_excedent'].includes(operation.type)
+          && operation.mode_paiement === 'especes';
+
+        if (sortEnEspeces) {
+          const { rows: caisse } = await client.query(
+            'SELECT COALESCE(solde, 0) AS solde FROM caisse_soldes WHERE caissier_id = $1',
+            [operation.caissier_id]
+          );
+          const disponible = Number(caisse[0]?.solde ?? 0);
+          if (disponible < Number(operation.montant)) {
+            throw new ApiError(
+              422,
+              `La caisse de cette caissière ne contient que ${disponible} FCFA — insuffisant pour sortir ${operation.montant} FCFA. Réapprovisionnez-la d'abord, ou rejetez la demande.`
+            );
+          }
+        }
 
         if (operation.type === 'retrait_client') {
           const { rows: compte } = await client.query(
