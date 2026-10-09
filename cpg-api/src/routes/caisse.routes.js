@@ -56,7 +56,26 @@ function lireJustification(req) {
 const router = Router();
 router.use(requireAuth);
 
-/** GET /caisse/rechercher-client?q=... — nom ou numéro de compte. */
+/**
+ * GET /caisse/rechercher-client?q=... — nom ou numéro de compte.
+ *
+ * La caissière tape le nom que l'agent lui donne, pas celui qui est
+ * écrit en base. Les noms de ce portefeuille s'écrivent de plusieurs
+ * façons d'un document à l'autre — MOUNDELET/MOUDELET,
+ * TCHIBINDA/TCHIBINGA — et une seule lettre d'écart renvoyait
+ * auparavant une liste vide : l'agent repartait sans son salaire alors
+ * que son compte était approvisionné.
+ *
+ * La recherche accepte donc l'à-peu-près : correspondance exacte
+ * d'abord, puis rapprochement par trigrammes (une lettre de
+ * différence suffit à retrouver le nom), accents ignorés. Les
+ * résultats exacts restent en tête, les approchants suivent par
+ * ressemblance décroissante.
+ *
+ * Les comptes supprimés sont exclus : ce sont pour l'essentiel des
+ * doublons, et en faire apparaître un au guichet, c'est risquer de
+ * payer deux fois le même agent.
+ */
 router.get(
   '/rechercher-client',
   requirePermission('caisse.consulter_solde_client'),
@@ -66,15 +85,22 @@ router.get(
       if (q.length < 2) return res.json({ resultats: [] });
 
       const { rows } = await query(
-        `SELECT u.id, u.full_name, u.client_number, u.phone, b.balance
+        `SELECT u.id, u.full_name, u.client_number, u.phone, b.balance,
+                (u.full_name ILIKE $1 OR u.client_number ILIKE $1) AS exact,
+                word_similarity(unaccent($2), unaccent(u.full_name)) AS proximite
          FROM users u
          JOIN accounts a ON a.user_id = u.id
          JOIN account_balances b ON b.account_id = a.id
          WHERE u.role = 'client'
-           AND (u.full_name ILIKE $1 OR u.client_number ILIKE $1)
-         ORDER BY u.full_name
+           AND u.status <> 'supprime'
+           AND (
+             u.full_name ILIKE $1
+             OR u.client_number ILIKE $1
+             OR word_similarity(unaccent($2), unaccent(u.full_name)) > 0.45
+           )
+         ORDER BY exact DESC, proximite DESC, u.full_name
          LIMIT 10`,
-        [`%${q}%`]
+        [`%${q}%`, q]
       );
       res.json({ resultats: rows });
     } catch (error) {
