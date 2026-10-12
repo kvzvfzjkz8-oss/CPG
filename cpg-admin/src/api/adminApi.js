@@ -520,6 +520,17 @@ export async function previewSalaryImport(file, employeur, periode) {
 }
 
 /**
+ * Même aperçu, pour une paie saisie à la main plutôt que jointe en
+ * fichier. L'opérateur voit qui serait crédité avant de confirmer,
+ * exactement comme pour un import.
+ */
+export async function previewSalaryLines(employeur, periode, lignes) {
+  return apiRequest('/v1/admin/operations/salaires/apercu-lignes', {
+    method: 'POST', body: { employeur, periode, lignes },
+  });
+}
+
+/**
  * Étape 2/2 : confirme le crédit des lignes retenues à l'aperçu.
  * Le serveur revalide indépendamment de ce que l'aperçu a montré,
  * plutôt que de faire confiance à cet écran.

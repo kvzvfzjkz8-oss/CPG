@@ -216,6 +216,43 @@ describe(
       assert.equal(compte.account.balance, 41000);
     });
 
+    // La saisie manuelle doit offrir exactement le meme filet que
+    // l'import : on voit d'abord qui serait credite, on n'ecrit qu'a la
+    // confirmation. Un virement de salaire merite la meme prudence
+    // qu'il vienne d'un fichier ou d'un clavier.
+    test('une paie saisie à la main passe par le même aperçu, sans rien écrire', async () => {
+      const operateurToken = await loginStaff('operateur');
+      const employeur = `MANUEL${Date.now()}`;
+      const { body: avant } = await api('/v1/client/compte', { token: client.token });
+
+      const { status, body: apercu } = await api('/v1/admin/operations/salaires/apercu-lignes', {
+        method: 'POST', token: operateurToken,
+        body: {
+          employeur, periode: '2026-08',
+          lignes: [
+            { identifiant: client.phone, montant: 30000 },
+            { identifiant: '+241000000000', montant: 5000 },
+          ],
+        },
+      });
+      assert.equal(status, 200);
+      assert.equal(apercu.aCrediter.length, 1, 'seul le client connu est retenu');
+      assert.equal(apercu.notFound.length, 1, "l'inconnu est écarté avec son motif");
+      assert.equal(apercu.total, 30000);
+
+      const { body: apres } = await api('/v1/client/compte', { token: client.token });
+      assert.equal(apres.account.balance, avant.account.balance, "l'aperçu n'écrit rien");
+    });
+
+    test('un gestionnaire ne peut pas demander l\'aperçu d\'une saisie manuelle', async () => {
+      const gestionnaireToken = await loginStaff('gestionnaire');
+      const { status } = await api('/v1/admin/operations/salaires/apercu-lignes', {
+        method: 'POST', token: gestionnaireToken,
+        body: { employeur: 'SETRAG', periode: '2026-08', lignes: [{ identifiant: client.phone, montant: 1000 }] },
+      });
+      assert.equal(status, 403);
+    });
+
     test('un gestionnaire ne peut pas non plus demander l\'aperçu', async () => {
       const gestionnaireToken = await loginStaff('gestionnaire');
       const { status } = await apiUpload('/v1/admin/operations/salaires/apercu', {

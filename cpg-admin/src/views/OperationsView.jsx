@@ -5,7 +5,7 @@ import {
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, Tabs, SectionTitle } from '../components/UI';
 import {
-  previewSalaryImport, confirmSalaryImport, fetchMonthlyReport, fetchTransactions,
+  previewSalaryImport, previewSalaryLines, confirmSalaryImport, fetchMonthlyReport, fetchTransactions,
   reverseLedgerTransaction, fetchInstallmentsByReference, proposeInstallmentAdjustment,
   fetchSchedulerStatus, runAgiosBatch, fetchCompteAgios, runTenueCompteBatch, fetchCompteTenue,
   fetchCreditRequests, supprimerCreditActif,
@@ -69,6 +69,11 @@ export default function OperationsView() {
 
 function PayrollImport() {
   const [step, setStep] = useState('form'); // form | apercu | confirme
+  // Tous les employeurs n'envoient pas de fichier : un agent oublie
+  // d'une liste, ou deux montants communiques par telephone, n'ont pas
+  // a obliger l'operatrice a fabriquer un CSV.
+  const [mode, setMode] = useState('fichier'); // fichier | manuel
+  const [lignes, setLignes] = useState([{ identifiant: '', montant: '' }]);
   const [employeur, setEmployeur] = useState('SETRAG');
   const [periode, setPeriode] = useState(new Date().toISOString().slice(0, 7));
   const [file, setFile] = useState(null);
@@ -77,17 +82,24 @@ function PayrollImport() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
-  const canPreview = file && employeur.trim().length >= 2 && /^\d{4}-\d{2}$/.test(periode);
+  const lignesValides = lignes
+    .map((l) => ({ identifiant: l.identifiant.trim(), montant: Number(l.montant) }))
+    .filter((l) => l.identifiant.length >= 4 && Number.isInteger(l.montant) && l.montant > 0);
+
+  const baseValide = employeur.trim().length >= 2 && /^\d{4}-\d{2}$/.test(periode);
+  const canPreview = baseValide && (mode === 'fichier' ? Boolean(file) : lignesValides.length > 0);
 
   const handlePreview = async () => {
     setBusy(true);
     setError('');
     try {
-      const result = await previewSalaryImport(file, employeur, periode);
+      const result = mode === 'fichier'
+        ? await previewSalaryImport(file, employeur, periode)
+        : await previewSalaryLines(employeur, periode, lignesValides);
       setPreview(result);
       setStep('apercu');
     } catch (e) {
-      setError(e.message ?? "Impossible de lire le fichier.");
+      setError(e.message ?? (mode === 'fichier' ? 'Impossible de lire le fichier.' : 'Impossible de vérifier ces lignes.'));
     } finally {
       setBusy(false);
     }
@@ -113,6 +125,7 @@ function PayrollImport() {
   const reset = () => {
     setStep('form');
     setFile(null);
+    setLignes([{ identifiant: '', montant: '' }]);
     setPreview(null);
     setConfirmation(null);
     setError('');
@@ -134,10 +147,29 @@ function PayrollImport() {
           <p style={{ margin: '0 0 4px', fontSize: 14, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
             Créditer la paie des agents
           </p>
-          <p style={{ margin: '0 0 18px', fontSize: 12, color: colors.muted, fontFamily: fonts.body }}>
-            Joignez le fichier reçu de l'employeur (deux colonnes : identifiant, montant — téléphone,
-            numéro client ou nom complet). Rien n'est crédité tant que vous n'avez pas confirmé l'aperçu.
+          <p style={{ margin: '0 0 14px', fontSize: 12, color: colors.muted, fontFamily: fonts.body }}>
+            Joignez le fichier reçu de l'employeur, ou saisissez les montants à la main pour quelques
+            agents. Dans les deux cas, rien n'est crédité tant que vous n'avez pas confirmé l'aperçu.
           </p>
+
+          <div style={{ display: 'flex', gap: 4, background: colors.bg, padding: 3, borderRadius: 10, marginBottom: 16, width: 'fit-content' }}>
+            {[{ k: 'fichier', l: 'Fichier de paie' }, { k: 'manuel', l: 'Saisie manuelle' }].map((o) => (
+              <button
+                key={o.k}
+                type="button"
+                onClick={() => { setMode(o.k); setError(''); }}
+                style={{
+                  padding: '7px 14px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                  fontSize: 12, fontFamily: fonts.body,
+                  background: mode === o.k ? colors.card : 'transparent',
+                  color: mode === o.k ? colors.forest : colors.muted,
+                  fontWeight: mode === o.k ? 600 : 400,
+                }}
+              >
+                {o.l}
+              </button>
+            ))}
+          </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
             <div>
@@ -150,6 +182,67 @@ function PayrollImport() {
             </div>
           </div>
 
+          {mode === 'manuel' && (
+            <div style={{ marginBottom: 18 }}>
+              <label style={label}>Agents à créditer</label>
+              <p style={{ margin: '0 0 10px', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+                Un agent par ligne. L'identifiant peut être un numéro client (CPG-…), un téléphone
+                ou le nom complet — l'aperçu vous dira qui a été reconnu.
+              </p>
+
+              {lignes.map((l, i) => (
+                <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+                  <input
+                    style={{ ...input, flex: '2 1 220px' }}
+                    placeholder="Numéro client, téléphone ou nom"
+                    value={l.identifiant}
+                    onChange={(e) => setLignes((v) => v.map((x, j) => (j === i ? { ...x, identifiant: e.target.value } : x)))}
+                  />
+                  <input
+                    style={{ ...input, flex: '1 1 130px', fontFamily: fonts.mono }}
+                    placeholder="Montant"
+                    inputMode="numeric"
+                    value={l.montant}
+                    onChange={(e) => setLignes((v) => v.map((x, j) => (j === i ? { ...x, montant: e.target.value.replace(/[^0-9]/g, '') } : x)))}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setLignes((v) => (v.length === 1 ? [{ identifiant: '', montant: '' }] : v.filter((_, j) => j !== i)))}
+                    title="Retirer cette ligne"
+                    style={{
+                      border: `1px solid ${colors.line}`, background: colors.card, borderRadius: 9,
+                      width: 32, height: 32, cursor: 'pointer', color: colors.muted, flexShrink: 0,
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 10 }}>
+                <button
+                  type="button"
+                  onClick={() => setLignes((v) => [...v, { identifiant: '', montant: '' }])}
+                  style={{
+                    border: `1px solid ${colors.line}`, background: colors.card, borderRadius: 9,
+                    padding: '7px 13px', fontSize: 12, fontFamily: fonts.body, color: colors.forestLight, cursor: 'pointer',
+                  }}
+                >
+                  + Ajouter un agent
+                </button>
+                {lignesValides.length > 0 && (
+                  <span style={{ fontSize: 12, color: colors.muted, fontFamily: fonts.body }}>
+                    {lignesValides.length} ligne{lignesValides.length > 1 ? 's' : ''} ·{' '}
+                    <strong style={{ color: colors.forest, fontFamily: fonts.mono }}>
+                      {formatFCFA(lignesValides.reduce((t, x) => t + x.montant, 0))} F
+                    </strong>
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {mode === 'fichier' && (<>
           <label style={label}>Fichier de paie (CSV)</label>
           <div
             style={{
@@ -170,13 +263,14 @@ function PayrollImport() {
               </p>
             </label>
           </div>
+          </>)}
 
           <button
             onClick={handlePreview}
             disabled={!canPreview || busy}
             style={{ ...actionBtn(colors.forest, '#fff'), opacity: canPreview ? 1 : 0.5 }}
           >
-            <Search size={13} /> {busy ? 'Lecture du fichier…' : "Voir l'aperçu"}
+            <Search size={13} /> {busy ? 'Vérification…' : "Voir l'aperçu"}
           </button>
         </Card>
       )}

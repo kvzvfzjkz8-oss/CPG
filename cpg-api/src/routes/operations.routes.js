@@ -6,7 +6,7 @@ import { validate } from '../middleware/validate.js';
 import { ApiError } from '../middleware/errorHandler.js';
 import { audit } from '../services/auditService.js';
 import {
-  creditAgentSalaries, creditAgentSalariesFromCsv, previewAgentSalariesFromCsv,
+  creditAgentSalaries, creditAgentSalariesFromCsv, previewAgentSalaries, previewAgentSalariesFromCsv,
   runInstallmentCollection, fetchMonthlyReport, fetchTransactions, reverseTransaction,
   cancelActiveCreditInError, suspendActiveCredit, reactivateSuspendedCredit,
   cancelCreditAwaitingDoubleValidation,
@@ -127,6 +127,38 @@ router.post(
         employeur, periode,
       });
 
+      res.json(preview);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /admin/operations/salaires/apercu-lignes — le meme aperçu, mais
+ * pour une paie saisie à la main.
+ *
+ * Tous les employeurs n'envoient pas de fichier : il arrive qu'un agent
+ * ait été oublié d'une liste, ou qu'une petite entreprise communique
+ * deux ou trois montants par téléphone. L'opérateur devait jusqu'ici
+ * fabriquer un CSV pour les saisir.
+ *
+ * La saisie manuelle passe par les mêmes deux temps que l'import : on
+ * montre d'abord qui serait crédité et ce qui serait écarté, on
+ * n'écrit qu'à la confirmation. Un virement de salaire mérite le même
+ * filet qu'il vienne d'un fichier ou d'un clavier.
+ */
+router.post(
+  '/salaires/apercu-lignes',
+  requirePermission('operations.crediter_salaires'),
+  validate(salarySchema),
+  async (req, res, next) => {
+    try {
+      const preview = await previewAgentSalaries({
+        entries: req.body.lignes,
+        employeur: req.body.employeur,
+        periode: req.body.periode,
+      });
       res.json(preview);
     } catch (error) {
       next(error);
