@@ -211,9 +211,9 @@ describe(
       assert.equal(confirmation.credited.length, 1);
 
       const { body: compte } = await api('/v1/client/compte', { token: client.token });
-      // 42000 crédités, moins 1000 F de tenue de compte déclenchés
-      // automatiquement juste après le crédit de la paie.
-      assert.equal(compte.account.balance, 41000);
+      // Les frais de tenue ne suivent plus la paie (prélèvement unique
+      // le 25 du mois) : le salaire arrive entier.
+      assert.equal(compte.account.balance, 42000);
     });
 
     // La saisie manuelle doit offrir exactement le meme filet que

@@ -115,9 +115,10 @@ describe(
       assert.equal(body.total, 275000);
 
       const { body: compte } = await api('/v1/client/compte', { token: agent.token });
-      // 275000 crédités, moins 1000 F de tenue de compte déclenchés
-      // automatiquement juste après le crédit de la paie.
-      assert.equal(compte.account.balance, 274000);
+      // Les frais de tenue ne suivent plus la paie : ils sont prélevés
+      // une seule fois par mois, le 25 (décision direction du
+      // 14/10/2026). Le salaire arrive donc entier.
+      assert.equal(compte.account.balance, 275000);
     });
 
     test('un identifiant inconnu est signalé sans bloquer le reste du lot', async () => {
@@ -152,26 +153,20 @@ describe(
       assert.equal(body.notFound[0].motif, 'deja_credite_ce_mois');
 
       const { body: compte } = await api('/v1/client/compte', { token: agent.token });
-      // 274000 après le premier crédit (275000 moins 1000 F de tenue
-      // de compte) — la relance ne crédite rien de plus, et la tenue
-      // de compte ne se prélève jamais deux fois sur la même période.
-      assert.equal(compte.account.balance, 274000, 'le solde ne doit pas avoir doublé');
+      // La relance ne crédite rien de plus.
+      assert.equal(compte.account.balance, 275000, 'le solde ne doit pas avoir doublé');
     });
 
-    // Le 14/10/2026, une paie d'un seul agent a redeclenche le batch des
-    // frais de tenue et represeve 189 comptes deja regles, 1 228 500 F :
-    // chaque appel calculait sa propre periode, si bien que la
-    // contrainte d'unicite (bareme, compte, debut, fin) ne voyait jamais
-    // deux fois la meme. Une SECONDE paie dans le mois ne doit plus
-    // represever personne.
-    test('une seconde paie dans le mois ne reprélève pas les frais de tenue', async () => {
+    // Les frais de tenue se prelevaient dans la foulee de chaque paie.
+    // Une entreprise pouvant verser plusieurs fois dans le mois, chaque
+    // versement represevait TOUS les clients : le 14/10/2026, une paie
+    // d'un seul agent a fait payer 189 comptes une seconde fois,
+    // 1 228 500 F. Le prelevement a sa propre date desormais, le 25.
+    test('créditer une paie ne prélève plus les frais de tenue', async () => {
       const token = await loginStaff('operateur');
-      const autre = await createTestClient('SecondePaie');
-      const { body: avant } = await api('/v1/client/compte', { token: agent.token });
+      const autre = await createTestClient('SansFrais');
 
-      // Paie d'un AUTRE agent, même mois : le batch repasse sur tout le
-      // monde, mais le premier agent a deja paye ses frais.
-      const { status } = await api('/v1/admin/operations/salaires', {
+      const { status, body } = await api('/v1/admin/operations/salaires', {
         method: 'POST',
         token,
         body: {
@@ -180,12 +175,10 @@ describe(
         },
       });
       assert.equal(status, 201);
+      assert.equal(body.tenueCompte, undefined, 'la paie ne déclenche plus de prélèvement de frais');
 
-      const { body: apres } = await api('/v1/client/compte', { token: agent.token });
-      assert.equal(
-        apres.account.balance, avant.account.balance,
-        'le solde d\'un agent déjà prélevé ne doit pas rebouger'
-      );
+      const { body: compte } = await api('/v1/client/compte', { token: autre.token });
+      assert.equal(compte.account.balance, 50000, 'le salaire arrive entier');
     });
 
     test('une période mal formée est rejetée', async () => {

@@ -17,7 +17,6 @@ import {
   fetchOverdueInstallments, fetchAccountBalances, zeroOutAccountBalances,
   fetchMonthInstallments, collectInstallments, fetchClientsDouteux,
 } from '../services/operationsService.js';
-import { runTenueCompteBatch } from '../services/feeService.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -73,28 +72,19 @@ router.post(
         },
       });
 
-      // Les frais de tenue de compte se récupèrent automatiquement
-      // dès que les clients sont payés — l'opérateur garde aussi la
-      // main via le bouton manuel (Opérations mensuelles) si besoin.
-      // En meilleur effort : un souci ici ne doit jamais faire
-      // échouer l'import de paie lui-même, qui a déjà réussi.
-      let tenueCompte = null;
-      try {
-        const now = new Date();
-        const periodStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
-        const periodEnd = now.toISOString().slice(0, 10);
-        tenueCompte = await runTenueCompteBatch({ periodStart, periodEnd });
-        await audit(req, {
-          action: 'operations.tenue_compte_preleve_auto_apres_paie',
-          entityType: 'periode',
-          entityId: result.reference,
-          metadata: { comptes: tenueCompte.applied, total: tenueCompte.total },
-        });
-      } catch (feeError) {
-        // Ne bloque jamais la réponse de l'import de paie.
-      }
-
-      res.status(201).json({ ...result, tenueCompte });
+      // Les frais de tenue ne suivent plus la paie.
+      //
+      // Ils se prélevaient autrefois dans la foulée de chaque import,
+      // pour profiter de comptes approvisionnés. Mais une entreprise
+      // peut verser plusieurs fois dans le mois, et chaque versement
+      // relançait le prélèvement sur TOUS les clients : le 14/10/2026,
+      // une paie d'un seul agent a fait payer 189 comptes une seconde
+      // fois, 1 228 500 F.
+      //
+      // Décision de la direction : une seule date, le 25 de chaque
+      // mois, quand les salaires sont arrivés (voir le planificateur).
+      // Le directeur garde le bouton manuel pour un rattrapage.
+      res.status(201).json(result);
     } catch (error) {
       next(error);
     }

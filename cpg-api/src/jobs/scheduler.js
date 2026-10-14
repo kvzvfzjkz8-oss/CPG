@@ -129,11 +129,18 @@ export function startScheduler() {
   // du mois », c'est ici qu'il faudra ajuster l'expression cron.
   cron.schedule('0 3 30 * *', collectAgios);
 
-  // Le 1er de chaque mois à 3h — un forfait dû dès le début du mois,
-  // contrairement aux agios qui se constatent en fin de période.
-  cron.schedule('0 3 1 * *', collectTenueCompte);
+  // Le 25 de chaque mois à 3h — décision de la direction du
+  // 14/10/2026. Le 1er, la plupart des comptes sont vides : les
+  // salaires des entreprises partenaires arrivent en milieu de mois,
+  // et prélever avant la paie mettait des agents à découvert pour un
+  // forfait de 6 500 F. Au 25, les comptes sont approvisionnés.
+  //
+  // Une seule date, une seule fois par mois : le prélèvement
+  // automatique qui suivait chaque paie a été retiré, c'est lui qui
+  // avait fait payer deux fois 189 agents le 14/10.
+  cron.schedule('0 3 25 * *', collectTenueCompte);
 
-  console.log('Tâches planifiées démarrées : échéances (quotidien, 6h) · agios (le 30, 3h) · frais de tenue (le 1er, 3h).');
+  console.log('Tâches planifiées démarrées : échéances (quotidien, 6h) · agios (le 30, 3h) · frais de tenue (le 25, 3h).');
 }
 
 // Exportées pour permettre un déclenchement manuel de secours (route
