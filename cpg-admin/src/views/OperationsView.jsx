@@ -5,7 +5,8 @@ import {
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, Tabs, SectionTitle } from '../components/UI';
 import {
-  previewSalaryImport, previewSalaryLines, confirmSalaryImport, fetchMonthlyReport, fetchTransactions,
+  previewSalaryImport, previewSalaryLines, confirmSalaryImport, rechercherClientsPaie,
+  fetchMonthlyReport, fetchTransactions,
   reverseLedgerTransaction, fetchInstallmentsByReference, proposeInstallmentAdjustment,
   fetchSchedulerStatus, runAgiosBatch, fetchCompteAgios, runTenueCompteBatch, fetchCompteTenue,
   fetchCreditRequests, supprimerCreditActif,
@@ -59,6 +60,73 @@ export default function OperationsView() {
       {tab === 'paie' && <PayrollImport />}
       {tab === 'verification' && <Verification />}
       {tab === 'echeances' && <InstallmentCorrection />}
+    </div>
+  );
+}
+
+/**
+ * Champ identifiant d'une ligne de paie, avec propositions.
+ *
+ * Les noms s'ecrivent de plusieurs facons d'un document a l'autre, et
+ * l'operatrice tape celui que l'employeur lui a transmis. On lui
+ * propose les clients approchants : des qu'elle en choisit un, c'est
+ * son NUMERO CLIENT qui part dans la ligne, pas le nom. Un identifiant
+ * exact vaut mieux qu'un nom qu'il faudra rapprocher ensuite.
+ */
+function ChampAgent({ valeur, onChange }) {
+  const [suggestions, setSuggestions] = useState([]);
+  const [ouvert, setOuvert] = useState(false);
+  const [choisi, setChoisi] = useState(null);
+
+  useEffect(() => {
+    const q = valeur.trim();
+    // Un numero client est deja exact : inutile de proposer autre chose.
+    if (q.length < 2 || choisi === q || /^CPG-/i.test(q)) { setSuggestions([]); return undefined; }
+    let annule = false;
+    const t = setTimeout(() => {
+      rechercherClientsPaie(q)
+        .then((r) => { if (!annule) { setSuggestions(r.resultats ?? []); setOuvert(true); } })
+        .catch(() => { if (!annule) setSuggestions([]); });
+    }, 250);
+    return () => { annule = true; clearTimeout(t); };
+  }, [valeur, choisi]);
+
+  return (
+    <div style={{ position: 'relative', flex: '2 1 220px' }}>
+      <input
+        style={{ ...input, width: '100%' }}
+        placeholder="Numéro client, téléphone ou nom"
+        value={valeur}
+        onChange={(e) => { setChoisi(null); onChange(e.target.value); }}
+        onFocus={() => suggestions.length > 0 && setOuvert(true)}
+        onBlur={() => setTimeout(() => setOuvert(false), 150)}
+      />
+      {ouvert && suggestions.length > 0 && (
+        <div style={{
+          position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 20, marginTop: 4,
+          background: colors.card, border: `1px solid ${colors.line}`, borderRadius: 10,
+          boxShadow: '0 6px 20px rgba(0,0,0,0.10)', maxHeight: 230, overflowY: 'auto',
+        }}>
+          {suggestions.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => { setChoisi(c.client_number); onChange(c.client_number); setOuvert(false); }}
+              style={{
+                display: 'block', width: '100%', textAlign: 'left', padding: '8px 11px',
+                border: 'none', borderBottom: `1px solid ${colors.line}`, background: 'none',
+                cursor: 'pointer', fontFamily: fonts.body, fontSize: 12,
+              }}
+            >
+              <span style={{ color: colors.ink }}>{c.nom}</span>
+              <span style={{ color: colors.muted, fontSize: 10, fontFamily: fonts.mono }}>
+                {'  '}{c.client_number}{c.employer ? ` · ${c.employer}` : ''}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -186,17 +254,15 @@ function PayrollImport() {
             <div style={{ marginBottom: 18 }}>
               <label style={label}>Agents à créditer</label>
               <p style={{ margin: '0 0 10px', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
-                Un agent par ligne. L'identifiant peut être un numéro client (CPG-…), un téléphone
-                ou le nom complet — l'aperçu vous dira qui a été reconnu.
+                Un agent par ligne. Tapez les premières lettres d'un nom : les clients approchants
+                vous sont proposés, et choisir dans la liste remplit le numéro client exact.
               </p>
 
               {lignes.map((l, i) => (
                 <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
-                  <input
-                    style={{ ...input, flex: '2 1 220px' }}
-                    placeholder="Numéro client, téléphone ou nom"
-                    value={l.identifiant}
-                    onChange={(e) => setLignes((v) => v.map((x, j) => (j === i ? { ...x, identifiant: e.target.value } : x)))}
+                  <ChampAgent
+                    valeur={l.identifiant}
+                    onChange={(val) => setLignes((v) => v.map((x, j) => (j === i ? { ...x, identifiant: val } : x)))}
                   />
                   <input
                     style={{ ...input, flex: '1 1 130px', fontFamily: fonts.mono }}

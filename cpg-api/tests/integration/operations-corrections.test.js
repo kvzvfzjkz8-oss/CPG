@@ -244,6 +244,30 @@ describe(
       assert.equal(apres.account.balance, avant.account.balance, "l'aperçu n'écrit rien");
     });
 
+    // L'aide a la saisie doit tolerer l'a-peu-pres : l'operatrice tape
+    // le nom que l'employeur lui a transmis, pas celui qui est en base.
+    test('la recherche de clients propose les noms approchants', async () => {
+      const operateurToken = await loginStaff('operateur');
+      // createTestClient nomme ses clients « Client Corr <label> » :
+      // on cherche avec une faute volontaire pour verifier la tolerance.
+      const { status, body } = await api(
+        '/v1/admin/operations/clients/rechercher?q=Apercus',
+        { token: operateurToken }
+      );
+      assert.equal(status, 200);
+      assert.ok(Array.isArray(body.resultats));
+      assert.ok(
+        body.resultats.some((r) => r.phone === client.phone),
+        'le client cherché doit figurer dans les propositions malgré la faute'
+      );
+    });
+
+    test('une recherche trop courte ne renvoie rien', async () => {
+      const operateurToken = await loginStaff('operateur');
+      const { body } = await api('/v1/admin/operations/clients/rechercher?q=a', { token: operateurToken });
+      assert.deepEqual(body.resultats, []);
+    });
+
     test('un gestionnaire ne peut pas demander l\'aperçu d\'une saisie manuelle', async () => {
       const gestionnaireToken = await loginStaff('gestionnaire');
       const { status } = await api('/v1/admin/operations/salaires/apercu-lignes', {

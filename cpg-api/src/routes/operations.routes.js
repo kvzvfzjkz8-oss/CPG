@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { z } from 'zod';
+import { query } from '../db/index.js';
 import { requireAuth, requirePermission } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { ApiError } from '../middleware/errorHandler.js';
@@ -128,6 +129,51 @@ router.post(
       });
 
       res.json(preview);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * GET /admin/operations/clients/rechercher?q=... — aide à la saisie
+ * manuelle d'une paie.
+ *
+ * Les noms de ce portefeuille s'écrivent de plusieurs façons d'un
+ * document à l'autre — MOUNDELET/MOUDELET, TCHIBINDA/TCHIBINGA — et
+ * l'opératrice tape celui que l'employeur lui a transmis. Plutôt que
+ * de la laisser deviner, on lui propose les clients approchants : elle
+ * choisit, et c'est le numéro client qui part dans la ligne de paie.
+ * Un identifiant exact vaut mieux qu'un nom qu'il faudra rapprocher.
+ *
+ * Recherche volontairement indulgente (mêmes trigrammes qu'au
+ * guichet), comptes supprimés exclus : créditer un doublon supprimé,
+ * c'est payer dans le vide.
+ */
+router.get(
+  '/clients/rechercher',
+  requirePermission('operations.crediter_salaires'),
+  async (req, res, next) => {
+    try {
+      const q = String(req.query.q ?? '').trim();
+      if (q.length < 2) return res.json({ resultats: [] });
+
+      const { rows } = await query(
+        `SELECT u.id, btrim(u.full_name) AS nom, u.client_number, u.employer, u.phone,
+                (u.full_name ILIKE $1 OR u.client_number ILIKE $1) AS exact
+         FROM users u
+         WHERE u.role = 'client'
+           AND u.status <> 'supprime'
+           AND (
+             u.full_name ILIKE $1
+             OR u.client_number ILIKE $1
+             OR word_similarity(unaccent($2), unaccent(u.full_name)) > 0.45
+           )
+         ORDER BY exact DESC, word_similarity(unaccent($2), unaccent(u.full_name)) DESC, u.full_name
+         LIMIT 8`,
+        [`%${q}%`, q]
+      );
+      res.json({ resultats: rows });
     } catch (error) {
       next(error);
     }

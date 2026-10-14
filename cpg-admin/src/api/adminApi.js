@@ -520,6 +520,14 @@ export async function previewSalaryImport(file, employeur, periode) {
 }
 
 /**
+ * Clients approchant un nom tapé — aide à la saisie manuelle d'une
+ * paie. Tolère les fautes d'orthographe, comme la recherche du guichet.
+ */
+export async function rechercherClientsPaie(q) {
+  return apiRequest(`/v1/admin/operations/clients/rechercher?q=${encodeURIComponent(q)}`);
+}
+
+/**
  * Même aperçu, pour une paie saisie à la main plutôt que jointe en
  * fichier. L'opérateur voit qui serait crédité avant de confirmer,
  * exactement comme pour un import.
