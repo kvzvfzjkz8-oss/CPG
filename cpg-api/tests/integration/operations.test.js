@@ -158,6 +158,36 @@ describe(
       assert.equal(compte.account.balance, 274000, 'le solde ne doit pas avoir doublé');
     });
 
+    // Le 14/10/2026, une paie d'un seul agent a redeclenche le batch des
+    // frais de tenue et represeve 189 comptes deja regles, 1 228 500 F :
+    // chaque appel calculait sa propre periode, si bien que la
+    // contrainte d'unicite (bareme, compte, debut, fin) ne voyait jamais
+    // deux fois la meme. Une SECONDE paie dans le mois ne doit plus
+    // represever personne.
+    test('une seconde paie dans le mois ne reprélève pas les frais de tenue', async () => {
+      const token = await loginStaff('operateur');
+      const autre = await createTestClient('SecondePaie');
+      const { body: avant } = await api('/v1/client/compte', { token: agent.token });
+
+      // Paie d'un AUTRE agent, même mois : le batch repasse sur tout le
+      // monde, mais le premier agent a deja paye ses frais.
+      const { status } = await api('/v1/admin/operations/salaires', {
+        method: 'POST',
+        token,
+        body: {
+          employeur: `${employeur}BIS`, periode,
+          lignes: [{ identifiant: autre.phone, montant: 50000 }],
+        },
+      });
+      assert.equal(status, 201);
+
+      const { body: apres } = await api('/v1/client/compte', { token: agent.token });
+      assert.equal(
+        apres.account.balance, avant.account.balance,
+        'le solde d\'un agent déjà prélevé ne doit pas rebouger'
+      );
+    });
+
     test('une période mal formée est rejetée', async () => {
       const token = await loginStaff('operateur');
       const { status } = await api('/v1/admin/operations/salaires', {

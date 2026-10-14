@@ -402,8 +402,37 @@ export async function runTenueCompteForAccount({ accountId, periodStart, periodE
   });
 }
 
-/** Passe tous les comptes clients en revue pour la période donnée. */
+/**
+ * Ramène n'importe quelle date au mois civil qui la contient.
+ *
+ * Les frais de tenue sont un forfait MENSUEL : la période ne peut donc
+ * être que le mois entier. Chaque appelant calculait jusqu'ici sa
+ * propre période — le planificateur du 1er enregistrait « du 01/10 au
+ * 01/10 », un prélèvement déclenché après une paie « du 01/10 au
+ * 14/10 ». La contrainte d'unicité porte sur (barème, compte, début,
+ * fin) : trois fins différentes, trois lignes autorisées pour le même
+ * mois, et la protection contre le double prélèvement ne se
+ * déclenchait jamais.
+ *
+ * C'est ce qui s'est produit le 14/10/2026 : une paie QSR d'un seul
+ * agent a redéclenché le batch et reprélevé 189 comptes déjà réglés,
+ * soit 1 228 500 F. Normaliser ici plutôt que chez l'appelant ferme la
+ * porte pour de bon : aucun appel ne peut plus se tromper de période.
+ */
+function moisCivil(date) {
+  const d = new Date(`${String(date).slice(0, 10)}T00:00:00Z`);
+  const debut = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+  const fin = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0));
+  return { debut: debut.toISOString().slice(0, 10), fin: fin.toISOString().slice(0, 10) };
+}
+
+/** Passe tous les comptes clients en revue pour le mois contenant la période donnée. */
 export async function runTenueCompteBatch({ periodStart, periodEnd }) {
+  // Quoi que demande l'appelant, on facture le mois, et rien d'autre.
+  const mois = moisCivil(periodStart ?? periodEnd ?? new Date().toISOString());
+  periodStart = mois.debut;
+  periodEnd = mois.fin;
+
   const { rows: fee } = await query(
     `SELECT * FROM current_fee_versions
      WHERE trigger_on = 'tenue_compte' AND status = 'actif'
