@@ -86,6 +86,9 @@ export const PERMISSIONS = {
     'operations.lire',
     'operations.annuler_transaction',
     'operations.modifier_echeance',
+
+    // Retrait ponctuel sur le compte d'un client, soumis au directeur.
+    'operations.demander_retrait_ponctuel',
   ],
   [ROLES.SUPERVISEUR]: [
     'messagerie_interne.acceder',

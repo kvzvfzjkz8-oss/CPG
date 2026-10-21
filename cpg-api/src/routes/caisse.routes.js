@@ -683,13 +683,26 @@ router.get(
   async (req, res, next) => {
     try {
       const { rows } = await query(
+        // LEFT JOIN sur la caissière : un retrait ponctuel récupéré par
+        // CPG n'en a aucune. Avec une jointure stricte, ces demandes
+        // n'arrivaient jamais sous les yeux du directeur.
+        //
+        // Le solde du client est joint lui aussi : sans lui, le
+        // directeur valide un retrait sans savoir si le compte le
+        // couvre encore — la demande peut dater de plusieurs jours.
         `SELECT co.id, co.type, co.montant, co.motif, co.demandee_le, co.justifie,
+                co.destination,
                 (co.justificatif_donnees IS NOT NULL) AS a_un_fichier,
                 ca.full_name AS caissier,
-                cl.full_name AS client, cl.client_number
+                de.full_name AS demandeur, de.role::text AS demandeur_role,
+                cl.full_name AS client, cl.client_number,
+                COALESCE(b.balance, 0)::bigint AS solde_client
          FROM caisse_operations co
-         JOIN users ca ON ca.id = co.caissier_id
+         LEFT JOIN users ca ON ca.id = co.caissier_id
+         LEFT JOIN users de ON de.id = co.demandeur_id
          LEFT JOIN users cl ON cl.id = co.client_id
+         LEFT JOIN accounts a ON a.user_id = cl.id
+         LEFT JOIN account_balances b ON b.account_id = a.id
          WHERE co.statut = 'en_attente'
          ORDER BY co.demandee_le ASC`
       );
@@ -755,7 +768,8 @@ router.post(
         // deux directeurs validant en meme temps ne peuvent pas vider
         // la caisse chacun de leur cote.
         const sortEnEspeces =
-          ['retrait_client', 'depense', 'retour_excedent'].includes(operation.type)
+          (['retrait_client', 'depense', 'retour_excedent'].includes(operation.type)
+            || (operation.type === 'retrait_ponctuel' && operation.destination === 'client'))
           && operation.mode_paiement === 'especes';
 
         if (sortEnEspeces) {
@@ -814,6 +828,54 @@ router.post(
             await client.query('UPDATE caisse_operations SET momo_transaction_id = $2 WHERE id = $1', [
               operation.id, momo[0].id,
             ]);
+          }
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // Retrait ponctuel demande par l'operateur.
+        //
+        // Le compte du client est debite dans tous les cas. Ce qui
+        // change, c'est la destination : soit la somme revient a CPG et
+        // alimente la caisse principale, soit elle est remise au client
+        // et sort du tiroir de la caissiere designee (deja verifie par
+        // le controle d'especes ci-dessus).
+        if (operation.type === 'retrait_ponctuel') {
+          const { rows: compte } = await client.query(
+            `SELECT a.id AS account_id, b.balance FROM accounts a
+             JOIN account_balances b ON b.account_id = a.id
+             WHERE a.user_id = $1`,
+            [operation.client_id]
+          );
+          if (!compte[0]) throw new ApiError(404, 'Compte du client introuvable.');
+          if (compte[0].balance < operation.montant) {
+            throw new ApiError(
+              422,
+              `Le solde du client ne couvre plus ce retrait (${compte[0].balance} FCFA) — à rejeter.`
+            );
+          }
+
+          const { rows: entry } = await client.query(
+            `INSERT INTO ledger_entries (account_id, type, amount, label, reference, created_by)
+             VALUES ($1, 'retrait', $2, $3, $4, $5)
+             RETURNING id`,
+            [
+              compte[0].account_id, -operation.montant,
+              `Retrait ponctuel — ${operation.motif}`,
+              `RETRAIT-PONCTUEL-${operation.id.slice(0, 8)}`,
+              req.user.id,
+            ]
+          );
+          ledgerEntryId = entry[0].id;
+
+          // La somme recuperee rejoint les fonds de l'entreprise. Sans
+          // cette ecriture, l'argent quitterait le compte du client sans
+          // apparaitre nulle part.
+          if (operation.destination === 'cpg') {
+            await client.query(
+              `INSERT INTO caisse_principale_mouvements (type, montant, operation_id, cree_par)
+               VALUES ('recuperation_client', $1, $2, $3)`,
+              [operation.montant, operation.id, req.user.id]
+            );
           }
         }
 

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   Inbox, ShieldCheck, MessageCircle, Check, X, Eye, Filter, Send, CalendarClock, Gavel, Plus, Wallet,
-  AlertTriangle, Phone, Pencil, PlayCircle,
+  AlertTriangle, Phone, Pencil, PlayCircle, HandCoins,
 } from 'lucide-react';
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, Tabs, SectionTitle } from '../components/UI';
@@ -15,6 +15,7 @@ import {
   fetchOverdueInstallments, executerEcheances, proposeInstallmentAdjustment,
 } from '../api/adminApi';
 import OperationsView from './OperationsView';
+import PunctualWithdrawalView from './PunctualWithdrawalView';
 import { CreditsEnCoursPanel } from '../components/ClientsCredits';
 
 export default function OperatorView() {
@@ -60,6 +61,7 @@ export default function OperatorView() {
           { key: 'double-validation', label: 'Double validation', icon: Gavel },
           { key: 'verification', label: 'Vérification client', icon: ShieldCheck },
           { key: 'operations', label: 'Opérations mensuelles', icon: CalendarClock },
+          { key: 'retrait-ponctuel', label: 'Retrait ponctuel', icon: HandCoins },
           { key: 'messagerie', label: 'Messagerie', icon: MessageCircle, badge: unreadCount },
         ]}
       />
@@ -74,6 +76,7 @@ export default function OperatorView() {
       {tab === 'double-validation' && <DoubleValidation />}
       {tab === 'verification' && <ClientVerification />}
       {tab === 'operations' && <OperationsView />}
+      {tab === 'retrait-ponctuel' && <PunctualWithdrawalView />}
       {tab === 'messagerie' && <Messaging />}
     </div>
   );

@@ -126,6 +126,135 @@ router.post(
 );
 
 /**
+ * ═══════════════════════════════════════════════════════════════════
+ *  RETRAIT PONCTUEL SUR LE COMPTE D'UN CLIENT
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * POST /admin/operations/retraits-ponctuels
+ *
+ * L'opérateur a parfois besoin de débiter un compte en dehors de tout
+ * circuit prévu : récupérer un trop-perçu de paie, appliquer une
+ * décision de la direction, ou faire remettre une somme au guichet.
+ * Jusqu'ici cela ne se faisait que par intervention directe en base.
+ *
+ * Deux destinations, à préciser à chaque fois :
+ *   • « cpg »    : la somme revient à l'entreprise et alimente la
+ *                  caisse principale. Aucun guichet n'est impliqué.
+ *   • « client » : la somme lui est remise en espèces. Il faut alors
+ *                  désigner la caissière qui la servira, sinon son
+ *                  tiroir se viderait sans qu'elle le sache.
+ *
+ * Le motif est obligatoire : les écritures « fonds non justifiés » de
+ * septembre nous ont coûté des jours d'enquête faute d'avoir dit
+ * pourquoi.
+ *
+ * L'opérateur DEMANDE seulement. Rien ne bouge avant la validation du
+ * directeur — même règle que pour un retrait de caisse, et c'est lui
+ * qui vérifie à ce moment-là que le solde du client y suffit.
+ */
+const retraitPonctuelSchema = z
+  .object({
+    clientId: z.string().uuid(),
+    montant: z.coerce.number().int().min(500).max(5000000),
+    motif: z.string().trim().min(5).max(500),
+    destination: z.enum(['cpg', 'client']),
+    caissierId: z.string().uuid().optional(),
+  })
+  .refine((b) => b.destination === 'cpg' || Boolean(b.caissierId), {
+    message: 'Une remise au client doit désigner la caissière qui la servira.',
+    path: ['caissierId'],
+  })
+  .refine((b) => b.destination === 'client' || !b.caissierId, {
+    message: "Une récupération par CPG ne passe par aucun guichet : pas de caissière à désigner.",
+    path: ['caissierId'],
+  });
+
+router.post(
+  '/retraits-ponctuels',
+  requirePermission('operations.demander_retrait_ponctuel'),
+  validate(retraitPonctuelSchema),
+  async (req, res, next) => {
+    try {
+      const { rows: client } = await query(
+        `SELECT u.id, btrim(u.full_name) AS nom, COALESCE(b.balance, 0) AS solde
+         FROM users u
+         JOIN accounts a ON a.user_id = u.id
+         LEFT JOIN account_balances b ON b.account_id = a.id
+         WHERE u.id = $1 AND u.role = 'client' AND u.status <> 'supprime'`,
+        [req.body.clientId]
+      );
+      if (!client[0]) throw new ApiError(404, 'Client introuvable.');
+
+      // Refus a la demande si le solde n'y suffit pas : inutile de
+      // faire remonter au directeur une operation qu'il devra rejeter.
+      // Il revalidera de toute facon au moment de valider.
+      if (Number(client[0].solde) < req.body.montant) {
+        throw new ApiError(
+          422,
+          `Le solde de ${client[0].nom} est de ${Number(client[0].solde)} FCFA — insuffisant pour un retrait de ${req.body.montant} FCFA.`
+        );
+      }
+
+      if (req.body.caissierId) {
+        const { rows: caissier } = await query(
+          `SELECT id FROM users WHERE id = $1 AND role = 'caissier' AND status = 'actif'`,
+          [req.body.caissierId]
+        );
+        if (!caissier[0]) throw new ApiError(422, 'Caissière introuvable ou inactive.');
+      }
+
+      const { rows } = await query(
+        `INSERT INTO caisse_operations
+           (caissier_id, demandeur_id, type, montant, client_id, motif, destination)
+         VALUES ($1, $2, 'retrait_ponctuel', $3, $4, $5, $6)
+         RETURNING id, montant, statut, demandee_le, destination, motif`,
+        [
+          req.body.caissierId ?? null, req.user.id, req.body.montant,
+          req.body.clientId, req.body.motif, req.body.destination,
+        ]
+      );
+
+      await audit(req, {
+        action: 'operations.retrait_ponctuel_demande',
+        entityType: 'caisse_operation',
+        entityId: rows[0].id,
+        metadata: {
+          client: client[0].nom, montant: req.body.montant,
+          destination: req.body.destination, motif: req.body.motif,
+        },
+      });
+
+      res.status(201).json({ ...rows[0], client: client[0].nom, soldeClient: Number(client[0].solde) });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * GET /admin/operations/caissieres — pour désigner qui servira une
+ * remise au guichet. L'opérateur n'a pas accès au détail des caisses
+ * (c'est une prérogative du directeur) : on ne renvoie que le nom,
+ * juste de quoi remplir une liste déroulante.
+ */
+router.get(
+  '/caissieres',
+  requirePermission('operations.demander_retrait_ponctuel'),
+  async (req, res, next) => {
+    try {
+      const { rows } = await query(
+        `SELECT id, btrim(full_name) AS nom
+         FROM users WHERE role = 'caissier' AND status = 'actif'
+         ORDER BY full_name`
+      );
+      res.json({ caissieres: rows });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
  * GET /admin/operations/clients/rechercher?q=... — aide à la saisie
  * manuelle d'une paie.
  *

@@ -519,6 +519,23 @@ export async function previewSalaryImport(file, employeur, periode) {
   return apiRequest('/v1/admin/operations/salaires/apercu', { method: 'POST', body: formData, isFormData: true });
 }
 
+/** Caissières actives, pour désigner qui servira une remise au guichet. */
+export async function fetchCaissieresPourRetrait() {
+  return apiRequest('/v1/admin/operations/caissieres');
+}
+
+/**
+ * Retrait ponctuel sur le compte d'un client, soumis au directeur.
+ * `destination` vaut 'cpg' (la somme revient à l'entreprise) ou
+ * 'client' (elle lui est remise au guichet, par la caissière désignée).
+ */
+export async function demanderRetraitPonctuel({ clientId, montant, motif, destination, caissierId }) {
+  return apiRequest('/v1/admin/operations/retraits-ponctuels', {
+    method: 'POST',
+    body: { clientId, montant, motif, destination, ...(caissierId ? { caissierId } : {}) },
+  });
+}
+
 /**
  * Clients approchant un nom tapé — aide à la saisie manuelle d'une
  * paie. Tolère les fautes d'orthographe, comme la recherche du guichet.

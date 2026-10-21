@@ -38,6 +38,7 @@ const LABELS = {
   appro: 'Réapprovisionnement',
   depense: 'Dépense de fonctionnement',
   retour_excedent: "Retour d'excédent",
+  retrait_ponctuel: 'Retrait ponctuel',
 };
 
 const ENTREE = new Set(['encaissement_client', 'appro']);
@@ -50,6 +51,14 @@ const ENTREE = new Set(['encaissement_client', 'appro']);
  * est sorti d'elle ce jour-la, sans confondre les deux caisses.
  */
 const sortMobileMoney = (op) => op.mode_paiement && op.mode_paiement !== 'especes';
+
+/**
+ * Un retrait ponctuel recupere par CPG ne passe par aucun guichet : il
+ * ne figure donc pas au brouillard d'une caissiere. Garde-fou au cas ou
+ * une telle ligne arriverait ici — elle ne doit pas vider un tiroir qui
+ * n'a rien verse.
+ */
+const horsCaisse = (op) => op.type === 'retrait_ponctuel' && op.destination === 'cpg';
 
 /**
  * Brouillard de caisse — relevé quotidien d'une caissière : solde
@@ -79,7 +88,7 @@ export function genererBrouillardPDF({ caissiere, date, soldeOuverture, operatio
   operations.forEach((op) => {
     const signe = ENTREE.has(op.type) ? 1 : -1;
     if (sortMobileMoney(op)) totalMobileMoney += op.montant;
-    else solde += signe * op.montant;
+    else if (!horsCaisse(op)) solde += signe * op.montant;
     const heure = new Date(op.decidee_le ?? op.demandee_le).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
     // Une depense ou un reapprovisionnement n'a pas de client : plutot
     // qu'une case vide, on y met le motif, qui dit a quoi l'argent a
@@ -93,7 +102,7 @@ export function genererBrouillardPDF({ caissiere, date, soldeOuverture, operatio
       tiers,
       op.client_number ?? '',
       `${signe > 0 ? '+' : '-'}${formatFCFA(op.montant)}`,
-      sortMobileMoney(op) ? `(${op.mode_paiement})` : formatFCFA(solde),
+      sortMobileMoney(op) ? `(${op.mode_paiement})` : horsCaisse(op) ? '(CPG)' : formatFCFA(solde),
     ]);
   });
   const soldeCloture = solde;

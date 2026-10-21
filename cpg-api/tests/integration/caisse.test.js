@@ -423,3 +423,125 @@ describe(
     });
   }
 );
+
+/* ═══════════════════════════════════════════════════════════════════
+   RETRAIT PONCTUEL DEMANDE PAR L'OPERATEUR
+   ═══════════════════════════════════════════════════════════════════ */
+describe(
+  'Retrait ponctuel sur le compte d\'un client',
+  { skip: !hasTestDatabase() && 'DATABASE_URL ne pointe pas vers une base de test' },
+  () => {
+    test('un retrait au-delà du solde du client est refusé dès la demande', async () => {
+      const operateurToken = await loginStaff('operateur');
+      const { status } = await api('/v1/admin/operations/retraits-ponctuels', {
+        method: 'POST', token: operateurToken,
+        body: {
+          clientId, montant: 900000, destination: 'cpg',
+          motif: 'Tentative au-delà du solde',
+        },
+      });
+      assert.equal(status, 422);
+    });
+
+    test('le motif est obligatoire', async () => {
+      const operateurToken = await loginStaff('operateur');
+      const { status } = await api('/v1/admin/operations/retraits-ponctuels', {
+        method: 'POST', token: operateurToken,
+        body: { clientId, montant: 5000, destination: 'cpg', motif: 'x' },
+      });
+      assert.equal(status, 422);
+    });
+
+    test('une remise au client sans caissière désignée est refusée', async () => {
+      const operateurToken = await loginStaff('operateur');
+      const { status } = await api('/v1/admin/operations/retraits-ponctuels', {
+        method: 'POST', token: operateurToken,
+        body: {
+          clientId, montant: 5000, destination: 'client',
+          motif: 'Remise au guichet sans caissière',
+        },
+      });
+      assert.equal(status, 422);
+    });
+
+    // Le coeur du circuit : l'argent quitte le client et rejoint CPG,
+    // sans toucher au tiroir d'une caissiere.
+    test('une récupération par CPG débite le client et alimente la caisse principale', async () => {
+      const operateurToken = await loginStaff('operateur');
+      await api('/v1/caisse/encaissements', {
+        method: 'POST', token: caissierToken, body: { clientId, montant: 80000 },
+      });
+      const { body: avantCaisse } = await api('/v1/caisse/ma-caisse', { token: caissierToken });
+      const { body: avantClient } = await api(`/v1/caisse/clients/${clientId}/transactions`, {
+        token: caissierToken,
+      });
+
+      const { status, body: demande } = await api('/v1/admin/operations/retraits-ponctuels', {
+        method: 'POST', token: operateurToken,
+        body: {
+          clientId, montant: 20000, destination: 'cpg',
+          motif: 'Récupération trop-perçu salaire septembre',
+        },
+      });
+      assert.equal(status, 201);
+      assert.equal(demande.statut, 'en_attente');
+
+      // Le directeur doit la voir, alors qu'elle n'a aucune caissière.
+      const { body: attente } = await api('/v1/caisse/demandes-en-attente', { token: directeurToken });
+      const vue = attente.demandes.find((d) => d.id === demande.id);
+      assert.ok(vue, 'une demande sans caissière doit rester visible du directeur');
+      assert.equal(vue.destination, 'cpg');
+      assert.match(vue.motif, /trop-perçu/);
+
+      const { status: valide } = await api(`/v1/caisse/operations/${demande.id}/valider`, {
+        method: 'POST', token: directeurToken,
+      });
+      assert.equal(valide, 200);
+
+      const { body: apresClient } = await api(`/v1/caisse/clients/${clientId}/transactions`, {
+        token: caissierToken,
+      });
+      assert.equal(
+        Number(apresClient.client.balance), Number(avantClient.client.balance) - 20000,
+        'le client est débité de 20 000'
+      );
+
+      // La caisse de la caissière ne doit pas avoir bougé.
+      const { body: apresCaisse } = await api('/v1/caisse/ma-caisse', { token: caissierToken });
+      assert.equal(
+        Number(apresCaisse.solde), Number(avantCaisse.solde),
+        "une récupération par CPG ne touche pas au tiroir de la caissière"
+      );
+    });
+
+    test('une remise au client sort bien des espèces de la caissière', async () => {
+      const operateurToken = await loginStaff('operateur');
+      const { body: avant } = await api('/v1/caisse/ma-caisse', { token: caissierToken });
+
+      const { body: moi } = await api('/v1/auth/moi', { token: caissierToken });
+      assert.ok(moi.id, 'identifiant de la caissière');
+      const { status, body: demande } = await api('/v1/admin/operations/retraits-ponctuels', {
+        method: 'POST', token: operateurToken,
+        body: {
+          clientId, montant: 10000, destination: 'client',
+          motif: 'Remise exceptionnelle au guichet', caissierId: moi.id,
+        },
+      });
+      assert.equal(status, 201);
+
+      await api(`/v1/caisse/operations/${demande.id}/valider`, { method: 'POST', token: directeurToken });
+
+      const { body: apres } = await api('/v1/caisse/ma-caisse', { token: caissierToken });
+      assert.equal(Number(apres.solde), Number(avant.solde) - 10000);
+    });
+
+    test('un gestionnaire ne peut pas demander de retrait ponctuel', async () => {
+      const gestionnaireToken = await loginStaff('gestionnaire');
+      const { status } = await api('/v1/admin/operations/retraits-ponctuels', {
+        method: 'POST', token: gestionnaireToken,
+        body: { clientId, montant: 5000, destination: 'cpg', motif: 'Tentative non autorisée' },
+      });
+      assert.equal(status, 403);
+    });
+  }
+);

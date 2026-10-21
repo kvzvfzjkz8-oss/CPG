@@ -1476,10 +1476,21 @@ function CaisseValidation() {
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
                   <Badge tone={d.type === 'appro' ? 'gold' : d.type === 'depense' ? 'danger' : 'neutral'}>
-                    {d.type === 'appro' ? 'Réapprovisionnement' : d.type === 'depense' ? 'Dépense' : 'Retrait guichet'}
+                    {d.type === 'appro' ? 'Réapprovisionnement'
+                      : d.type === 'depense' ? 'Dépense'
+                      : d.type === 'retrait_ponctuel' ? 'Retrait ponctuel'
+                      : 'Retrait guichet'}
                   </Badge>
+                  {/* Un retrait ponctuel dit où va l'argent : récupéré par
+                      CPG, ou remis au client. La distinction change ce que
+                      le directeur approuve. */}
+                  {d.type === 'retrait_ponctuel' && (
+                    <Badge tone={d.destination === 'cpg' ? 'gold' : 'neutral'}>
+                      {d.destination === 'cpg' ? 'vers CPG' : 'remis au client'}
+                    </Badge>
+                  )}
                   <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>
-                    {d.caissier}
+                    {d.caissier ?? (d.demandeur ? `demandé par ${d.demandeur}` : '—')}
                   </p>
                   {d.justifie && d.a_un_fichier ? (
                     <button
@@ -1501,6 +1512,25 @@ function CaisseValidation() {
                 {d.client && (
                   <p style={{ margin: 0, fontSize: 12, color: colors.muted, fontFamily: fonts.body }}>
                     Client : {d.client} ({d.client_number})
+                    {/* Le solde au moment de la validation, pas au moment
+                        de la demande : elle peut dater de plusieurs jours. */}
+                    {d.solde_client !== undefined && (
+                      <>
+                        {' · solde '}
+                        <strong style={{
+                          fontFamily: fonts.mono,
+                          color: Number(d.solde_client) < Number(d.montant) ? colors.danger : colors.forestLight,
+                        }}>
+                          {formatFCFA(d.solde_client)} F
+                        </strong>
+                        {Number(d.solde_client) < Number(d.montant) && ' — insuffisant'}
+                      </>
+                    )}
+                  </p>
+                )}
+                {d.type === 'retrait_ponctuel' && d.caissier && (
+                  <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+                    Servi par {d.caissier}
                   </p>
                 )}
                 <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>

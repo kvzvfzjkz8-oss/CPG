@@ -54,6 +54,12 @@ export const PERMISSIONS = {
     // rétablit dès qu'un dépôt arrive ensuite.
     'frais.appliquer',
 
+    // Retrait ponctuel sur le compte d'un client : recuperer un
+    // trop-percu, appliquer une decision, ou faire remettre une somme
+    // au guichet. L'operateur DEMANDE seulement — rien ne bouge avant
+    // la validation du directeur, comme pour un retrait de caisse.
+    'operations.demander_retrait_ponctuel',
+
     // Proposer la suppression d'un dossier qui lui arrive en double
     // validation — rien n'est encore débloqué à ce stade, donc rien à
     // extourner. L'opérateur ne supprime plus lui-même : la demande
