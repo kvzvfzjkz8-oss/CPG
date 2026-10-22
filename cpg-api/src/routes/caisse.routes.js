@@ -695,7 +695,13 @@ router.get(
                 co.destination,
                 -- Un rattrapage de frais doit dire QUOI et pour QUEL
                 -- MOIS : « 6 500 F » seul ne permet pas de décider.
-                co.nature_frais, to_char(co.periode_frais, 'YYYY-MM') AS periode_frais,
+                --
+                -- CONTOURNEMENT TEMPORAIRE — à retirer après la
+                -- migration 047 (voir validerUneOperation) : nommer ces
+                -- colonnes rendrait tout cet écran inaccessible tant
+                -- qu'elles n'existent pas en base.
+                to_jsonb(co) ->> 'nature_frais' AS nature_frais,
+                left(to_jsonb(co) ->> 'periode_frais', 7) AS periode_frais,
                 (co.justificatif_donnees IS NOT NULL) AS a_un_fichier,
                 ca.full_name AS caissier,
                 de.full_name AS demandeur, de.role::text AS demandeur_role,
@@ -763,7 +769,16 @@ async function validerUneOperation({ operationId, userId }) {
       // minuit heure locale : au Gabon (UTC+1), le convertir en chaîne
       // ISO donne la veille, donc le MOIS PRÉCÉDENT. On aurait prélevé
       // septembre en croyant prélever octobre.
-      `SELECT *, to_char(periode_frais, 'YYYY-MM') AS periode_frais_texte
+      //
+      // CONTOURNEMENT TEMPORAIRE — à retirer après la migration 047.
+      // Passer par to_jsonb plutôt que de nommer la colonne évite que
+      // PostgreSQL ait à la résoudre à l'analyse de la requête : sans
+      // cela, TOUTE validation de caisse échoue tant que la 047 n'est
+      // pas appliquée, y compris les retraits guichet qui n'ont rien à
+      // voir avec les frais. Une date rendue en JSON s'écrit
+      // « 2026-10-01 », donc les sept premiers caractères donnent le
+      // mois — vérifié identique à to_char(…, 'YYYY-MM') sur 24 mois.
+      `SELECT *, left(to_jsonb(caisse_operations) ->> 'periode_frais', 7) AS periode_frais_texte
        FROM caisse_operations WHERE id = $1 FOR UPDATE`,
       [operationId]
     );
