@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   Inbox, ShieldCheck, MessageCircle, Check, X, Eye, Filter, Send, CalendarClock, Gavel, Plus, Wallet,
-  AlertTriangle, Phone, Pencil, PlayCircle, HandCoins,
+  AlertTriangle, Phone, Pencil, PlayCircle, HandCoins, RefreshCw,
 } from 'lucide-react';
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, Tabs, SectionTitle } from '../components/UI';
@@ -301,9 +301,13 @@ function DoubleValidation() {
   const [confirmingDeleteId, setConfirmingDeleteId] = useState(null);
   const [deleteMotif, setDeleteMotif] = useState('');
   const [deleteError, setDeleteError] = useState('');
+  const [erreur, setErreur] = useState('');
 
-  const load = async () => {
-    setLoading(true);
+  // Même défaut que les demandes entrantes, même correction : un échec
+  // laissait les deux listes vides sans le moindre message, donc
+  // impossible à distinguer d'une file réellement vide.
+  const load = async ({ silencieux = false } = {}) => {
+    if (!silencieux) setLoading(true);
     try {
       const [queue, demandes] = await Promise.all([
         fetchDoubleValidationQueue(),
@@ -311,12 +315,22 @@ function DoubleValidation() {
       ]);
       setPending(queue);
       setDemandesSuppression(demandes);
+      setErreur('');
+    } catch (e) {
+      setErreur(e.message ?? 'Les dossiers à revalider n’ont pas pu être chargés.');
     } finally {
-      setLoading(false);
+      if (!silencieux) setLoading(false);
     }
   };
 
   useEffect(() => { load(); }, []);
+
+  // Un dossier devient revalidable dès que la séance de commission est
+  // tenue : il doit apparaître sans que l'opératrice recharge.
+  useEffect(() => {
+    const interval = setInterval(() => load({ silencieux: true }), 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Dossiers pour lesquels une demande de suppression est déjà posée,
   // en attente que le directeur la confirme ou la rejette.
@@ -370,13 +384,43 @@ function DoubleValidation() {
           {toast}
         </div>
       )}
+      {erreur && (
+        <div style={{
+          background: colors.dangerPale, border: `1px solid ${colors.danger}`, borderRadius: 12,
+          padding: '11px 16px', marginBottom: 16, fontSize: 12, color: colors.danger, fontFamily: fonts.body,
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          <AlertTriangle size={15} style={{ flexShrink: 0 }} />
+          <span style={{ flex: 1 }}>{erreur}</span>
+          <button
+            onClick={() => load()}
+            style={{
+              border: `1px solid ${colors.danger}`, background: 'transparent', color: colors.danger,
+              borderRadius: 8, padding: '4px 10px', fontSize: 11, fontFamily: fonts.body, cursor: 'pointer',
+            }}
+          >
+            Réessayer
+          </button>
+        </div>
+      )}
       <Card style={{ padding: 0, overflow: 'hidden' }}>
-        <SectionTitle>
+        <SectionTitle
+          right={
+            <button onClick={() => load()} disabled={loading} style={iconBtnStyle}>
+              <RefreshCw size={13} /> Actualiser
+            </button>
+          }
+        >
           {loading ? 'Chargement…' : `${totalEnAttente} dossier${totalEnAttente > 1 ? 's' : ''} validé${totalEnAttente > 1 ? 's' : ''} par le comité, à revalider`}
         </SectionTitle>
-        {!loading && totalEnAttente === 0 && (
+        {!loading && totalEnAttente === 0 && !erreur && (
           <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
             Aucun dossier en attente de double validation.
+          </p>
+        )}
+        {!loading && totalEnAttente === 0 && erreur && (
+          <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
+            Impossible de savoir s'il y a des dossiers : le chargement a échoué.
           </p>
         )}
         {pending.map((r) => {
@@ -467,18 +511,43 @@ function IncomingRequests({ onSelect }) {
   const [busy, setBusy] = useState(null);
   const [showNew, setShowNew] = useState(false);
   const [toast, setToast] = useState('');
+  const [erreur, setErreur] = useState('');
 
   const flash = (text) => {
     setToast(text);
     setTimeout(() => setToast(''), 6000);
   };
 
-  const load = () => {
-    setLoading(true);
-    fetchCreditRequests('en_verification').then(setRequests).finally(() => setLoading(false));
+  /**
+   * Un échec de chargement ne doit PLUS passer inaperçu.
+   *
+   * Cet écran n'avait aucune gestion d'erreur : si l'appel échouait —
+   * session expirée, API injoignable, erreur serveur — la liste restait
+   * vide et l'opératrice voyait « Aucune demande en attente. Tout est
+   * traité. », exactement comme un écran légitimement vide. Le
+   * 22/10/2026, cela a coûté une heure à chercher une panne qui
+   * n'existait pas.
+   */
+  const load = ({ silencieux = false } = {}) => {
+    if (!silencieux) setLoading(true);
+    return fetchCreditRequests('en_verification')
+      .then((liste) => { setRequests(liste); setErreur(''); })
+      .catch((e) => setErreur(e.message ?? 'La liste des demandes n’a pas pu être chargée.'))
+      .finally(() => { if (!silencieux) setLoading(false); });
   };
 
   useEffect(() => { load(); }, []);
+
+  /**
+   * Une demande déposée pendant que l'opératrice a sa page ouverte doit
+   * apparaître d'elle-même. Sans cela, un dossier créé à 13h00 reste
+   * invisible jusqu'au prochain rechargement manuel — et personne ne
+   * pense à recharger une page qui affiche « tout est traité ».
+   */
+  useEffect(() => {
+    const interval = setInterval(() => load({ silencieux: true }), 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   const handle = async (id, action) => {
     setBusy(id);
@@ -501,11 +570,41 @@ function IncomingRequests({ onSelect }) {
           {toast}
         </div>
       )}
+      {/* Un échec de chargement doit se voir. Sinon la liste vide se
+          confond avec « tout est traité » et on cherche la panne
+          ailleurs. */}
+      {erreur && (
+        <div style={{
+          background: colors.dangerPale, borderBottom: `1px solid ${colors.danger}`,
+          padding: '11px 20px', fontSize: 12, color: colors.danger, fontFamily: fonts.body,
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          <AlertTriangle size={15} style={{ flexShrink: 0 }} />
+          <span style={{ flex: 1 }}>
+            {erreur} — la liste ci-dessous n'est peut-être pas à jour.
+          </span>
+          <button
+            onClick={() => load()}
+            style={{
+              border: `1px solid ${colors.danger}`, background: 'transparent', color: colors.danger,
+              borderRadius: 8, padding: '4px 10px', fontSize: 11, fontFamily: fonts.body, cursor: 'pointer',
+            }}
+          >
+            Réessayer
+          </button>
+        </div>
+      )}
+
       <SectionTitle
         right={
           <div style={{ display: 'flex', gap: 8 }}>
             <button onClick={() => setShowNew(true)} style={{ ...iconBtnStyle, background: colors.forest, color: '#fff', border: 'none' }}>
               <Plus size={13} /> Nouvelle demande
+            </button>
+            {/* Rechargement à la main, en plus du rafraîchissement
+                automatique toutes les 30 secondes. */}
+            <button onClick={() => load()} disabled={loading} style={iconBtnStyle}>
+              <RefreshCw size={13} /> Actualiser
             </button>
             <button style={iconBtnStyle}>
               <Filter size={13} /> Filtrer
@@ -527,9 +626,17 @@ function IncomingRequests({ onSelect }) {
         />
       )}
 
-      {!loading && requests.length === 0 && (
+      {/* « Tout est traité » ne doit s'afficher que si le chargement a
+          réellement réussi : l'affirmer après un échec était le cœur du
+          malentendu. */}
+      {!loading && requests.length === 0 && !erreur && (
         <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
           Aucune demande en attente. Tout est traité.
+        </p>
+      )}
+      {!loading && requests.length === 0 && erreur && (
+        <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
+          Impossible de savoir s'il y a des demandes : le chargement a échoué.
         </p>
       )}
 
