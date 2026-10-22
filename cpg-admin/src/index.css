@@ -32,3 +32,52 @@ input::placeholder {
 table {
   border-collapse: collapse;
 }
+
+/* ─────────────────────────────────────────────────────────────────────
+   NOTIFICATIONS QUI SE VOIENT
+
+   « Il faut que tes notifications soient plus visibles, fassent du
+     bruit et poussent l'utilisateur à cliquer. »
+
+   Une pastille rouge immobile dans un coin passe inaperçue quand on
+   travaille sur un tableau. Trois mouvements, et aucun qui tourne en
+   boucle indéfiniment : une animation perpétuelle devient elle-même du
+   bruit de fond qu'on cesse de voir.
+   ───────────────────────────────────────────────────────────────────── */
+
+/* La pastille respire : assez pour accrocher l'œil en périphérie,
+   assez lentement pour ne pas fatiguer. */
+@keyframes cpg-pastille-pulse {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.18); }
+}
+
+/* Halo qui s'écarte de la cloche — la seule chose qui attire vraiment
+   le regard hors du point de fixation. */
+@keyframes cpg-halo {
+  0%   { transform: scale(0.8); opacity: 0.55; }
+  70%  { transform: scale(2.1); opacity: 0; }
+  100% { transform: scale(2.1); opacity: 0; }
+}
+
+/* Secousse courte à l'arrivée d'une nouveauté, jouée une seule fois. */
+@keyframes cpg-cloche-sonne {
+  0%, 100% { transform: rotate(0deg); }
+  15%  { transform: rotate(-14deg); }
+  30%  { transform: rotate(12deg); }
+  45%  { transform: rotate(-9deg); }
+  60%  { transform: rotate(7deg); }
+  75%  { transform: rotate(-4deg); }
+}
+
+/* Bandeau qui descend du haut : c'est lui qui pousse au clic. */
+@keyframes cpg-bandeau-entre {
+  from { transform: translateY(-14px); opacity: 0; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+
+/* Respecter ceux qui ont demandé moins d'animations à leur système :
+   le fond coloré et le compteur suffisent alors à signaler. */
+@media (prefers-reduced-motion: reduce) {
+  [class^='cpg-anim-'] { animation: none !important; }
+}

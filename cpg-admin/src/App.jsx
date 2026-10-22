@@ -24,6 +24,10 @@ function AuthenticatedApp() {
   // simple chaîne : recliquer la même tâche doit rouvrir l'onglet, donc
   // il faut une nouvelle identité à chaque clic.
   const [ongletDemande, setOngletDemande] = useState(null);
+  // Compteur de messages non lus, remonte par la cloche : l'icone de
+  // messagerie de la barre laterale est l'entree dediee aux messages,
+  // elle doit porter le chiffre elle aussi.
+  const [messagesNonLus, setMessagesNonLus] = useState(0);
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: colors.bg }}>
@@ -98,10 +102,29 @@ function AuthenticatedApp() {
           <span style={{ flex: 1, fontSize: 11, color: '#fff', fontFamily: fonts.body }}>{user?.fullName}</span>
           <button
             onClick={() => setShowMessagerie(true)}
-            style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: 0 }}
-            title="Messagerie interne — équipe"
+            style={{
+              border: 'none', background: 'transparent', cursor: 'pointer', padding: 0,
+              position: 'relative', display: 'flex',
+            }}
+            title={messagesNonLus > 0
+              ? `${messagesNonLus} message${messagesNonLus > 1 ? 's' : ''} non lu${messagesNonLus > 1 ? 's' : ''}`
+              : 'Messagerie interne — équipe'}
           >
-            <MessageSquare size={14} color={colors.onForest} />
+            <MessageSquare size={14} color={messagesNonLus > 0 ? colors.gold : colors.onForest} />
+            {messagesNonLus > 0 && (
+              <span
+                className="cpg-anim-pastille"
+                style={{
+                  position: 'absolute', top: -6, right: -7, minWidth: 15, height: 15, borderRadius: 8,
+                  background: colors.danger, color: '#fff', fontSize: 9, fontWeight: 700,
+                  fontFamily: fonts.body, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  padding: '0 3px', border: `2px solid ${colors.forest}`,
+                  animation: 'cpg-pastille-pulse 1.9s ease-in-out infinite',
+                }}
+              >
+                {messagesNonLus > 9 ? '9+' : messagesNonLus}
+              </span>
+            )}
           </button>
           <button
             onClick={() => setShowPasswordModal(true)}
@@ -164,6 +187,7 @@ function AuthenticatedApp() {
             <NotificationBell
               onOuvrirMessagerie={() => setShowMessagerie(true)}
               onOuvrirOnglet={(cle) => setOngletDemande({ cle })}
+              onMessagesNonLus={setMessagesNonLus}
             />
           </div>
         </header>
@@ -196,15 +220,75 @@ const ONGLET_PAR_TACHE = {
 };
 
 /**
+ * LE SON D'ARRIVÉE
+ *
+ * Deux notes brèves, synthétisées à la volée : pas de fichier audio à
+ * charger, donc rien qui dépende du réseau ni d'un format accepté par
+ * le navigateur.
+ *
+ * Une contrainte à connaître : les navigateurs refusent de jouer du son
+ * avant que l'utilisateur ait interagi avec la page. Le contexte audio
+ * est donc créé au premier clic, pas au chargement — sans cela, le
+ * premier son serait avalé en silence et on croirait à une panne.
+ */
+let contexteAudio = null;
+
+function preparerSon() {
+  if (contexteAudio) return;
+  const Ctx = window.AudioContext ?? window.webkitAudioContext;
+  if (!Ctx) return;
+  try {
+    contexteAudio = new Ctx();
+  } catch {
+    contexteAudio = null;
+  }
+}
+
+function jouerCarillon() {
+  if (!contexteAudio) return;
+  try {
+    if (contexteAudio.state === 'suspended') contexteAudio.resume();
+    const maintenant = contexteAudio.currentTime;
+    // Deux notes montantes : reconnaissable sans être strident, et
+    // assez court pour ne pas gêner si plusieurs arrivent d'affilée.
+    [
+      { frequence: 880, debut: 0, duree: 0.16 },
+      { frequence: 1175, debut: 0.13, duree: 0.22 },
+    ].forEach(({ frequence, debut, duree }) => {
+      const oscillateur = contexteAudio.createOscillator();
+      const gain = contexteAudio.createGain();
+      oscillateur.type = 'sine';
+      oscillateur.frequency.value = frequence;
+      // Attaque et extinction douces : un créneau brut « claque ».
+      gain.gain.setValueAtTime(0, maintenant + debut);
+      gain.gain.linearRampToValueAtTime(0.16, maintenant + debut + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, maintenant + debut + duree);
+      oscillateur.connect(gain);
+      gain.connect(contexteAudio.destination);
+      oscillateur.start(maintenant + debut);
+      oscillateur.stop(maintenant + debut + duree + 0.02);
+    });
+  } catch {
+    // Un son qui ne part pas ne doit jamais casser l'écran.
+  }
+}
+
+/**
  * Cloche de notifications — à la connexion et ensuite à intervalle
  * régulier, affiche les tâches en attente propres au rôle et le
  * nombre de messages internes non lus. Cliquer sur un message ouvre
  * directement la messagerie, cliquer sur une tâche ouvre son onglet.
  */
-function NotificationBell({ onOuvrirMessagerie, onOuvrirOnglet }) {
+function NotificationBell({ onOuvrirMessagerie, onOuvrirOnglet, onMessagesNonLus }) {
   const [notifications, setNotifications] = useState(null);
   const [open, setOpen] = useState(false);
+  // Vrai pendant quelques secondes après l'arrivée d'une nouveauté :
+  // c'est ce qui déclenche la secousse, le halo et le bandeau.
+  const [nouveaute, setNouveaute] = useState(null);
   const ref = useRef(null);
+  // Dernier total connu. Une ref et non un état : le comparer ne doit
+  // pas provoquer de rendu supplémentaire.
+  const totalPrecedent = useRef(null);
 
   const load = () => {
     fetchNotifications().then(setNotifications).catch(() => {});
@@ -219,6 +303,19 @@ function NotificationBell({ onOuvrirMessagerie, onOuvrirOnglet }) {
     return () => clearInterval(interval);
   }, []);
 
+  // Le navigateur refuse de jouer un son avant toute interaction. On
+  // prépare donc le contexte audio au premier clic de la session, une
+  // seule fois — sinon le premier carillon partirait dans le vide.
+  useEffect(() => {
+    const amorcer = () => preparerSon();
+    document.addEventListener('pointerdown', amorcer, { once: true });
+    document.addEventListener('keydown', amorcer, { once: true });
+    return () => {
+      document.removeEventListener('pointerdown', amorcer);
+      document.removeEventListener('keydown', amorcer);
+    };
+  }, []);
+
   useEffect(() => {
     const onClickOutside = (e) => {
       if (ref.current && !ref.current.contains(e.target)) setOpen(false);
@@ -231,20 +328,155 @@ function NotificationBell({ onOuvrirMessagerie, onOuvrirOnglet }) {
   const messagesEnAttente = notifications?.messagesEnAttente ?? 0;
   const total = totalTaches + messagesEnAttente;
 
+  // ─── Détection d'une nouveauté ────────────────────────────────────
+  //
+  // On ne signale que les HAUSSES, et jamais le premier chargement :
+  // sonner à chaque connexion pour des tâches déjà connues apprendrait
+  // à ignorer le son. Le compteur qui redescend ne sonne pas non plus —
+  // c'est le signe qu'on vient de traiter quelque chose.
+  useEffect(() => {
+    if (notifications === null) return;
+    const avant = totalPrecedent.current;
+    totalPrecedent.current = total;
+    if (avant === null || total <= avant) return;
+
+    jouerCarillon();
+    setNouveaute({ nombre: total - avant, le: Date.now() });
+  }, [total, notifications]);
+
+  // Le bandeau et les animations s'effacent d'eux-mêmes : une alerte
+  // qui reste à l'écran indéfiniment devient du décor.
+  useEffect(() => {
+    if (!nouveaute) return undefined;
+    const t = setTimeout(() => setNouveaute(null), 14000);
+    return () => clearTimeout(t);
+  }, [nouveaute]);
+
+  useEffect(() => { onMessagesNonLus?.(messagesEnAttente); }, [messagesEnAttente]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Le compteur dans le titre de l'onglet du navigateur. C'est le seul
+  // signal qui porte quand la fenêtre n'est pas au premier plan — et
+  // c'est le cas le plus fréquent : on travaille ailleurs en attendant.
+  useEffect(() => {
+    const base = 'CPG — Back-office';
+    document.title = total > 0 ? `(${total}) ${base}` : base;
+    return () => { document.title = base; };
+  }, [total]);
+
+  /** Ouvre ce qui attend : le plus urgent d'abord. */
+  const ouvrirLePlusUrgent = () => {
+    setNouveaute(null);
+    const premiere = (notifications?.taches ?? []).find((t) => ONGLET_PAR_TACHE[t.cle]);
+    if (premiere && onOuvrirOnglet) {
+      onOuvrirOnglet(ONGLET_PAR_TACHE[premiere.cle]);
+      return;
+    }
+    if (messagesEnAttente > 0) { onOuvrirMessagerie?.(); return; }
+    setOpen(true);
+  };
+
+  const resume = [
+    totalTaches > 0 ? `${totalTaches} tâche${totalTaches > 1 ? 's' : ''} à traiter` : null,
+    messagesEnAttente > 0 ? `${messagesEnAttente} message${messagesEnAttente > 1 ? 's' : ''} non lu${messagesEnAttente > 1 ? 's' : ''}` : null,
+  ].filter(Boolean).join(' · ');
+
   return (
     <div ref={ref} style={{ position: 'relative' }}>
-      <button
-        onClick={() => { setOpen((v) => !v); if (!open) load(); }}
-        style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: 0, position: 'relative' }}
-        title="Notifications"
-      >
-        <Bell size={17} color={colors.ink} />
-        {total > 0 && (
+      {/* ── Bandeau d'arrivée ──────────────────────────────────────
+          C'est lui qui pousse au clic : il descend sous l'en-tête, dit
+          ce qui attend, et ouvre directement le bon écran. Il s'effface
+          seul au bout de quatorze secondes — une alerte permanente
+          devient du décor qu'on ne lit plus. */}
+      {nouveaute && (
+        <div
+          role="status"
+          className="cpg-anim-bandeau"
+          style={{
+            position: 'fixed', top: 78, right: 28, zIndex: 120, maxWidth: 380,
+            display: 'flex', alignItems: 'center', gap: 12,
+            padding: '13px 16px', borderRadius: 12,
+            background: colors.forest, color: '#fff',
+            boxShadow: '0 10px 30px rgba(11,61,46,0.30)',
+            animation: 'cpg-bandeau-entre 260ms ease-out',
+          }}
+        >
           <span style={{
-            position: 'absolute', top: -5, right: -6, minWidth: 15, height: 15, borderRadius: 8,
-            background: colors.danger, color: '#fff', fontSize: 9, fontWeight: 700, fontFamily: fonts.body,
-            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px',
+            position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            width: 30, height: 30, borderRadius: 15, background: 'rgba(255,255,255,0.14)', flexShrink: 0,
           }}>
+            <Bell size={15} color="#fff" />
+          </span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <p style={{ margin: 0, fontSize: 12.5, fontWeight: 600, fontFamily: fonts.body }}>
+              {nouveaute.nombre === 1 ? 'Une nouvelle tâche vous attend' : `${nouveaute.nombre} nouvelles tâches vous attendent`}
+            </p>
+            {resume && (
+              <p style={{ margin: '2px 0 0', fontSize: 11, color: 'rgba(255,255,255,0.78)', fontFamily: fonts.body }}>
+                {resume}
+              </p>
+            )}
+          </div>
+          <button
+            onClick={ouvrirLePlusUrgent}
+            style={{
+              border: 'none', borderRadius: 9, padding: '7px 13px', cursor: 'pointer',
+              background: colors.gold, color: colors.forest,
+              fontSize: 11.5, fontWeight: 700, fontFamily: fonts.body, whiteSpace: 'nowrap',
+            }}
+          >
+            Ouvrir
+          </button>
+          <button
+            onClick={() => setNouveaute(null)}
+            title="Masquer"
+            style={{
+              border: 'none', background: 'transparent', cursor: 'pointer', padding: 2,
+              color: 'rgba(255,255,255,0.6)', display: 'flex',
+            }}
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      <button
+        onClick={() => { setOpen((v) => !v); setNouveaute(null); if (!open) load(); }}
+        style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: 0, position: 'relative' }}
+        title={total > 0 ? resume : 'Notifications'}
+      >
+        {/* Halo qui s'écarte : la seule chose qui accroche vraiment le
+            regard quand on fixe un tableau ailleurs sur l'écran. */}
+        {nouveaute && (
+          <span
+            className="cpg-anim-halo"
+            style={{
+              position: 'absolute', top: -7, right: -8, width: 29, height: 29, borderRadius: 15,
+              background: colors.danger, pointerEvents: 'none',
+              animation: 'cpg-halo 1.5s ease-out 3',
+            }}
+          />
+        )}
+        <span
+          className={nouveaute ? 'cpg-anim-cloche' : undefined}
+          style={{
+            display: 'flex',
+            transformOrigin: '50% 10%',
+            animation: nouveaute ? 'cpg-cloche-sonne 820ms ease-in-out 2' : undefined,
+          }}
+        >
+          <Bell size={17} color={total > 0 ? colors.danger : colors.ink} />
+        </span>
+        {total > 0 && (
+          <span
+            className="cpg-anim-pastille"
+            style={{
+              position: 'absolute', top: -6, right: -7, minWidth: 17, height: 17, borderRadius: 9,
+              background: colors.danger, color: '#fff', fontSize: 9.5, fontWeight: 700, fontFamily: fonts.body,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 4px',
+              border: `2px solid ${colors.card}`, boxShadow: '0 1px 4px rgba(0,0,0,0.25)',
+              animation: 'cpg-pastille-pulse 1.9s ease-in-out infinite',
+            }}
+          >
             {total > 99 ? '99+' : total}
           </span>
         )}
