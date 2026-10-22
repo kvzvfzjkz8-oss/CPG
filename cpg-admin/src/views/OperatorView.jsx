@@ -61,7 +61,7 @@ export default function OperatorView() {
           { key: 'double-validation', label: 'Double validation', icon: Gavel },
           { key: 'verification', label: 'Vérification client', icon: ShieldCheck },
           { key: 'operations', label: 'Opérations mensuelles', icon: CalendarClock },
-          { key: 'retrait-ponctuel', label: 'Retrait ponctuel', icon: HandCoins },
+          { key: 'retrait-ponctuel', label: 'Opérations ponctuelles', icon: HandCoins },
           { key: 'messagerie', label: 'Messagerie', icon: MessageCircle, badge: unreadCount },
         ]}
       />

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   LayoutDashboard, ShieldCheck, Users, Wallet, UserCog, Bell, Package, CalendarClock, Check, X,
-  Gavel, KeyRound, History, Calculator, Inbox, Info, Trash2, AlertTriangle, HandCoins,
+  Gavel, KeyRound, History, Calculator, Inbox, Info, Trash2, AlertTriangle, HandCoins, Search,
 } from 'lucide-react';
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -12,13 +12,13 @@ import { CreditsEnCoursPanel, ClientDetailModal } from '../components/ClientsCre
 import { CoffresPanel } from '../components/Coffres';
 import { Card, Badge, Tabs, KpiCard, SectionTitle, DataTable, td } from '../components/UI';
 import {
-  approveCredit, setUserStatus, fetchUsers, createUser, updateUser, resetClientPin, fetchStatistics, fetchMomoTransactions,
+  approveCredit, setUserStatus, fetchUsers, rechercherUtilisateurs, createUser, updateUser, resetClientPin, fetchStatistics, fetchMomoTransactions,
   fetchPendingInstallmentAdjustments, decideInstallmentAdjustment,
   fetchPendingCreditDeletionRequests, deciderSuppressionCreditDoubleValidation,
   fetchPendingCommissionItemDeletionRequests, deciderSuppressionCommissionItemDoubleValidation,
   fetchFinalApprovalQueue, grantExceptionAuthorization, fetchExceptionAuthorizations,
   supprimerCreditDoubleValidation,
-  fetchDemandesCaisseEnAttente, validerOperationCaisse, rejeterOperationCaisse,
+  fetchDemandesCaisseEnAttente, validerOperationCaisse, validerOperationsCaisseEnLot, rejeterOperationCaisse,
   fetchAuditLog, fetchCaissePrincipale, alimenterCaissePrincipale, fetchToutesLesCaisses,
   fetchComptesSoldes, zeroOutAccountBalances,
   simulateCredit, fetchProducts, creerDemandePourClient, searchClientPourDemande,
@@ -33,8 +33,15 @@ import CommissionView from './CommissionView';
 import CommissionHistoryView from './CommissionHistoryView';
 import PayrollTrackingView from './PayrollTrackingView';
 
-export default function SupervisorView({ role }) {
+export default function SupervisorView({ role, ongletDemande }) {
   const [tab, setTab] = useState('vue');
+
+  // La cloche de notifications ouvre directement l'onglet concerné :
+  // voir « 3 retraits à valider » puis devoir retrouver l'onglet à la
+  // main faisait attendre le guichet pour rien.
+  useEffect(() => {
+    if (ongletDemande) setTab(ongletDemande.cle);
+  }, [ongletDemande]);
 
   const tabs = [
     { key: 'vue', label: "Vue d'ensemble", icon: LayoutDashboard },
@@ -1403,18 +1410,40 @@ function CaisseValidation() {
   const [rejectingId, setRejectingId] = useState(null);
   const [motifRejet, setMotifRejet] = useState('');
   const [toast, setToast] = useState('');
+  // Cases cochées, pour valider plusieurs demandes en une passe.
+  const [selection, setSelection] = useState([]);
+  const [busyLot, setBusyLot] = useState(false);
+  const [echecs, setEchecs] = useState([]);
 
   const flash = (text) => {
     setToast(text);
     setTimeout(() => setToast(''), 6000);
   };
 
-  const load = () => {
-    setLoading(true);
-    fetchDemandesCaisseEnAttente().then(setDemandes).finally(() => setLoading(false));
+  // Un rafraîchissement silencieux ne doit ni faire clignoter l'écran
+  // ni décocher ce que le directeur vient de sélectionner : il met la
+  // liste à jour et ne garde dans la sélection que ce qui existe encore.
+  const load = ({ silencieux = false } = {}) => {
+    if (!silencieux) setLoading(true);
+    return fetchDemandesCaisseEnAttente()
+      .then((liste) => {
+        setDemandes(liste);
+        const vivants = new Set(liste.map((d) => d.id));
+        setSelection((s) => s.filter((id) => vivants.has(id)));
+      })
+      .catch(() => {})
+      .finally(() => { if (!silencieux) setLoading(false); });
   };
 
   useEffect(() => { load(); }, []);
+
+  // Une demande déposée par l'opératrice pendant que le directeur est
+  // sur cet écran doit apparaître d'elle-même : c'est l'attente devant
+  // le guichet qu'on supprime, pas le contrôle.
+  useEffect(() => {
+    const interval = setInterval(() => load({ silencieux: true }), 20000);
+    return () => clearInterval(interval);
+  }, []);
 
   const valider = async (id) => {
     setBusy(id);
@@ -1426,6 +1455,49 @@ function CaisseValidation() {
       flash(err.message ?? 'Validation impossible.');
     } finally {
       setBusy(null);
+    }
+  };
+
+  const basculer = (id) => {
+    setSelection((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+  };
+
+  const toutBasculer = () => {
+    setSelection((s) => (s.length === demandes.length ? [] : demandes.map((d) => d.id)));
+  };
+
+  const montantSelectionne = demandes
+    .filter((d) => selection.includes(d.id))
+    .reduce((somme, d) => somme + Number(d.montant), 0);
+
+  const validerLaSelection = async () => {
+    setBusyLot(true);
+    setEchecs([]);
+    try {
+      const r = await validerOperationsCaisseEnLot(selection);
+      // On nomme les refusées : une validation groupée qui dirait
+      // seulement « 7 sur 9 » obligerait à tout rouvrir pour trouver
+      // lesquelles. Le directeur doit savoir sans chercher.
+      const refusees = (r.resultats ?? [])
+        .filter((x) => !x.ok)
+        .map((x) => ({
+          nom: demandes.find((d) => d.id === x.id)?.client
+            ?? demandes.find((d) => d.id === x.id)?.caissier
+            ?? 'Demande',
+          message: x.message,
+        }));
+      setEchecs(refusees);
+      flash(
+        r.echecs === 0
+          ? `${r.valides} opération${r.valides > 1 ? 's' : ''} validée${r.valides > 1 ? 's' : ''} — ${formatFCFA(r.montant_valide)} F débités.`
+          : `${r.valides} validée${r.valides > 1 ? 's' : ''} (${formatFCFA(r.montant_valide)} F), ${r.echecs} non passée${r.echecs > 1 ? 's' : ''} — voir le détail ci-dessous.`
+      );
+      setSelection([]);
+      load();
+    } catch (err) {
+      flash(err.message ?? 'Validation groupée impossible.');
+    } finally {
+      setBusyLot(false);
     }
   };
 
@@ -1459,10 +1531,66 @@ function CaisseValidation() {
         </div>
       )}
 
+      {echecs.length > 0 && (
+        <Card style={{ padding: '14px 18px', marginBottom: 16, borderColor: colors.danger, background: colors.dangerPale }}>
+          <p style={{ margin: '0 0 8px', fontSize: 12, fontWeight: 600, color: colors.danger, fontFamily: fonts.body }}>
+            {echecs.length} demande{echecs.length > 1 ? 's' : ''} n'{echecs.length > 1 ? 'ont' : 'a'} pas pu être validée{echecs.length > 1 ? 's' : ''} — elle{echecs.length > 1 ? 's' : ''} reste{echecs.length > 1 ? 'nt' : ''} en attente :
+          </p>
+          {echecs.map((e, i) => (
+            <p key={i} style={{ margin: '3px 0 0', fontSize: 11.5, color: colors.ink, fontFamily: fonts.body }}>
+              <strong>{e.nom}</strong> — {e.message}
+            </p>
+          ))}
+        </Card>
+      )}
+
       <Card style={{ padding: 0, overflow: 'hidden' }}>
         <SectionTitle>
           {loading ? 'Chargement…' : `${demandes.length} demande${demandes.length > 1 ? 's' : ''} de caisse en attente`}
         </SectionTitle>
+
+        {/* Validation groupée : la saisie est groupée, pas le contrôle —
+            chaque ligne cochée repasse par les mêmes vérifications que
+            si elle avait été validée seule. */}
+        {!loading && demandes.length > 1 && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+            padding: '10px 20px', borderBottom: `1px solid ${colors.line}`, background: colors.bg,
+          }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={selection.length === demandes.length}
+                onChange={toutBasculer}
+                style={{ cursor: 'pointer' }}
+              />
+              <span style={{ fontSize: 11.5, color: colors.muted, fontFamily: fonts.body }}>
+                Tout cocher
+              </span>
+            </label>
+
+            {selection.length > 0 && (
+              <>
+                <span style={{ fontSize: 11.5, color: colors.ink, fontFamily: fonts.body }}>
+                  {selection.length} sélectionnée{selection.length > 1 ? 's' : ''} ·{' '}
+                  <strong style={{ fontFamily: fonts.mono }}>{formatFCFA(montantSelectionne)} F</strong>
+                </span>
+                <button
+                  onClick={validerLaSelection}
+                  disabled={busyLot}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 9,
+                    border: 'none', background: colors.forest, color: '#fff', fontSize: 12, fontWeight: 600,
+                    fontFamily: fonts.body, cursor: busyLot ? 'not-allowed' : 'pointer', opacity: busyLot ? 0.5 : 1,
+                  }}
+                >
+                  <Check size={14} />
+                  {busyLot ? 'Validation…' : `Valider la sélection (${selection.length})`}
+                </button>
+              </>
+            )}
+          </div>
+        )}
 
         {!loading && demandes.length === 0 && (
           <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
@@ -1473,70 +1601,100 @@ function CaisseValidation() {
         {demandes.map((d) => (
           <div key={d.id} style={{ padding: '16px 20px', borderBottom: `1px solid ${colors.line}` }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-                  <Badge tone={d.type === 'appro' ? 'gold' : d.type === 'depense' ? 'danger' : 'neutral'}>
-                    {d.type === 'appro' ? 'Réapprovisionnement'
-                      : d.type === 'depense' ? 'Dépense'
-                      : d.type === 'retrait_ponctuel' ? 'Retrait ponctuel'
-                      : 'Retrait guichet'}
-                  </Badge>
-                  {/* Un retrait ponctuel dit où va l'argent : récupéré par
-                      CPG, ou remis au client. La distinction change ce que
-                      le directeur approuve. */}
-                  {d.type === 'retrait_ponctuel' && (
-                    <Badge tone={d.destination === 'cpg' ? 'gold' : 'neutral'}>
-                      {d.destination === 'cpg' ? 'vers CPG' : 'remis au client'}
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, minWidth: 0 }}>
+                {demandes.length > 1 && (
+                  <input
+                    type="checkbox"
+                    checked={selection.includes(d.id)}
+                    onChange={() => basculer(d.id)}
+                    style={{ cursor: 'pointer', flexShrink: 0, marginTop: 4 }}
+                  />
+                )}
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                    <Badge tone={d.type === 'appro' ? 'gold' : d.type === 'depense' ? 'danger' : 'neutral'}>
+                      {d.type === 'appro' ? 'Réapprovisionnement'
+                        : d.type === 'depense' ? 'Dépense'
+                        : d.type === 'retrait_ponctuel' ? 'Retrait ponctuel'
+                        : d.type === 'frais_ponctuel'
+                          ? (d.nature_frais === 'agios' ? 'Agios à rattraper' : 'Frais de tenue à rattraper')
+                          : 'Retrait guichet'}
                     </Badge>
-                  )}
-                  <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>
-                    {d.caissier ?? (d.demandeur ? `demandé par ${d.demandeur}` : '—')}
-                  </p>
-                  {d.justifie && d.a_un_fichier ? (
-                    <button
-                      onClick={() => ouvrirJustificatifCaisse(d.id)}
-                      style={{ border: 'none', background: colors.forestPale, color: colors.forestLight, borderRadius: 6, padding: '2px 8px', fontSize: 10, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer' }}
-                    >
-                      📎 Justificatif
-                    </button>
-                  ) : d.justifie ? (
-                    <span style={{ fontSize: 10, color: colors.muted, fontFamily: fonts.body, fontStyle: 'italic' }}>
-                      Justifiée (sans fichier)
-                    </span>
-                  ) : (
-                    <span style={{ fontSize: 10, color: colors.danger, fontFamily: fonts.body, fontStyle: 'italic' }}>
-                      Non justifiée
-                    </span>
-                  )}
-                </div>
-                {d.client && (
-                  <p style={{ margin: 0, fontSize: 12, color: colors.muted, fontFamily: fonts.body }}>
-                    Client : {d.client} ({d.client_number})
-                    {/* Le solde au moment de la validation, pas au moment
-                        de la demande : elle peut dater de plusieurs jours. */}
-                    {d.solde_client !== undefined && (
-                      <>
-                        {' · solde '}
-                        <strong style={{
-                          fontFamily: fonts.mono,
-                          color: Number(d.solde_client) < Number(d.montant) ? colors.danger : colors.forestLight,
-                        }}>
-                          {formatFCFA(d.solde_client)} F
-                        </strong>
-                        {Number(d.solde_client) < Number(d.montant) && ' — insuffisant'}
-                      </>
+                    {/* Un retrait ponctuel dit où va l'argent : récupéré par
+                        CPG, ou remis au client. La distinction change ce que
+                        le directeur approuve. */}
+                    {d.type === 'retrait_ponctuel' && (
+                      <Badge tone={d.destination === 'cpg' ? 'gold' : 'neutral'}>
+                        {d.destination === 'cpg' ? 'vers CPG' : 'remis au client'}
+                      </Badge>
                     )}
-                  </p>
-                )}
-                {d.type === 'retrait_ponctuel' && d.caissier && (
+                    {/* Un rattrapage de frais ne veut rien dire sans son
+                        mois : c'est le mois qu'on approuve, pas seulement
+                        un montant. */}
+                    {d.type === 'frais_ponctuel' && d.periode_frais && (
+                      <Badge tone="gold">mois {d.periode_frais}</Badge>
+                    )}
+                    <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>
+                      {d.caissier ?? (d.demandeur ? `demandé par ${d.demandeur}` : '—')}
+                    </p>
+                    {d.justifie && d.a_un_fichier ? (
+                      <button
+                        onClick={() => ouvrirJustificatifCaisse(d.id)}
+                        style={{ border: 'none', background: colors.forestPale, color: colors.forestLight, borderRadius: 6, padding: '2px 8px', fontSize: 10, fontWeight: 600, fontFamily: fonts.body, cursor: 'pointer' }}
+                      >
+                        📎 Justificatif
+                      </button>
+                    ) : d.justifie ? (
+                      <span style={{ fontSize: 10, color: colors.muted, fontFamily: fonts.body, fontStyle: 'italic' }}>
+                        Justifiée (sans fichier)
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: 10, color: colors.danger, fontFamily: fonts.body, fontStyle: 'italic' }}>
+                        Non justifiée
+                      </span>
+                    )}
+                  </div>
+                  {d.client && (
+                    <p style={{ margin: 0, fontSize: 12, color: colors.muted, fontFamily: fonts.body }}>
+                      Client : {d.client} ({d.client_number})
+                      {/* Le solde au moment de la validation, pas au moment
+                          de la demande : elle peut dater de plusieurs jours.
+
+                          Sur un rattrapage de frais, un solde plus petit
+                          que le montant n'est PAS une anomalie : un frais
+                          est dû même sans provision, et c'est la seule
+                          dette autorisée à mettre un compte au rouge. Le
+                          signaler en rouge ferait croire à un problème. */}
+                      {d.solde_client !== undefined && (
+                        <>
+                          {' · solde '}
+                          <strong style={{
+                            fontFamily: fonts.mono,
+                            color: d.type !== 'frais_ponctuel'
+                              && Number(d.solde_client) < Number(d.montant)
+                              ? colors.danger : colors.forestLight,
+                          }}>
+                            {formatFCFA(d.solde_client)} F
+                          </strong>
+                          {d.type !== 'frais_ponctuel'
+                            && Number(d.solde_client) < Number(d.montant) && ' — insuffisant'}
+                          {d.type === 'frais_ponctuel'
+                            && Number(d.solde_client) < Number(d.montant)
+                            && ' — passera au rouge, normal pour un frais'}
+                        </>
+                      )}
+                    </p>
+                  )}
+                  {d.type === 'retrait_ponctuel' && d.caissier && (
+                    <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+                      Servi par {d.caissier}
+                    </p>
+                  )}
                   <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
-                    Servi par {d.caissier}
+                    {new Date(d.demandee_le).toLocaleString('fr-FR')}
+                    {d.motif ? ` · ${d.motif}` : ''}
                   </p>
-                )}
-                <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
-                  {new Date(d.demandee_le).toLocaleString('fr-FR')}
-                  {d.motif ? ` · ${d.motif}` : ''}
-                </p>
+                </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
                 <p style={{ margin: 0, fontSize: 16, fontWeight: 700, color: colors.ink, fontFamily: fonts.mono }}>
@@ -1934,18 +2092,50 @@ function UserManagement({ role }) {
   const [editForm, setEditForm] = useState({});
   const [editBusy, setEditBusy] = useState(false);
   const [editError, setEditError] = useState('');
+  // Recherche serveur : la liste sans recherche est plafonnée à 200
+  // noms, donc un filtre côté navigateur ne trouverait jamais le
+  // 201e client. C'est ce qui donnait l'impression qu'un compte
+  // existant était absent du logiciel.
+  const [recherche, setRecherche] = useState('');
+  const [filtreEmployeur, setFiltreEmployeur] = useState('');
+  const [filtreRole, setFiltreRole] = useState('');
+  const [filtreStatut, setFiltreStatut] = useState('');
+  const [employeurs, setEmployeurs] = useState([]);
+  const [total, setTotal] = useState(null);
+  const [totalFiltre, setTotalFiltre] = useState(null);
+  const [tronque, setTronque] = useState(false);
 
   const flash = (text) => {
     setToast(text);
     setTimeout(() => setToast(''), 5000);
   };
 
-  const load = () => {
+  const load = (criteres = {}) => {
     setLoading(true);
-    fetchUsers().then(setList).finally(() => setLoading(false));
+    return rechercherUtilisateurs({
+      q: recherche, employeur: filtreEmployeur, role: filtreRole, statut: filtreStatut,
+      ...criteres,
+    })
+      .then((r) => {
+        setList(r.utilisateurs ?? []);
+        setTotal(r.total ?? null);
+        setTotalFiltre(r.totalFiltre ?? null);
+        setTronque(Boolean(r.tronque));
+        // La liste des entreprises vient avec la réponse : elle ne
+        // dépend pas des filtres, donc elle reste stable.
+        if (r.employeurs) setEmployeurs(r.employeurs);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); }, []);
+  // Frappe au clavier : on laisse retomber la saisie avant d'interroger
+  // le serveur, sinon chaque lettre déclenche une requête. Les listes
+  // déroulantes passent par le même effet, sans attente perceptible.
+  useEffect(() => {
+    const t = setTimeout(() => { load(); }, 300);
+    return () => clearTimeout(t);
+  }, [recherche, filtreEmployeur, filtreRole, filtreStatut]);
 
   const startEdit = (u) => {
     setEditingId(u.id);
@@ -2082,6 +2272,120 @@ function UserManagement({ role }) {
           {toast}
         </div>
       )}
+
+      {/* Recherche — interroge le serveur, pas la liste déjà chargée.
+          Sans elle, seuls les 200 premiers noms de l'alphabet étaient
+          atteignables et tout le reste semblait ne pas exister. */}
+      <Card style={{ padding: '14px 18px', marginBottom: 16 }}>
+        <div style={{ position: 'relative' }}>
+          <Search size={15} color={colors.muted} style={{ position: 'absolute', left: 12, top: 11 }} />
+          <input
+            value={recherche}
+            onChange={(e) => setRecherche(e.target.value)}
+            placeholder="Chercher un client ou un agent — nom, n° client, téléphone, e-mail, employeur"
+            style={{
+              width: '100%', padding: '10px 12px 10px 36px', borderRadius: 10,
+              border: `1px solid ${colors.line}`, fontSize: 12.5, fontFamily: fonts.body,
+              outline: 'none',
+            }}
+          />
+          {recherche && (
+            <button
+              type="button"
+              onClick={() => setRecherche('')}
+              style={{
+                position: 'absolute', right: 10, top: 8, border: 'none', background: 'none',
+                cursor: 'pointer', color: colors.muted, fontSize: 11, fontFamily: fonts.body,
+              }}
+            >
+              effacer
+            </button>
+          )}
+        </div>
+
+        {/* Filtres, combinables entre eux et avec la recherche. */}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+          <select
+            value={filtreEmployeur}
+            onChange={(e) => setFiltreEmployeur(e.target.value)}
+            style={{
+              padding: '7px 10px', borderRadius: 9, border: `1px solid ${colors.line}`,
+              fontSize: 11.5, fontFamily: fonts.body, background: colors.card,
+              minWidth: 170, cursor: 'pointer',
+            }}
+          >
+            <option value="">Toutes les entreprises</option>
+            {employeurs.map((e) => (
+              <option key={e.employeur} value={e.employeur}>
+                {e.employeur} ({e.nombre})
+              </option>
+            ))}
+            <option value="__sans__">— Sans entreprise —</option>
+          </select>
+
+          <select
+            value={filtreRole}
+            onChange={(e) => setFiltreRole(e.target.value)}
+            style={{
+              padding: '7px 10px', borderRadius: 9, border: `1px solid ${colors.line}`,
+              fontSize: 11.5, fontFamily: fonts.body, background: colors.card, cursor: 'pointer',
+            }}
+          >
+            <option value="">Tous les rôles</option>
+            <option value="client">Clients</option>
+            <option value="operateur">Opérateurs</option>
+            <option value="caissier">Caissières</option>
+            <option value="superviseur">Gestionnaires</option>
+            <option value="directeur">Direction</option>
+          </select>
+
+          <select
+            value={filtreStatut}
+            onChange={(e) => setFiltreStatut(e.target.value)}
+            style={{
+              padding: '7px 10px', borderRadius: 9, border: `1px solid ${colors.line}`,
+              fontSize: 11.5, fontFamily: fonts.body, background: colors.card, cursor: 'pointer',
+            }}
+          >
+            <option value="">Tous les statuts</option>
+            <option value="actif">Actifs</option>
+            <option value="suspendu">Suspendus</option>
+            <option value="ferme">Fermés</option>
+          </select>
+
+          {(filtreEmployeur || filtreRole || filtreStatut || recherche) && (
+            <button
+              type="button"
+              onClick={() => {
+                setRecherche(''); setFiltreEmployeur(''); setFiltreRole(''); setFiltreStatut('');
+              }}
+              style={{
+                padding: '7px 12px', borderRadius: 9, border: `1px solid ${colors.line}`,
+                background: colors.card, fontSize: 11.5, fontFamily: fonts.body,
+                color: colors.forestLight, cursor: 'pointer',
+              }}
+            >
+              Tout réinitialiser
+            </button>
+          )}
+        </div>
+
+        {/* Dire franchement ce qui est affiché, et ce qui ne l'est pas :
+            c'est l'absence de cette phrase qui faisait croire qu'un
+            compte existant n'était pas dans le logiciel. */}
+        <p style={{ margin: '9px 0 0', fontSize: 11, color: tronque ? colors.goldDark : colors.muted, fontFamily: fonts.body }}>
+          {loading ? 'Recherche…'
+            : recherche.trim().length >= 2
+              ? `${list.length} résultat${list.length > 1 ? 's' : ''} pour « ${recherche.trim()} »`
+                + (tronque ? ` sur ${totalFiltre} — précisez le nom pour voir les autres` : '')
+                + ` · ${total ?? '?'} comptes au total`
+              : tronque
+                ? `${list.length} comptes affichés sur ${totalFiltre} — tapez un nom pour atteindre les autres.`
+                : `${list.length} compte${list.length > 1 ? 's' : ''}`
+                  + (totalFiltre !== total ? ` · ${total} comptes au total` : '')}
+          {recherche.trim().length === 1 && ' Tapez au moins deux lettres.'}
+        </p>
+      </Card>
 
       {creating && (
         <Card style={{ padding: 18, marginBottom: 16 }}>

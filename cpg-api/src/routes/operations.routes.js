@@ -17,6 +17,7 @@ import {
   fetchOverdueInstallments, fetchAccountBalances, zeroOutAccountBalances,
   fetchMonthInstallments, collectInstallments, fetchClientsDouteux,
 } from '../services/operationsService.js';
+import { previewFraisPonctuel } from '../services/feeService.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -225,6 +226,164 @@ router.post(
       });
 
       res.status(201).json({ ...rows[0], client: client[0].nom, soldeClient: Number(client[0].solde) });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/* ═══════════════════════════════════════════════════════════════════
+   FRAIS DE TENUE OU AGIOS PRÉLEVÉS PONCTUELLEMENT
+   ═══════════════════════════════════════════════════════════════════
+
+   Le prélèvement automatique passe le 25 de chaque mois. Il manque
+   forcément les agents crédités après cette date, et ceux créés entre
+   deux passages — la caisse l'a signalé plusieurs fois. L'opératrice
+   doit pouvoir rattraper un compte, y compris sur un mois déjà écoulé.
+
+   Trois choses qu'elle NE peut pas faire, par construction :
+
+     • inventer un montant. Il vient du barème en vigueur, calculé par
+       le même code que le prélèvement automatique.
+     • prélever deux fois le même mois. Vérifié ici dès la demande, et
+       re-vérifié en base à la validation (unicité de applied_fees).
+     • prélever elle-même. La demande attend le directeur.
+
+   Le solde, en revanche, n'est volontairement pas vérifié : un frais
+   est dû dès qu'il est constaté, et c'est la seule dette autorisée à
+   mettre un compte au rouge. */
+
+const fraisPonctuelSchema = z.object({
+  clientId: z.string().uuid(),
+  nature: z.enum(['frais_tenue', 'agios']),
+  // Le MOIS à rattraper, pas forcément le mois courant.
+  periode: z
+    .string()
+    .regex(/^\d{4}-\d{2}$/, 'Format attendu : AAAA-MM')
+    // On rattrape le passé, jamais l'avenir. Un frais de décembre
+    // prélevé en octobre serait dû avant d'être exigible, et l'agio
+    // d'un mois non écoulé se calculerait sur des jours qui n'ont pas
+    // encore eu lieu.
+    .refine((v) => v <= new Date().toISOString().slice(0, 7), {
+      message: 'Ce mois n’est pas encore écoulé : un frais ne se prélève pas à l’avance.',
+    }),
+  motif: z.string().trim().min(5).max(500),
+});
+
+/** Le compte principal d'un client actif, avec son nom et son solde. */
+async function compteDuClient(clientId) {
+  const { rows } = await query(
+    `SELECT u.id, btrim(u.full_name) AS nom, a.id AS account_id,
+            COALESCE(b.balance, 0) AS solde
+     FROM users u
+     JOIN accounts a ON a.user_id = u.id
+     LEFT JOIN account_balances b ON b.account_id = a.id
+     WHERE u.id = $1 AND u.role = 'client' AND u.status <> 'supprime'
+     ORDER BY a.created_at
+     LIMIT 1`,
+    [clientId]
+  );
+  if (!rows[0]) throw new ApiError(404, 'Client introuvable.');
+  return rows[0];
+}
+
+/**
+ * POST /admin/operations/frais-ponctuels/apercu — ce qui serait
+ * prélevé, sans rien écrire. L'opératrice voit le montant du barème et
+ * apprend tout de suite si le mois a déjà été réglé.
+ */
+router.post(
+  '/frais-ponctuels/apercu',
+  requirePermission('operations.demander_frais_ponctuel'),
+  validate(fraisPonctuelSchema.omit({ motif: true })),
+  async (req, res, next) => {
+    try {
+      const client = await compteDuClient(req.body.clientId);
+      const apercu = await previewFraisPonctuel({
+        accountId: client.account_id,
+        nature: req.body.nature,
+        periode: req.body.periode,
+      });
+      res.json({ ...apercu, client: client.nom, soldeClient: Number(client.solde) });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/frais-ponctuels',
+  requirePermission('operations.demander_frais_ponctuel'),
+  validate(fraisPonctuelSchema),
+  async (req, res, next) => {
+    try {
+      const client = await compteDuClient(req.body.clientId);
+      const apercu = await previewFraisPonctuel({
+        accountId: client.account_id,
+        nature: req.body.nature,
+        periode: req.body.periode,
+      });
+
+      // Déjà réglé : on le dit maintenant, pas après un aller-retour
+      // chez le directeur.
+      if (apercu.dejaPreleve) {
+        throw new ApiError(
+          409,
+          `${client.nom} a déjà été prélevé de ${apercu.dejaPreleve.montant} FCFA pour ${req.body.periode} — rien à rattraper.`
+        );
+      }
+      if (apercu.montant <= 0) {
+        throw new ApiError(
+          422,
+          req.body.nature === 'agios'
+            ? `Aucun agio dû à ${client.nom} sur ${req.body.periode} : son compte n'est pas resté débiteur.`
+            : 'Le barème donne un montant nul — rien à prélever.'
+        );
+      }
+
+      // Une demande identique déjà en attente ferait prélever deux fois
+      // si le directeur validait les deux.
+      const { rows: enCours } = await query(
+        `SELECT id FROM caisse_operations
+         WHERE type = 'frais_ponctuel' AND statut = 'en_attente'
+           AND client_id = $1 AND nature_frais = $2 AND periode_frais = $3::date`,
+        [req.body.clientId, req.body.nature, apercu.periodStart]
+      );
+      if (enCours[0]) {
+        throw new ApiError(
+          409,
+          `Une demande de ce frais pour ${req.body.periode} attend déjà la validation du directeur.`
+        );
+      }
+
+      const { rows } = await query(
+        `INSERT INTO caisse_operations
+           (caissier_id, demandeur_id, type, montant, client_id, motif, destination,
+            nature_frais, periode_frais)
+         VALUES (NULL, $1, 'frais_ponctuel', $2, $3, $4, 'cpg', $5, $6::date)
+         RETURNING id, montant, statut, demandee_le, motif, nature_frais, periode_frais`,
+        [
+          req.user.id, apercu.montant, req.body.clientId, req.body.motif,
+          req.body.nature, apercu.periodStart,
+        ]
+      );
+
+      await audit(req, {
+        action: 'operations.frais_ponctuel_demande',
+        entityType: 'caisse_operation',
+        entityId: rows[0].id,
+        metadata: {
+          client: client.nom, nature: req.body.nature, periode: req.body.periode,
+          montant: apercu.montant, motif: req.body.motif,
+        },
+      });
+
+      res.status(201).json({
+        ...rows[0],
+        client: client.nom,
+        soldeClient: Number(client.solde),
+        bareme: apercu.bareme,
+      });
     } catch (error) {
       next(error);
     }

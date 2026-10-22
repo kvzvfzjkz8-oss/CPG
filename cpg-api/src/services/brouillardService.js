@@ -39,6 +39,7 @@ const LABELS = {
   depense: 'Dépense de fonctionnement',
   retour_excedent: "Retour d'excédent",
   retrait_ponctuel: 'Retrait ponctuel',
+  frais_ponctuel: 'Frais prélevé ponctuellement',
 };
 
 const ENTREE = new Set(['encaissement_client', 'appro']);
@@ -53,12 +54,16 @@ const ENTREE = new Set(['encaissement_client', 'appro']);
 const sortMobileMoney = (op) => op.mode_paiement && op.mode_paiement !== 'especes';
 
 /**
- * Un retrait ponctuel recupere par CPG ne passe par aucun guichet : il
- * ne figure donc pas au brouillard d'une caissiere. Garde-fou au cas ou
+ * Deux operations ne passent par aucun guichet : un retrait ponctuel
+ * recupere par CPG, et un frais preleve ponctuellement (qui ne sort
+ * d'aucun tiroir, comme le prelevement automatique du 25). Elles ne
+ * figurent donc pas au brouillard d'une caissiere. Garde-fou au cas ou
  * une telle ligne arriverait ici — elle ne doit pas vider un tiroir qui
  * n'a rien verse.
  */
-const horsCaisse = (op) => op.type === 'retrait_ponctuel' && op.destination === 'cpg';
+const horsCaisse = (op) =>
+  (op.type === 'retrait_ponctuel' && op.destination === 'cpg')
+  || op.type === 'frais_ponctuel';
 
 /**
  * Brouillard de caisse — relevé quotidien d'une caissière : solde

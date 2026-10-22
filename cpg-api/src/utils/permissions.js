@@ -60,6 +60,15 @@ export const PERMISSIONS = {
     // la validation du directeur, comme pour un retrait de caisse.
     'operations.demander_retrait_ponctuel',
 
+    // Rattrapage d'un frais de tenue ou d'agios que le prelevement
+    // automatique du 25 a manque — un agent credite apres cette date,
+    // ou cree entre deux passages. Distincte de frais.appliquer, qui
+    // declenche le prelevement de TOUS les comptes : celle-ci ne vise
+    // qu'un client, pour un mois precis, avec le montant du bareme et
+    // non un montant saisi. Et comme le retrait ponctuel, ce n'est
+    // qu'une demande : le directeur valide.
+    'operations.demander_frais_ponctuel',
+
     // Proposer la suppression d'un dossier qui lui arrive en double
     // validation — rien n'est encore débloqué à ce stade, donc rien à
     // extourner. L'opérateur ne supprime plus lui-même : la demande

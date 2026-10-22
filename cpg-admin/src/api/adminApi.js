@@ -187,6 +187,26 @@ export async function fetchUsers() {
   return utilisateurs;
 }
 
+/**
+ * Recherche d'utilisateurs — la même chose, mais en gardant l'enveloppe
+ * complète : le nombre total de comptes et l'indication que la liste
+ * est tronquée. Sans recherche, le serveur ne renvoie que les 200
+ * premiers noms, et l'écran doit pouvoir le dire franchement plutôt
+ * que de laisser croire qu'il affiche tout.
+ *
+ * La recherche est tolérante aux fautes de frappe et porte aussi sur le
+ * numéro client, le téléphone, l'e-mail et l'employeur.
+ */
+export async function rechercherUtilisateurs({ q, employeur, role, statut } = {}) {
+  const p = new URLSearchParams();
+  if (q && q.trim().length >= 2) p.set('q', q.trim());
+  if (employeur) p.set('employeur', employeur);
+  if (role) p.set('role', role);
+  if (statut) p.set('statut', statut);
+  const suffixe = p.toString() ? `?${p}` : '';
+  return apiRequest(`/v1/admin/utilisateurs${suffixe}`);
+}
+
 /** Situation du compte en PDF : solde, crédits en cours et échéances restantes, sur une page. */
 export async function imprimerSituationClient(clientId, clientNumber) {
   const blob = await apiRequestBlob(`/v1/admin/clients/${clientId}/situation/pdf`);
@@ -533,6 +553,28 @@ export async function demanderRetraitPonctuel({ clientId, montant, motif, destin
   return apiRequest('/v1/admin/operations/retraits-ponctuels', {
     method: 'POST',
     body: { clientId, montant, motif, destination, ...(caissierId ? { caissierId } : {}) },
+  });
+}
+
+/**
+ * Rattrapage d'un frais de tenue ou d'agios oublié par le prélèvement
+ * automatique du 25, sur un client et un mois précis.
+ *
+ * Le montant n'est jamais saisi : l'aperçu le calcule depuis le barème
+ * en vigueur et dit si le mois a déjà été réglé. Comme pour un retrait
+ * ponctuel, la demande attend la validation du directeur.
+ */
+export async function apercuFraisPonctuel({ clientId, nature, periode }) {
+  return apiRequest('/v1/admin/operations/frais-ponctuels/apercu', {
+    method: 'POST',
+    body: { clientId, nature, periode },
+  });
+}
+
+export async function demanderFraisPonctuel({ clientId, nature, periode, motif }) {
+  return apiRequest('/v1/admin/operations/frais-ponctuels', {
+    method: 'POST',
+    body: { clientId, nature, periode, motif },
   });
 }
 
@@ -884,6 +926,15 @@ export async function fetchDemandesCaisseEnAttente() {
 /** Directeur : valide une demande (retrait ou appro). */
 export async function validerOperationCaisse(id) {
   return apiRequest(`/v1/caisse/operations/${id}/valider`, { method: 'POST' });
+}
+
+/**
+ * Directeur : valide plusieurs demandes en une seule requête. Chaque
+ * ligne subit les mêmes contrôles que si elle avait été validée seule ;
+ * la réponse dit précisément laquelle n'est pas passée et pourquoi.
+ */
+export async function validerOperationsCaisseEnLot(ids) {
+  return apiRequest('/v1/caisse/operations/valider-lot', { method: 'POST', body: { ids } });
 }
 
 /** Directeur : rejette une demande, avec motif obligatoire. */

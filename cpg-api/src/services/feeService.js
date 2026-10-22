@@ -236,7 +236,9 @@ export async function setFeeStatus({ feeId, status, actorId }) {
  * Sans elles, relancer la tâche après un incident facturerait deux fois
  * les mêmes agios à tous les clients.
  */
-export async function runAgiosForAccount({ accountId, periodStart, periodEnd, feeVersion }) {
+export async function runAgiosForAccount({
+  accountId, periodStart, periodEnd, feeVersion, client: externalClient,
+}) {
   const { rows: opening } = await query(
     `SELECT COALESCE(SUM(amount), 0) AS balance
      FROM ledger_entries
@@ -267,7 +269,9 @@ export async function runAgiosForAccount({ accountId, periodStart, periodEnd, fe
 
   if (result.amount <= 0) return { accountId, amount: 0, skipped: true };
 
-  return withTransaction(async (client) => {
+  // Même raison que pour les frais de tenue : l'appelant peut fournir
+  // sa transaction pour que le prélèvement soit solidaire du reste.
+  const apply = async (client) => {
     const { rows: entry } = await client.query(
       `INSERT INTO ledger_entries (account_id, type, amount, label, reference)
        VALUES ($1, 'frais', $2, $3, $4) RETURNING id`,
@@ -296,16 +300,22 @@ export async function runAgiosForAccount({ accountId, periodStart, periodEnd, fe
       );
     } catch (error) {
       // 23505 = violation d'unicité : les agios de cette période ont
-      // déjà été prélevés. La transaction est annulée, donc l'écriture
-      // au journal disparaît aussi. Rien n'est facturé deux fois.
+      // déjà été prélevés. La transaction est annulée — la nôtre ou
+      // celle de l'appelant — donc l'écriture au journal disparaît
+      // aussi. Rien n'est facturé deux fois.
       if (error.code === '23505') {
         throw new RateError('Les agios de cette période ont déjà été prélevés.', 'deja_preleve');
       }
       throw error;
     }
 
-    return { accountId, amount: result.amount, debitDays: result.debitDays };
-  });
+    return {
+      accountId, amount: result.amount, debitDays: result.debitDays,
+      ledgerEntryId: entry[0].id,
+    };
+  };
+
+  return externalClient ? apply(externalClient) : withTransaction(apply);
 }
 
 /** Passe tous les comptes en revue pour la période donnée. */
@@ -355,7 +365,9 @@ export async function runAgiosBatch({ periodStart, periodEnd }) {
  * prélèvement le même mois, pas à conditionner le prélèvement
  * lui-même.
  */
-export async function runTenueCompteForAccount({ accountId, periodStart, periodEnd, feeVersion }) {
+export async function runTenueCompteForAccount({
+  accountId, periodStart, periodEnd, feeVersion, client: externalClient,
+}) {
   const amount = computeFee({
     basis: feeVersion.basis,
     amount: Number(feeVersion.amount),
@@ -366,13 +378,19 @@ export async function runTenueCompteForAccount({ accountId, periodStart, periodE
 
   if (amount <= 0) return { accountId, amount: 0, skipped: true };
 
-  return withTransaction(async (client) => {
+  // Transaction fournie par l'appelant quand ce prélèvement doit être
+  // solidaire d'autre chose — c'est le cas du rattrapage ponctuel, qui
+  // ne doit pas laisser un frais prélevé si la validation du directeur
+  // échoue ensuite. Sinon, sa propre transaction, comme le batch.
+  const apply = async (client) => {
+    let idEcriture = null;
     try {
       const { rows: entry } = await client.query(
         `INSERT INTO ledger_entries (account_id, type, amount, label, reference)
          VALUES ($1, 'frais', $2, $3, $4) RETURNING id`,
         [accountId, -amount, 'Frais de tenue de compte', `TENUE-${periodStart}`]
       );
+      idEcriture = entry[0].id;
 
       await client.query(
         `INSERT INTO applied_fees
@@ -390,16 +408,19 @@ export async function runTenueCompteForAccount({ accountId, periodStart, periodE
       );
     } catch (error) {
       // 23505 = violation d'unicité : déjà prélevé sur cette période.
-      // Rien n'est facturé deux fois — la transaction annulée efface
-      // aussi l'écriture au journal.
+      // Rien n'est facturé deux fois — l'annulation de la transaction
+      // (la nôtre, ou celle de l'appelant) efface aussi l'écriture au
+      // journal qui vient d'être posée juste au-dessus.
       if (error.code === '23505') {
         throw new RateError('Les frais de tenue de cette période ont déjà été prélevés.', 'deja_preleve');
       }
       throw error;
     }
 
-    return { accountId, amount };
-  });
+    return { accountId, amount, ledgerEntryId: idEcriture };
+  };
+
+  return externalClient ? apply(externalClient) : withTransaction(apply);
 }
 
 /**
@@ -518,4 +539,191 @@ export async function applyTriggeredFee({ accountId, triggerOn, operationAmount,
   };
 
   return externalClient ? apply(externalClient) : withTransaction(apply);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   FRAIS PRÉLEVÉS PONCTUELLEMENT SUR UN SEUL COMPTE
+   ═══════════════════════════════════════════════════════════════════
+
+   « Il faut que l'opérateur ait la possibilité de retirer les frais de
+     tenue de compte ou agios ponctuellement à un client si elle
+     constate que cela n'a pas été fait par le logiciel. »
+
+   Le besoin est réel : des agents crédités après le passage du 25 — ou
+   créés entre deux passages — sont restés sans frais prélevés, et la
+   caisse l'a signalé plusieurs fois (BOUBANDA, MAPAGA, les agents
+   SOBAMA/QSR/STVB d'octobre).
+
+   Trois garde-fous, tous déjà portés par le code existant et
+   délibérément NON réécrits ici :
+
+     • le montant n'est jamais saisi à la main. Il vient du barème en
+       vigueur, exactement comme pour le prélèvement automatique. Une
+       opératrice ne peut pas inventer un frais de 50 000 F.
+
+     • le double prélèvement est impossible : runTenueCompteForAccount
+       et runAgiosForAccount s'appuient sur la contrainte d'unicité de
+       applied_fees et remontent « deja_preleve ». On le vérifie AUSSI
+       dès la demande, pour que l'opératrice l'apprenne tout de suite
+       au lieu d'attendre le refus du directeur.
+
+     • le solde n'est pas vérifié, et c'est voulu : un frais est dû dès
+       qu'il est constaté. C'est la seule dette qui peut mettre un
+       compte au rouge (règle de la direction : « il ne doit y avoir
+       que le négatif des frais de tenue de compte »).
+
+   Rien n'est prélevé sur la seule initiative de l'opératrice : la
+   demande attend la validation du directeur, comme un retrait
+   ponctuel. */
+
+/**
+ * Chaque nature correspond à un barème réel du catalogue. Les valeurs
+ * sont celles que le prélèvement automatique interroge (voir
+ * runTenueCompteBatch et runAgiosBatch) : « solde_debiteur » et non
+ * « agios », qui n'existe pas comme déclencheur.
+ */
+const DECLENCHEUR_PAR_NATURE = {
+  frais_tenue: 'tenue_compte',
+  agios: 'solde_debiteur',
+};
+
+/** Ramène « 2026-10 » au premier et au dernier jour du mois. */
+function moisDepuisPeriode(periode) {
+  const [annee, mois] = String(periode).split('-').map(Number);
+  const debut = new Date(Date.UTC(annee, mois - 1, 1));
+  const fin = new Date(Date.UTC(annee, mois, 0));
+  return { debut: debut.toISOString().slice(0, 10), fin: fin.toISOString().slice(0, 10) };
+}
+
+/** Le barème actif pour cette nature de frais, ou null s'il n'y en a pas. */
+async function baremeActifPour(nature) {
+  const declencheur = DECLENCHEUR_PAR_NATURE[nature];
+  if (!declencheur) return null;
+  const { rows } = await query(
+    `SELECT * FROM current_fee_versions
+     WHERE trigger_on = $1 AND status = 'actif'
+     LIMIT 1`,
+    [declencheur]
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * Ce frais a-t-il déjà été prélevé sur ce compte pour ce mois ?
+ *
+ * On ignore volontairement la version du barème, alors que la
+ * contrainte d'unicité de applied_fees la prend en compte : un
+ * changement de barème ne doit pas ouvrir la porte à un second
+ * prélèvement du même mois.
+ */
+async function dejaPreleveCeMois({ accountId, nature, periodStart, periodEnd }) {
+  const { rows } = await query(
+    `SELECT af.amount, af.created_at
+     FROM applied_fees af
+     JOIN fee_versions v ON v.id = af.fee_version_id
+     JOIN fee_definitions f ON f.id = v.fee_id
+     WHERE af.account_id = $1 AND f.trigger_on = $2
+       AND af.period_start = $3 AND af.period_end = $4
+     LIMIT 1`,
+    [accountId, DECLENCHEUR_PAR_NATURE[nature], periodStart, periodEnd]
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * Aperçu : combien serait prélevé, et est-ce déjà fait — sans rien
+ * écrire. Sert à l'opératrice au moment de la demande, puis au
+ * directeur qui voit le montant avant de valider.
+ */
+export async function previewFraisPonctuel({ accountId, nature, periode }) {
+  const bareme = await baremeActifPour(nature);
+  if (!bareme) {
+    throw new RateError(
+      nature === 'agios'
+        ? "Aucun barème d'agios actif : la direction doit l'activer dans Catalogue avant tout prélèvement."
+        : 'Aucun barème de frais de tenue actif : la direction doit l’activer dans Catalogue.',
+      'bareme_absent'
+    );
+  }
+
+  const { debut: periodStart, fin: periodEnd } = moisDepuisPeriode(periode);
+  const deja = await dejaPreleveCeMois({ accountId, nature, periodStart, periodEnd });
+
+  let amount = 0;
+  let detail = {};
+
+  if (nature === 'frais_tenue') {
+    amount = computeFee({
+      basis: bareme.basis,
+      amount: Number(bareme.amount),
+      rate: Number(bareme.rate),
+      minAmount: Number(bareme.min_amount ?? 0),
+      maxAmount: bareme.max_amount === null ? null : Number(bareme.max_amount),
+    });
+  } else {
+    // Agios : le montant dépend des soldes jour par jour sur le mois.
+    // Mêmes lectures et mêmes calculs que runAgiosForAccount, mais sans
+    // la moindre écriture.
+    const { rows: opening } = await query(
+      `SELECT COALESCE(SUM(amount), 0) AS balance
+       FROM ledger_entries WHERE account_id = $1 AND created_at < $2`,
+      [accountId, periodStart]
+    );
+    const { rows: entries } = await query(
+      `SELECT created_at, amount FROM ledger_entries
+       WHERE account_id = $1 AND created_at >= $2 AND created_at < ($3::date + 1)
+       ORDER BY created_at`,
+      [accountId, periodStart, periodEnd]
+    );
+    const resultat = computeAgios(
+      buildDailyBalances(Number(opening[0].balance), entries, periodStart, periodEnd),
+      {
+        rate: Number(bareme.rate),
+        minAmount: Number(bareme.min_amount ?? 0),
+        maxAmount: bareme.max_amount === null ? null : Number(bareme.max_amount),
+        exemptBelow: Number(bareme.exempt_below ?? 0),
+      }
+    );
+    amount = resultat.amount;
+    detail = { joursDebiteurs: resultat.debitDays };
+  }
+
+  return {
+    nature,
+    periodStart,
+    periodEnd,
+    montant: amount,
+    bareme: bareme.name,
+    dejaPreleve: deja
+      ? { montant: Number(deja.amount), le: deja.created_at }
+      : null,
+    detail,
+  };
+}
+
+/**
+ * Prélève réellement. Appelé à la validation du directeur, jamais
+ * avant. Délègue aux fonctions du prélèvement automatique pour que la
+ * règle reste écrite à un seul endroit.
+ */
+export async function appliquerFraisPonctuel({ accountId, nature, periode, client }) {
+  const bareme = await baremeActifPour(nature);
+  if (!bareme) {
+    throw new RateError('Le barème de ce frais n’est plus actif — prélèvement impossible.', 'bareme_absent');
+  }
+  const { debut: periodStart, fin: periodEnd } = moisDepuisPeriode(periode);
+
+  const resultat = nature === 'frais_tenue'
+    ? await runTenueCompteForAccount({ accountId, periodStart, periodEnd, feeVersion: bareme, client })
+    : await runAgiosForAccount({ accountId, periodStart, periodEnd, feeVersion: bareme, client });
+
+  if (!resultat.amount || resultat.amount <= 0) {
+    throw new RateError(
+      nature === 'agios'
+        ? 'Aucun agio dû sur ce mois : le compte n’est pas resté débiteur.'
+        : 'Le barème donne un montant nul — rien à prélever.',
+      'montant_nul'
+    );
+  }
+  return resultat;
 }

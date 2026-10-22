@@ -20,6 +20,10 @@ function AuthenticatedApp() {
   const role = user?.role;
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [showMessagerie, setShowMessagerie] = useState(false);
+  // Onglet réclamé depuis la cloche de notifications. Objet et non
+  // simple chaîne : recliquer la même tâche doit rouvrir l'onglet, donc
+  // il faut une nouvelle identité à chaque clic.
+  const [ongletDemande, setOngletDemande] = useState(null);
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: colors.bg }}>
@@ -157,14 +161,19 @@ function AuthenticatedApp() {
                 }}
               />
             </div>
-            <NotificationBell onOuvrirMessagerie={() => setShowMessagerie(true)} />
+            <NotificationBell
+              onOuvrirMessagerie={() => setShowMessagerie(true)}
+              onOuvrirOnglet={(cle) => setOngletDemande({ cle })}
+            />
           </div>
         </header>
 
         <div style={{ flex: 1, padding: 32, overflowY: 'auto' }}>
           {role === ROLES.OPERATEUR && <OperatorView />}
           {role === ROLES.CAISSIER && <CaissierView />}
-          {role !== ROLES.OPERATEUR && role !== ROLES.CAISSIER && <SupervisorView role={role} />}
+          {role !== ROLES.OPERATEUR && role !== ROLES.CAISSIER && (
+            <SupervisorView role={role} ongletDemande={ongletDemande} />
+          )}
         </div>
       </main>
     </div>
@@ -172,12 +181,27 @@ function AuthenticatedApp() {
 }
 
 /**
+ * Quelle file de tâches mène à quel onglet. Sans cette table, la cloche
+ * annonce « 3 retraits à valider » et laisse chercher l'onglet à la
+ * main — ce qui faisait attendre le guichet. Une tâche absente d'ici
+ * reste affichée, simplement non cliquable.
+ */
+const ONGLET_PAR_TACHE = {
+  seance_a_tenir: 'commission',
+  approbation_finale: 'validation',
+  corrections_echeances: 'corrections',
+  suppressions_credits: 'suppressions-credit',
+  suppressions_items: 'suppressions-commission',
+  caisse_operations: 'caisse',
+};
+
+/**
  * Cloche de notifications — à la connexion et ensuite à intervalle
  * régulier, affiche les tâches en attente propres au rôle et le
  * nombre de messages internes non lus. Cliquer sur un message ouvre
- * directement la messagerie.
+ * directement la messagerie, cliquer sur une tâche ouvre son onglet.
  */
-function NotificationBell({ onOuvrirMessagerie }) {
+function NotificationBell({ onOuvrirMessagerie, onOuvrirOnglet }) {
   const [notifications, setNotifications] = useState(null);
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
@@ -252,17 +276,40 @@ function NotificationBell({ onOuvrirMessagerie }) {
             </button>
           )}
 
-          {(notifications?.taches ?? []).map((t) => (
-            <div key={t.cle} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '10px 16px', borderBottom: `1px solid ${colors.line}` }}>
-              <span style={{ fontSize: 12, color: colors.ink, fontFamily: fonts.body }}>{t.libelle}</span>
-              <span style={{
-                fontSize: 10, fontWeight: 700, color: colors.gold, background: colors.goldPale,
-                borderRadius: 8, padding: '2px 7px', fontFamily: fonts.body,
-              }}>
-                {t.nombre}
-              </span>
-            </div>
-          ))}
+          {(notifications?.taches ?? []).map((t) => {
+            const onglet = ONGLET_PAR_TACHE[t.cle];
+            const contenu = (
+              <>
+                <span style={{ fontSize: 12, color: colors.ink, fontFamily: fonts.body, textAlign: 'left' }}>
+                  {t.libelle}
+                </span>
+                <span style={{
+                  fontSize: 10, fontWeight: 700, color: colors.gold, background: colors.goldPale,
+                  borderRadius: 8, padding: '2px 7px', fontFamily: fonts.body,
+                }}>
+                  {t.nombre}
+                </span>
+              </>
+            );
+            const style = {
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+              width: '100%', padding: '10px 16px', borderBottom: `1px solid ${colors.line}`,
+            };
+
+            if (!onglet || !onOuvrirOnglet) {
+              return <div key={t.cle} style={style}>{contenu}</div>;
+            }
+            return (
+              <button
+                key={t.cle}
+                onClick={() => { setOpen(false); onOuvrirOnglet(onglet); }}
+                style={{ ...style, border: 'none', borderBottom: `1px solid ${colors.line}`, background: 'transparent', cursor: 'pointer' }}
+                title="Ouvrir"
+              >
+                {contenu}
+              </button>
+            );
+          })}
 
           {total === 0 && (
             <p style={{ margin: 0, padding: '20px 16px', fontSize: 12, color: colors.muted, fontFamily: fonts.body, textAlign: 'center' }}>

@@ -679,21 +679,123 @@ router.get('/clients/:id/situation/pdf', requirePermission('demandes.lire'), asy
   }
 });
 
+/**
+ * GET /admin/utilisateurs — la liste, ou le résultat d'une recherche.
+ *
+ * Sans recherche, on ne renvoie que les 200 premiers par ordre
+ * alphabétique. C'était un piège silencieux : avec plus de 200 comptes,
+ * un client parfaitement existant n'apparaissait nulle part et semblait
+ * absent du logiciel. Deux corrections ici :
+ *
+ *   • une recherche côté SERVEUR, tolérante aux fautes de frappe
+ *     (word_similarity sur le nom désaccentué, comme la recherche de la
+ *     caisse — voir la migration 042). Un filtre côté navigateur
+ *     n'aurait cherché que dans les 200 déjà chargés, donc n'aurait
+ *     rien réglé.
+ *
+ *   • le nombre TOTAL de comptes est renvoyé avec la liste, pour que
+ *     l'écran puisse dire franchement « 200 affichés sur 1 342 » au
+ *     lieu de laisser croire qu'il montre tout.
+ */
 router.get('/utilisateurs', requirePermission('utilisateurs.gerer'), async (req, res, next) => {
   try {
-    const { rows } = await query(
-      `SELECT u.id, u.full_name, u.phone, u.email, u.role, u.status, u.client_number,
+    const q = String(req.query.q ?? '').trim();
+    const employeur = String(req.query.employeur ?? '').trim();
+    const role = String(req.query.role ?? '').trim();
+    const statut = String(req.query.statut ?? '').trim();
+
+    const champs = `u.id, u.full_name, u.phone, u.email, u.role, u.status, u.client_number,
               u.job_title, u.employer, u.created_at,
               (u.pin_hash IS NOT NULL AND u.role <> 'client') AS pin_backoffice_defini,
               u.pin_updated_at,
-              cb.full_name AS cree_par, ub.full_name AS modifie_par
-       FROM users u
-       LEFT JOIN users cb ON cb.id = u.created_by
-       LEFT JOIN users ub ON ub.id = u.updated_by
-       WHERE u.status <> 'supprime'
-       ORDER BY u.full_name LIMIT 200`
-    );
-    res.json({ utilisateurs: rows });
+              cb.full_name AS cree_par, ub.full_name AS modifie_par`;
+
+    // Conditions assemblées une à une, chacune avec son paramètre : pas
+    // de concaténation de valeurs dans le SQL, jamais.
+    const conditions = [`u.status <> 'supprime'`];
+    const params = [];
+    const p = (valeur) => { params.push(valeur); return `$${params.length}`; };
+
+    const recherche = q.length >= 2;
+    let motif = null;
+    let brut = null;
+    if (recherche) {
+      motif = p(`%${q}%`);
+      brut = p(q);
+      conditions.push(`(
+        u.full_name ILIKE ${motif}
+        OR u.client_number ILIKE ${motif}
+        OR u.phone ILIKE ${motif}
+        OR u.email ILIKE ${motif}
+        OR u.employer ILIKE ${motif}
+        -- Tolérance aux fautes : « ROGE ERIC » retrouve « ROGUE Eric »,
+        -- et l'accent ne compte pas.
+        OR word_similarity(unaccent(${brut}), unaccent(u.full_name)) > 0.45
+      )`);
+    }
+
+    // « Sans employeur » est un filtre utile en soi : ce sont souvent
+    // les comptes créés à la main qu'on cherche à retrouver.
+    if (employeur === '__sans__') {
+      conditions.push(`(u.employer IS NULL OR btrim(u.employer) = '')`);
+    } else if (employeur) {
+      conditions.push(`u.employer = ${p(employeur)}`);
+    }
+    // Comparaison en TEXTE et non par transtypage vers l'énumération :
+    // une valeur inattendue renvoie zéro résultat au lieu de faire
+    // tomber la requête avec une erreur 500.
+    if (role) conditions.push(`u.role::text = ${p(role)}`);
+    if (statut) conditions.push(`u.status::text = ${p(statut)}`);
+
+    const where = conditions.join('\n           AND ');
+    // Plafond à 500 comptes, décidé par la direction. L'ancien plafond
+    // de 200 était un piège silencieux : au-delà, un client existant
+    // n'apparaissait nulle part et semblait absent du logiciel. La
+    // réponse dit désormais toujours si la liste est tronquée, et la
+    // recherche (plafonnée à 100, triée par pertinence) permet
+    // d'atteindre n'importe quel compte quel que soit leur nombre.
+    const limite = recherche ? 100 : 500;
+
+    // Les correspondances exactes d'abord, puis les plus proches. On
+    // réutilise les placeholders réellement attribués plus haut plutôt
+    // que de supposer $1 et $2 : l'ordre des conditions peut changer.
+    const ordre = recherche
+      ? `(u.full_name ILIKE ${motif} OR u.client_number ILIKE ${motif}
+          OR u.phone ILIKE ${motif} OR u.email ILIKE ${motif}) DESC,
+         word_similarity(unaccent(${brut}), unaccent(u.full_name)) DESC,
+         u.full_name`
+      : 'u.full_name';
+
+    const [liste, total, totalFiltre, employeurs] = await Promise.all([
+      query(
+        `SELECT ${champs}
+         FROM users u
+         LEFT JOIN users cb ON cb.id = u.created_by
+         LEFT JOIN users ub ON ub.id = u.updated_by
+         WHERE ${where}
+         ORDER BY ${ordre}
+         LIMIT ${limite}`,
+        params
+      ),
+      query(`SELECT count(*)::int AS n FROM users WHERE status <> 'supprime'`),
+      query(`SELECT count(*)::int AS n FROM users u WHERE ${where}`, params),
+      query(
+        `SELECT btrim(employer) AS employeur, count(*)::int AS nombre
+         FROM users
+         WHERE status <> 'supprime' AND employer IS NOT NULL AND btrim(employer) <> ''
+         GROUP BY btrim(employer)
+         ORDER BY btrim(employer)`
+      ),
+    ]);
+
+    res.json({
+      utilisateurs: liste.rows,
+      total: total.rows[0].n,
+      totalFiltre: totalFiltre.rows[0].n,
+      employeurs: employeurs.rows,
+      recherche: recherche ? q : null,
+      tronque: totalFiltre.rows[0].n > liste.rows.length,
+    });
   } catch (error) {
     next(error);
   }

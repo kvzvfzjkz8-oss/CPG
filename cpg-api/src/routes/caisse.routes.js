@@ -7,6 +7,7 @@ import { validate } from '../middleware/validate.js';
 import { ApiError } from '../middleware/errorHandler.js';
 import { notifyUser } from '../services/pushService.js';
 import { audit } from '../services/auditService.js';
+import { appliquerFraisPonctuel } from '../services/feeService.js';
 import { genererBrouillardPDF } from '../services/brouillardService.js';
 import { fetchCoffres, transfererDepuisCoffre, cloturerCoffre, fetchCoffreClotures, fetchEcheancesAttendues, fetchCoffreParMois } from '../services/coffreService.js';
 import { genererHistoriquePDF } from '../services/historiqueService.js';
@@ -692,6 +693,9 @@ router.get(
         // couvre encore — la demande peut dater de plusieurs jours.
         `SELECT co.id, co.type, co.montant, co.motif, co.demandee_le, co.justifie,
                 co.destination,
+                -- Un rattrapage de frais doit dire QUOI et pour QUEL
+                -- MOIS : « 6 500 F » seul ne permet pas de décider.
+                co.nature_frais, to_char(co.periode_frais, 'YYYY-MM') AS periode_frais,
                 (co.justificatif_donnees IS NOT NULL) AS a_un_fichier,
                 ca.full_name AS caissier,
                 de.full_name AS demandeur, de.role::text AS demandeur_role,
@@ -735,180 +739,249 @@ router.get(
   }
 );
 
+/**
+ * Validation d'une demande de caisse — le cœur de l'opération, isolé
+ * ici pour être appelable seul (POST /operations/:id/valider) comme en
+ * série (POST /operations/valider-lot).
+ *
+ * Chaque appel ouvre SA propre transaction, et le lot les enchaîne une
+ * par une plutôt qu'en parallèle. Les deux sont voulus :
+ *
+ *   • un solde devenu insuffisant sur une ligne ne doit pas annuler
+ *     celles qui viennent de passer — le directeur veut que les bonnes
+ *     passent et que les autres lui soient signalées ;
+ *
+ *   • deux retraits sur la même caisse doivent se voir l'un l'autre :
+ *     le second lit le solde que le premier a laissé, jamais celui
+ *     d'avant. C'est ce qui empêche un lot de vider un tiroir.
+ */
+async function validerUneOperation({ operationId, userId }) {
+  return withTransaction(async (client) => {
+    const { rows } = await client.query(
+      // Le mois d'un rattrapage de frais est lu en TEXTE, calculé par
+      // PostgreSQL. Le pilote renvoie sinon un DATE comme objet Date à
+      // minuit heure locale : au Gabon (UTC+1), le convertir en chaîne
+      // ISO donne la veille, donc le MOIS PRÉCÉDENT. On aurait prélevé
+      // septembre en croyant prélever octobre.
+      `SELECT *, to_char(periode_frais, 'YYYY-MM') AS periode_frais_texte
+       FROM caisse_operations WHERE id = $1 FOR UPDATE`,
+      [operationId]
+    );
+    const operation = rows[0];
+    if (!operation) throw new ApiError(404, 'Demande introuvable.');
+    if (operation.statut !== 'en_attente') {
+      throw new ApiError(409, 'Cette demande a déjà été traitée.');
+    }
+
+    let ledgerEntryId = null;
+
+    // ─────────────────────────────────────────────────────────────
+    // Une caisse ne peut pas verser des especes qu'elle n'a pas.
+    //
+    // Jusqu'ici seul le solde du CLIENT etait verifie, jamais celui
+    // de la caisse : le 09/10/2026 la caissiere a decaisse 139 326 F
+    // de plus qu'elle n'avait recu, et rien ne l'a signale. Le
+    // controle porte sur les seules sorties en especes — un
+    // paiement Mobile Money part du telephone, pas du tiroir, et ne
+    // doit donc pas etre bloque par le niveau de la caisse.
+    //
+    // On lit le solde dans la meme transaction que la validation :
+    // deux directeurs validant en meme temps ne peuvent pas vider
+    // la caisse chacun de leur cote.
+    const sortEnEspeces =
+      (['retrait_client', 'depense', 'retour_excedent'].includes(operation.type)
+        || (operation.type === 'retrait_ponctuel' && operation.destination === 'client'))
+      && operation.mode_paiement === 'especes';
+
+    if (sortEnEspeces) {
+      const { rows: caisse } = await client.query(
+        'SELECT COALESCE(solde, 0) AS solde FROM caisse_soldes WHERE caissier_id = $1',
+        [operation.caissier_id]
+      );
+      const disponible = Number(caisse[0]?.solde ?? 0);
+      if (disponible < Number(operation.montant)) {
+        throw new ApiError(
+          422,
+          `La caisse de cette caissière ne contient que ${disponible} FCFA — insuffisant pour sortir ${operation.montant} FCFA. Réapprovisionnez-la d'abord, ou rejetez la demande.`
+        );
+      }
+    }
+
+    if (operation.type === 'retrait_client') {
+      const { rows: compte } = await client.query(
+        `SELECT a.id AS account_id, b.balance FROM accounts a
+         JOIN account_balances b ON b.account_id = a.id
+         WHERE a.user_id = $1`,
+        [operation.client_id]
+      );
+      if (!compte[0]) throw new ApiError(404, 'Compte du client introuvable.');
+      if (compte[0].balance < operation.montant) {
+        throw new ApiError(422, 'Le solde du client ne couvre plus ce retrait — à rejeter.');
+      }
+
+      const { rows: entry } = await client.query(
+        `INSERT INTO ledger_entries (account_id, type, amount, label, reference, created_by)
+         VALUES ($1, 'retrait', $2, 'Retrait guichet', $3, $4)
+         RETURNING id`,
+        [compte[0].account_id, -operation.montant, `CAISSE-${operation.id.slice(0, 8)}`, userId]
+      );
+      ledgerEntryId = entry[0].id;
+
+      // Le paiement peut se faire en espèces ou par Mobile Money
+      // vers le numéro du client — dans les deux cas, sa caisse en
+      // porte la responsabilité. Le débit du compte client est
+      // déjà fait ci-dessus (immédiat, comme en espèces) : cette
+      // transaction Mobile Money sert de trace du canal utilisé et
+      // apparaît dans la supervision, sans attendre une
+      // confirmation Airtel qui n'est pas encore branchée.
+      if (operation.mode_paiement !== 'especes') {
+        const reference = `TX-${Math.floor(1000 + Math.random() * 9000)}`;
+        const { rows: momo } = await client.query(
+          `INSERT INTO momo_transactions
+             (reference, user_id, account_id, operator, direction, amount, phone, status)
+           VALUES ($1, $2, $3, $4, 'sortant', $5, $6, 'confirmee')
+           RETURNING id`,
+          [
+            reference, operation.client_id, compte[0].account_id, operation.mode_paiement,
+            operation.montant, operation.telephone_paiement,
+          ]
+        );
+        await client.query('UPDATE caisse_operations SET momo_transaction_id = $2 WHERE id = $1', [
+          operation.id, momo[0].id,
+        ]);
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Retrait ponctuel demande par l'operateur.
+    //
+    // Le compte du client est debite dans tous les cas. Ce qui
+    // change, c'est la destination : soit la somme revient a CPG et
+    // alimente la caisse principale, soit elle est remise au client
+    // et sort du tiroir de la caissiere designee (deja verifie par
+    // le controle d'especes ci-dessus).
+    if (operation.type === 'retrait_ponctuel') {
+      const { rows: compte } = await client.query(
+        `SELECT a.id AS account_id, b.balance FROM accounts a
+         JOIN account_balances b ON b.account_id = a.id
+         WHERE a.user_id = $1`,
+        [operation.client_id]
+      );
+      if (!compte[0]) throw new ApiError(404, 'Compte du client introuvable.');
+      if (compte[0].balance < operation.montant) {
+        throw new ApiError(
+          422,
+          `Le solde du client ne couvre plus ce retrait (${compte[0].balance} FCFA) — à rejeter.`
+        );
+      }
+
+      const { rows: entry } = await client.query(
+        `INSERT INTO ledger_entries (account_id, type, amount, label, reference, created_by)
+         VALUES ($1, 'retrait', $2, $3, $4, $5)
+         RETURNING id`,
+        [
+          compte[0].account_id, -operation.montant,
+          `Retrait ponctuel — ${operation.motif}`,
+          `RETRAIT-PONCTUEL-${operation.id.slice(0, 8)}`,
+          userId,
+        ]
+      );
+      ledgerEntryId = entry[0].id;
+
+      // La somme recuperee rejoint les fonds de l'entreprise. Sans
+      // cette ecriture, l'argent quitterait le compte du client sans
+      // apparaitre nulle part.
+      if (operation.destination === 'cpg') {
+        await client.query(
+          `INSERT INTO caisse_principale_mouvements (type, montant, operation_id, cree_par)
+           VALUES ('recuperation_client', $1, $2, $3)`,
+          [operation.montant, operation.id, userId]
+        );
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Rattrapage d'un frais de tenue ou d'agios oublié par le
+    // prélèvement automatique du 25.
+    //
+    // Tout est délégué au service des frais, qui est le même code que
+    // le prélèvement automatique : même calcul depuis le barème, même
+    // écriture de type « frais », même enregistrement dans
+    // applied_fees, donc même impossibilité de prélever deux fois le
+    // mois. On lui passe NOTRE transaction pour que le frais et la
+    // validation tiennent ou tombent ensemble.
+    //
+    // Aucun contrôle de solde ici, et c'est délibéré : un frais est dû
+    // dès qu'il est constaté. C'est la seule dette autorisée à mettre
+    // un compte au rouge.
+    if (operation.type === 'frais_ponctuel') {
+      const { rows: compte } = await client.query(
+        `SELECT a.id AS account_id FROM accounts a
+         WHERE a.user_id = $1 ORDER BY a.created_at LIMIT 1`,
+        [operation.client_id]
+      );
+      if (!compte[0]) throw new ApiError(404, 'Compte du client introuvable.');
+
+      const resultat = await appliquerFraisPonctuel({
+        accountId: compte[0].account_id,
+        nature: operation.nature_frais,
+        periode: operation.periode_frais_texte,
+        client,
+      });
+      ledgerEntryId = resultat.ledgerEntryId ?? null;
+
+      // Le montant affiché au directeur a été calculé à la demande ;
+      // celui qui compte est celui du barème au moment du prélèvement.
+      // S'ils diffèrent (barème changé entre-temps), on garde le vrai.
+      if (Number(resultat.amount) !== Number(operation.montant)) {
+        await client.query('UPDATE caisse_operations SET montant = $2 WHERE id = $1', [
+          operation.id, resultat.amount,
+        ]);
+      }
+    }
+
+    if (operation.type === 'appro') {
+      // Impossible de transférer plus que ce que la caisse
+      // principale contient réellement — sinon on créerait de
+      // l'argent de nulle part.
+      const { rows: principale } = await client.query(
+        'SELECT solde FROM caisse_principale_solde'
+      );
+      const soldePrincipale = principale[0]?.solde ?? 0;
+      if (soldePrincipale < operation.montant) {
+        throw new ApiError(
+          422,
+          `La caisse principale ne contient que ${soldePrincipale} FCFA — insuffisant pour ce transfert de ${operation.montant} FCFA. Alimentez-la d'abord.`
+        );
+      }
+
+      await client.query(
+        `INSERT INTO caisse_principale_mouvements (type, montant, caissier_id, operation_id, cree_par)
+         VALUES ('transfert_vers_caissiere', $1, $2, $3, $4)`,
+        [operation.montant, operation.caissier_id, operation.id, userId]
+      );
+    }
+
+    const { rows: updated } = await client.query(
+      `UPDATE caisse_operations
+       SET statut = 'validee', decidee_le = now(), decidee_par = $2, ledger_entry_id = $3
+       WHERE id = $1 RETURNING *`,
+      [operation.id, userId, ledgerEntryId]
+    );
+
+    return { operation: updated[0], clientId: operation.client_id, montant: operation.montant };
+  });
+}
+
 /** POST /caisse/operations/:id/valider — débite réellement si retrait. */
 router.post(
   '/operations/:id/valider',
   requirePermission('caisse.valider'),
   async (req, res, next) => {
     try {
-      const result = await withTransaction(async (client) => {
-        const { rows } = await client.query(
-          `SELECT * FROM caisse_operations WHERE id = $1 FOR UPDATE`,
-          [req.params.id]
-        );
-        const operation = rows[0];
-        if (!operation) throw new ApiError(404, 'Demande introuvable.');
-        if (operation.statut !== 'en_attente') {
-          throw new ApiError(409, 'Cette demande a déjà été traitée.');
-        }
-
-        let ledgerEntryId = null;
-
-        // ─────────────────────────────────────────────────────────────
-        // Une caisse ne peut pas verser des especes qu'elle n'a pas.
-        //
-        // Jusqu'ici seul le solde du CLIENT etait verifie, jamais celui
-        // de la caisse : le 09/10/2026 la caissiere a decaisse 139 326 F
-        // de plus qu'elle n'avait recu, et rien ne l'a signale. Le
-        // controle porte sur les seules sorties en especes — un
-        // paiement Mobile Money part du telephone, pas du tiroir, et ne
-        // doit donc pas etre bloque par le niveau de la caisse.
-        //
-        // On lit le solde dans la meme transaction que la validation :
-        // deux directeurs validant en meme temps ne peuvent pas vider
-        // la caisse chacun de leur cote.
-        const sortEnEspeces =
-          (['retrait_client', 'depense', 'retour_excedent'].includes(operation.type)
-            || (operation.type === 'retrait_ponctuel' && operation.destination === 'client'))
-          && operation.mode_paiement === 'especes';
-
-        if (sortEnEspeces) {
-          const { rows: caisse } = await client.query(
-            'SELECT COALESCE(solde, 0) AS solde FROM caisse_soldes WHERE caissier_id = $1',
-            [operation.caissier_id]
-          );
-          const disponible = Number(caisse[0]?.solde ?? 0);
-          if (disponible < Number(operation.montant)) {
-            throw new ApiError(
-              422,
-              `La caisse de cette caissière ne contient que ${disponible} FCFA — insuffisant pour sortir ${operation.montant} FCFA. Réapprovisionnez-la d'abord, ou rejetez la demande.`
-            );
-          }
-        }
-
-        if (operation.type === 'retrait_client') {
-          const { rows: compte } = await client.query(
-            `SELECT a.id AS account_id, b.balance FROM accounts a
-             JOIN account_balances b ON b.account_id = a.id
-             WHERE a.user_id = $1`,
-            [operation.client_id]
-          );
-          if (!compte[0]) throw new ApiError(404, 'Compte du client introuvable.');
-          if (compte[0].balance < operation.montant) {
-            throw new ApiError(422, 'Le solde du client ne couvre plus ce retrait — à rejeter.');
-          }
-
-          const { rows: entry } = await client.query(
-            `INSERT INTO ledger_entries (account_id, type, amount, label, reference, created_by)
-             VALUES ($1, 'retrait', $2, 'Retrait guichet', $3, $4)
-             RETURNING id`,
-            [compte[0].account_id, -operation.montant, `CAISSE-${operation.id.slice(0, 8)}`, req.user.id]
-          );
-          ledgerEntryId = entry[0].id;
-
-          // Le paiement peut se faire en espèces ou par Mobile Money
-          // vers le numéro du client — dans les deux cas, sa caisse en
-          // porte la responsabilité. Le débit du compte client est
-          // déjà fait ci-dessus (immédiat, comme en espèces) : cette
-          // transaction Mobile Money sert de trace du canal utilisé et
-          // apparaît dans la supervision, sans attendre une
-          // confirmation Airtel qui n'est pas encore branchée.
-          if (operation.mode_paiement !== 'especes') {
-            const reference = `TX-${Math.floor(1000 + Math.random() * 9000)}`;
-            const { rows: momo } = await client.query(
-              `INSERT INTO momo_transactions
-                 (reference, user_id, account_id, operator, direction, amount, phone, status)
-               VALUES ($1, $2, $3, $4, 'sortant', $5, $6, 'confirmee')
-               RETURNING id`,
-              [
-                reference, operation.client_id, compte[0].account_id, operation.mode_paiement,
-                operation.montant, operation.telephone_paiement,
-              ]
-            );
-            await client.query('UPDATE caisse_operations SET momo_transaction_id = $2 WHERE id = $1', [
-              operation.id, momo[0].id,
-            ]);
-          }
-        }
-
-        // ─────────────────────────────────────────────────────────────
-        // Retrait ponctuel demande par l'operateur.
-        //
-        // Le compte du client est debite dans tous les cas. Ce qui
-        // change, c'est la destination : soit la somme revient a CPG et
-        // alimente la caisse principale, soit elle est remise au client
-        // et sort du tiroir de la caissiere designee (deja verifie par
-        // le controle d'especes ci-dessus).
-        if (operation.type === 'retrait_ponctuel') {
-          const { rows: compte } = await client.query(
-            `SELECT a.id AS account_id, b.balance FROM accounts a
-             JOIN account_balances b ON b.account_id = a.id
-             WHERE a.user_id = $1`,
-            [operation.client_id]
-          );
-          if (!compte[0]) throw new ApiError(404, 'Compte du client introuvable.');
-          if (compte[0].balance < operation.montant) {
-            throw new ApiError(
-              422,
-              `Le solde du client ne couvre plus ce retrait (${compte[0].balance} FCFA) — à rejeter.`
-            );
-          }
-
-          const { rows: entry } = await client.query(
-            `INSERT INTO ledger_entries (account_id, type, amount, label, reference, created_by)
-             VALUES ($1, 'retrait', $2, $3, $4, $5)
-             RETURNING id`,
-            [
-              compte[0].account_id, -operation.montant,
-              `Retrait ponctuel — ${operation.motif}`,
-              `RETRAIT-PONCTUEL-${operation.id.slice(0, 8)}`,
-              req.user.id,
-            ]
-          );
-          ledgerEntryId = entry[0].id;
-
-          // La somme recuperee rejoint les fonds de l'entreprise. Sans
-          // cette ecriture, l'argent quitterait le compte du client sans
-          // apparaitre nulle part.
-          if (operation.destination === 'cpg') {
-            await client.query(
-              `INSERT INTO caisse_principale_mouvements (type, montant, operation_id, cree_par)
-               VALUES ('recuperation_client', $1, $2, $3)`,
-              [operation.montant, operation.id, req.user.id]
-            );
-          }
-        }
-
-        if (operation.type === 'appro') {
-          // Impossible de transférer plus que ce que la caisse
-          // principale contient réellement — sinon on créerait de
-          // l'argent de nulle part.
-          const { rows: principale } = await client.query(
-            'SELECT solde FROM caisse_principale_solde'
-          );
-          const soldePrincipale = principale[0]?.solde ?? 0;
-          if (soldePrincipale < operation.montant) {
-            throw new ApiError(
-              422,
-              `La caisse principale ne contient que ${soldePrincipale} FCFA — insuffisant pour ce transfert de ${operation.montant} FCFA. Alimentez-la d'abord.`
-            );
-          }
-
-          await client.query(
-            `INSERT INTO caisse_principale_mouvements (type, montant, caissier_id, operation_id, cree_par)
-             VALUES ('transfert_vers_caissiere', $1, $2, $3, $4)`,
-            [operation.montant, operation.caissier_id, operation.id, req.user.id]
-          );
-        }
-
-        const { rows: updated } = await client.query(
-          `UPDATE caisse_operations
-           SET statut = 'validee', decidee_le = now(), decidee_par = $2, ledger_entry_id = $3
-           WHERE id = $1 RETURNING *`,
-          [operation.id, req.user.id, ledgerEntryId]
-        );
-
-        return { operation: updated[0], clientId: operation.client_id, montant: operation.montant };
+      const result = await validerUneOperation({
+        operationId: req.params.id,
+        userId: req.user.id,
       });
 
       await audit(req, {
@@ -930,6 +1003,85 @@ router.post(
       }
 
       res.json(result.operation);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /caisse/operations/valider-lot — valider plusieurs demandes
+ * d'un coup.
+ *
+ * L'opératrice dépose parfois dix retraits en quelques minutes ; les
+ * valider un par un faisait attendre le guichet. Le contrôle ne change
+ * pas pour autant : chaque ligne repasse par exactement les mêmes
+ * vérifications que si elle avait été validée seule (solde du client,
+ * espèces réellement disponibles en caisse, fonds de la caisse
+ * principale). C'est la saisie qui est groupée, pas le contrôle.
+ *
+ * Une ligne qui échoue n'emporte pas les autres : elle est renvoyée
+ * avec son motif, pour que le directeur sache exactement laquelle
+ * n'est pas passée et pourquoi. Rien n'est jamais validé en silence.
+ */
+const validationLotSchema = z.object({
+  // Plafond volontaire : au-delà, c'est un traitement de masse qui
+  // mérite d'être regardé ligne à ligne, pas coché en bloc.
+  ids: z.array(z.string().uuid()).min(1).max(50),
+});
+
+router.post(
+  '/operations/valider-lot',
+  requirePermission('caisse.valider'),
+  validate(validationLotSchema),
+  async (req, res, next) => {
+    try {
+      const ids = [...new Set(req.body.ids)];
+      const resultats = [];
+
+      // En série, jamais en parallèle : deux retraits sur la même
+      // caisse doivent se voir l'un l'autre (voir validerUneOperation).
+      for (const id of ids) {
+        try {
+          const r = await validerUneOperation({ operationId: id, userId: req.user.id });
+          resultats.push({
+            id,
+            ok: true,
+            montant: Number(r.montant),
+            client: r.operation.client_id ?? null,
+          });
+
+          await audit(req, {
+            action: 'caisse.operation_validee',
+            entityType: 'caisse_operation',
+            entityId: id,
+          });
+
+          if (r.clientId) {
+            try {
+              await notifyUser(r.clientId, 'retrait_caisse', { amount: r.montant });
+            } catch (notifError) {
+              req.log?.error({ err: notifError }, 'Notification retrait_caisse non envoyée');
+            }
+          }
+        } catch (error) {
+          // Échec attendu et banal (solde insuffisant, demande déjà
+          // traitée entre-temps) : on le rapporte, on continue.
+          resultats.push({
+            id,
+            ok: false,
+            message: error?.message ?? 'Validation impossible.',
+          });
+        }
+      }
+
+      const valides = resultats.filter((r) => r.ok);
+      res.json({
+        valides: valides.length,
+        echecs: resultats.length - valides.length,
+        montant_valide: valides.reduce((somme, r) => somme + r.montant, 0),
+        resultats,
+      });
     } catch (error) {
       next(error);
     }
