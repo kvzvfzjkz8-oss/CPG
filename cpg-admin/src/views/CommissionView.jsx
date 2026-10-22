@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  CalendarPlus, ListChecks, Gavel, Inbox, AlertTriangle, Sparkles, Check, X,
+  CalendarPlus, ListChecks, Gavel, Inbox, AlertTriangle, Sparkles, Check, X, Wallet,
 } from 'lucide-react';
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, Tabs, SectionTitle } from '../components/UI';
@@ -10,6 +10,7 @@ import {
   fetchLevel1Credits, depositCreditToCommission,
   fetchCommissionAgenda, depositDifficultyCase, depositExceptionalRequest,
   holdCommissionSession, searchClientPourDemande, fetchCreditRequests,
+  definirPlafondCommission,
 } from '../api/adminApi';
 
 const input = {
@@ -26,6 +27,142 @@ const actionBtn = (bg, fg) => ({
   background: bg, color: fg, fontSize: 12, fontWeight: 600,
   fontFamily: fonts.body, cursor: 'pointer', whiteSpace: 'nowrap',
 });
+
+/**
+ * L'ENVELOPPE DE LA SÉANCE
+ *
+ * « Chaque commission doit avoir un montant plafonné donné par le
+ *   directeur. Ce montant peut être dépassé tant que la commission n'a
+ *   pas été tenue, mais durant la tenue de la séance les noms et les
+ *   montants qui vont être validés ne doivent pas dépasser ce montant. »
+ *
+ * Trois chiffres, toujours visibles : autorisé, déposé, reste. Le reste
+ * passe au rouge quand les dépôts dépassent — c'est un signal, pas un
+ * blocage : déposer n'engage aucun franc, c'est en séance que la
+ * limite s'applique.
+ *
+ * Seul le directeur peut fixer ou corriger le montant. Le gestionnaire
+ * le voit, dépose en connaissance de cause, mais n'y touche pas.
+ */
+function EnveloppePanel({ session, role, onChange }) {
+  const peutDefinir = can(role, 'commission.definir_plafond');
+  const [edition, setEdition] = useState(false);
+  const [valeur, setValeur] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [erreur, setErreur] = useState('');
+
+  const e = session?.enveloppe;
+  const plafond = e?.plafond ?? null;
+  const depasse = (e?.depassement ?? 0) > 0;
+
+  const enregistrer = async (montant) => {
+    setBusy(true);
+    setErreur('');
+    try {
+      await definirPlafondCommission(session.id, montant);
+      setEdition(false);
+      setValeur('');
+      onChange();
+    } catch (err) {
+      setErreur(err.message ?? "L'enveloppe n'a pas pu être enregistrée.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const chiffre = (titre, montant, ton) => (
+    <div style={{ flex: '1 1 150px' }}>
+      <div style={{ fontSize: 10, fontWeight: 600, color: colors.muted, fontFamily: fonts.body, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+        {titre}
+      </div>
+      <div style={{ fontSize: 17, fontWeight: 700, fontFamily: fonts.mono, color: ton ?? colors.ink, marginTop: 2 }}>
+        {montant === null ? '—' : `${formatFCFA(montant)} F`}
+      </div>
+    </div>
+  );
+
+  return (
+    <Card style={{
+      padding: 18, marginBottom: 16,
+      borderColor: depasse ? colors.gold : colors.line,
+      background: depasse ? colors.goldPale : colors.card,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+        <Wallet size={15} color={colors.forestLight} />
+        <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
+          Enveloppe de la séance
+        </p>
+        {plafond === null && <Badge tone="neutral">non fixée</Badge>}
+        {depasse && <Badge tone="gold">dépassée</Badge>}
+      </div>
+
+      {erreur && (
+        <p style={{ margin: '0 0 12px', fontSize: 12, color: colors.danger, fontFamily: fonts.body }}>{erreur}</p>
+      )}
+
+      {plafond === null ? (
+        <p style={{ margin: '0 0 12px', fontSize: 12, color: colors.muted, fontFamily: fonts.body }}>
+          Aucun montant n'a été fixé pour cette séance : rien ne limitera les validations.
+          {peutDefinir
+            ? ' Fixez l\'enveloppe pour plafonner ce qui pourra être octroyé ce jour-là.'
+            : ' Seul le directeur peut la fixer.'}
+        </p>
+      ) : (
+        <>
+          <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', marginBottom: 12 }}>
+            {chiffre('Autorisé', plafond)}
+            {chiffre('Déposé', e.depose)}
+            {chiffre('Reste', e.reste, e.reste < 0 ? colors.danger : colors.forestLight)}
+          </div>
+          <p style={{ margin: '0 0 12px', fontSize: 11.5, color: depasse ? colors.goldDark : colors.muted, fontFamily: fonts.body }}>
+            {depasse
+              ? `Les dépôts dépassent l'enveloppe de ${formatFCFA(e.depassement)} F. Vous pouvez continuer à déposer — mais en séance, la somme des dossiers validés ne pourra pas franchir ${formatFCFA(plafond)} F. Retirez les dossiers excédentaires de la file avant de tenir la séance : ils resteront disponibles pour une prochaine.`
+              : `${e.dossiersDeposes} dossier${e.dossiersDeposes > 1 ? 's' : ''} déposé${e.dossiersDeposes > 1 ? 's' : ''}. En séance, la somme des dossiers validés ne pourra pas dépasser ce montant.`}
+          </p>
+        </>
+      )}
+
+      {peutDefinir && !edition && (
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={() => { setEdition(true); setValeur(plafond ? String(plafond) : ''); }} disabled={busy} style={actionBtn(colors.forestPale, colors.forestLight)}>
+            <Wallet size={13} /> {plafond === null ? 'Fixer l\'enveloppe' : 'Modifier'}
+          </button>
+          {plafond !== null && (
+            <button onClick={() => enregistrer(null)} disabled={busy} style={actionBtn('transparent', colors.muted)}>
+              Retirer l'enveloppe
+            </button>
+          )}
+        </div>
+      )}
+
+      {peutDefinir && edition && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+          <div style={{ flex: 1, maxWidth: 240 }}>
+            <label style={label}>Montant maximum (FCFA)</label>
+            <input
+              style={{ ...input, fontFamily: fonts.mono }}
+              inputMode="numeric"
+              autoFocus
+              placeholder="0"
+              value={valeur}
+              onChange={(ev) => setValeur(ev.target.value.replace(/[^0-9]/g, ''))}
+            />
+          </div>
+          <button
+            onClick={() => enregistrer(Number(valeur))}
+            disabled={busy || !valeur || Number(valeur) <= 0}
+            style={actionBtn(colors.forest, '#fff')}
+          >
+            Enregistrer
+          </button>
+          <button onClick={() => { setEdition(false); setErreur(''); }} disabled={busy} style={actionBtn('transparent', colors.muted)}>
+            Annuler
+          </button>
+        </div>
+      )}
+    </Card>
+  );
+}
 
 function Toast({ text }) {
   if (!text) return null;
@@ -154,6 +291,9 @@ function SessionPanel({ session, loading, onChange, role }) {
   return (
     <div>
       <Toast text={toast} />
+      {session?.status === 'planifiee' && (
+        <EnveloppePanel session={session} role={role} onChange={onChange} />
+      )}
       {error && (
         <div style={{
           background: colors.dangerPale, border: `1px solid ${colors.danger}`, borderRadius: 12,
@@ -721,6 +861,19 @@ function HoldSessionPanel({ session, onHeld, role }) {
   const totalPoints = agenda.credits.length + agenda.points.length;
   const decidedCount = Object.keys(decisions).length;
 
+  // L'enveloppe, suivie en direct pendant la séance.
+  //
+  // Seuls les dossiers de crédit la consomment : ce sont eux que la
+  // caisse paiera. Le serveur applique exactement la même règle et
+  // refusera la séance en cas de dépassement — ce compteur est là pour
+  // que le directeur le voie AVANT de cliquer, pas pour le remplacer.
+  const plafond = session?.enveloppe?.plafond ?? null;
+  const montantValide = agenda.credits
+    .filter((c) => decisions[`credit:${c.id}`] === 'valide')
+    .reduce((somme, c) => somme + Number(c.amount), 0);
+  const excedent = plafond === null ? 0 : Math.max(0, montantValide - plafond);
+  const bloqueParEnveloppe = excedent > 0;
+
   const submit = async () => {
     setBusy(true);
     setError('');
@@ -774,6 +927,52 @@ function HoldSessionPanel({ session, onHeld, role }) {
         </Card>
       ) : (
         <>
+          {plafond !== null && (
+            <Card style={{
+              padding: '14px 18px', marginBottom: 16,
+              borderColor: bloqueParEnveloppe ? colors.danger : colors.forestLight,
+              background: bloqueParEnveloppe ? colors.dangerPale : colors.forestPale,
+            }}>
+              <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap', alignItems: 'center' }}>
+                <div>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: colors.muted, fontFamily: fonts.body, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                    Enveloppe
+                  </div>
+                  <div style={{ fontSize: 16, fontWeight: 700, fontFamily: fonts.mono, color: colors.ink }}>
+                    {formatFCFA(plafond)} F
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: colors.muted, fontFamily: fonts.body, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                    Validé à cet instant
+                  </div>
+                  <div style={{
+                    fontSize: 16, fontWeight: 700, fontFamily: fonts.mono,
+                    color: bloqueParEnveloppe ? colors.danger : colors.forestLight,
+                  }}>
+                    {formatFCFA(montantValide)} F
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: colors.muted, fontFamily: fonts.body, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                    Reste
+                  </div>
+                  <div style={{
+                    fontSize: 16, fontWeight: 700, fontFamily: fonts.mono,
+                    color: bloqueParEnveloppe ? colors.danger : colors.forestLight,
+                  }}>
+                    {formatFCFA(plafond - montantValide)} F
+                  </div>
+                </div>
+              </div>
+              <p style={{ margin: '10px 0 0', fontSize: 11.5, fontFamily: fonts.body, color: bloqueParEnveloppe ? colors.danger : colors.muted }}>
+                {bloqueParEnveloppe
+                  ? `Les dossiers marqués « validé » dépassent l'enveloppe de ${formatFCFA(excedent)} F. Rejetez-en, ou retirez-les de la file depuis l'onglet « Déposer » pour les garder disponibles pour une prochaine séance.`
+                  : 'Le total des dossiers validés ne peut pas dépasser l\'enveloppe. Les dossiers en difficulté et les demandes exceptionnelles ne la consomment pas.'}
+              </p>
+            </Card>
+          )}
+
           <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 16 }}>
             <SectionTitle>{totalPoints} point{totalPoints > 1 ? 's' : ''} à l'ordre du jour</SectionTitle>
 
@@ -809,11 +1008,17 @@ function HoldSessionPanel({ session, onHeld, role }) {
           {peutTenir && (
             <button
               onClick={submit}
-              disabled={decidedCount < totalPoints || busy}
-              style={{ ...actionBtn(colors.forest, '#fff'), opacity: decidedCount < totalPoints ? 0.5 : 1 }}
+              disabled={decidedCount < totalPoints || busy || bloqueParEnveloppe}
+              style={{
+                ...actionBtn(colors.forest, '#fff'),
+                opacity: decidedCount < totalPoints || bloqueParEnveloppe ? 0.5 : 1,
+                cursor: decidedCount < totalPoints || bloqueParEnveloppe ? 'not-allowed' : 'pointer',
+              }}
             >
               <ListChecks size={13} />
-              {busy ? 'Enregistrement…' : `Clore la séance (${decidedCount}/${totalPoints} tranchés)`}
+              {busy ? 'Enregistrement…'
+                : bloqueParEnveloppe ? `Enveloppe dépassée de ${formatFCFA(excedent)} F`
+                : `Clore la séance (${decidedCount}/${totalPoints} tranchés)`}
             </button>
           )}
         </>

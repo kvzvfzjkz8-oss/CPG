@@ -28,13 +28,17 @@ import { ApiError } from '../middleware/errorHandler.js';
  * cadence hebdomadaire plutôt que de laisser s'empiler des séances
  * fantômes jamais tenues.
  */
-export async function scheduleSession({ scheduledFor, actorId }) {
+export async function scheduleSession({ scheduledFor, actorId, plafond = null }) {
   try {
     const { rows } = await query(
-      `INSERT INTO commission_sessions (scheduled_for, scheduled_by)
-       VALUES ($1, $2)
-       RETURNING id, scheduled_for, status, scheduled_by`,
-      [scheduledFor, actorId]
+      // Le plafond peut être posé dès la programmation quand c'est le
+      // directeur qui programme ; sinon il le fixera après, et la
+      // séance reste sans enveloppe en attendant.
+      `INSERT INTO commission_sessions (scheduled_for, scheduled_by, plafond, plafond_par, plafond_le)
+       VALUES ($1, $2, $3, CASE WHEN $3::bigint IS NULL THEN NULL ELSE $2::uuid END,
+               CASE WHEN $3::bigint IS NULL THEN NULL ELSE now() END)
+       RETURNING id, scheduled_for, status, scheduled_by, plafond`,
+      [scheduledFor, actorId, plafond]
     );
     return rows[0];
   } catch (error) {
@@ -72,16 +76,80 @@ export async function rescheduleSession({ sessionId, scheduledFor }) {
   return rows[0];
 }
 
+/**
+ * Fixe (ou corrige) l'enveloppe d'une séance. Réservé au directeur —
+ * le gestionnaire programme la séance et y dépose les dossiers, mais
+ * le montant engageable n'est pas à sa main.
+ *
+ * Modifiable tant que la séance n'est pas tenue : une enveloppe est une
+ * décision de trésorerie, elle peut évoluer jusqu'au dernier moment.
+ * Après la tenue, elle est figée — c'est la trace de ce qui a autorisé
+ * les octrois de cette séance.
+ */
+export async function definirPlafondSession({ sessionId, plafond, actorId }) {
+  if (plafond !== null && (!Number.isInteger(plafond) || plafond <= 0)) {
+    throw new ApiError(422, 'Le plafond doit être un montant positif, ou vide pour retirer l’enveloppe.');
+  }
+
+  const { rows } = await query(
+    `UPDATE commission_sessions
+     SET plafond = $2,
+         plafond_par = CASE WHEN $2::bigint IS NULL THEN NULL ELSE $3::uuid END,
+         plafond_le  = CASE WHEN $2::bigint IS NULL THEN NULL ELSE now() END
+     WHERE id = $1 AND status = 'planifiee'
+     RETURNING id, plafond`,
+    [sessionId, plafond, actorId]
+  );
+  if (!rows[0]) {
+    throw new ApiError(409, 'Cette séance est déjà tenue ou annulée — son enveloppe ne peut plus changer.');
+  }
+
+  // On renvoie l'enveloppe recalculée : le directeur doit voir
+  // immédiatement si ce qu'il vient de fixer couvre déjà les dépôts.
+  return { ...rows[0], enveloppe: await fetchEnveloppe(sessionId) };
+}
+
+/**
+ * Les trois chiffres de l'enveloppe d'une séance : autorisé, déposé,
+ * reste. Lus dans la vue, donc toujours cohérents avec les dépôts
+ * réels — jamais un compteur stocké qui pourrait dériver.
+ *
+ * `depassement` dit de combien les dépôts excèdent l'enveloppe. Il
+ * n'empêche rien au dépôt : c'est en séance que la limite s'applique.
+ */
+export async function fetchEnveloppe(sessionId) {
+  const { rows } = await query(
+    `SELECT plafond, depose, valide, reste, dossiers_deposes
+     FROM commission_enveloppes WHERE session_id = $1`,
+    [sessionId]
+  );
+  const e = rows[0];
+  if (!e) return null;
+  const plafond = e.plafond === null ? null : Number(e.plafond);
+  const depose = Number(e.depose);
+  return {
+    plafond,
+    depose,
+    valide: Number(e.valide),
+    reste: plafond === null ? null : plafond - depose,
+    depassement: plafond === null ? 0 : Math.max(0, depose - plafond),
+    dossiersDeposes: e.dossiers_deposes,
+  };
+}
+
 /** La séance actuellement programmée, s'il y en a une. */
 export async function fetchPlannedSession() {
   const { rows } = await query(
     `SELECT s.id, s.scheduled_for, s.status, s.scheduled_by, u.full_name AS scheduled_by_name,
-            s.note, s.created_at
+            s.note, s.created_at, s.plafond, s.plafond_le,
+            p.full_name AS plafond_par_name
      FROM commission_sessions s
      LEFT JOIN users u ON u.id = s.scheduled_by
+     LEFT JOIN users p ON p.id = s.plafond_par
      WHERE s.status = 'planifiee' LIMIT 1`
   );
-  return rows[0] ?? null;
+  if (!rows[0]) return null;
+  return { ...rows[0], enveloppe: await fetchEnveloppe(rows[0].id) };
 }
 
 /**
@@ -340,6 +408,61 @@ export async function holdSession({ sessionId, decisions, actorId }) {
       );
     }
 
+    // ─────────────────────────────────────────────────────────────────
+    // L'ENVELOPPE DE LA SÉANCE
+    //
+    // « Durant la tenue de la séance, les noms et les montants qui vont
+    //   être validés ne doivent pas dépasser ce montant. »
+    //
+    // Le dépôt, lui, peut dépasser librement : déposer n'engage rien.
+    // C'est ici, au moment où les octrois deviennent réels, que la
+    // limite s'applique — et elle est refusée en bloc, avant la
+    // moindre écriture, pour que la séance soit à reprendre entière
+    // plutôt qu'à moitié enregistrée.
+    //
+    // Seuls les dossiers de crédit comptent : ce sont eux que la caisse
+    // paiera. Les points « difficulté » et « demande exceptionnelle »
+    // ne décaissent rien par eux-mêmes.
+    //
+    // Une séance sans plafond ne bloque rien : la direction n'a pas
+    // encore fixé d'enveloppe, on ne lui impose pas une limite qu'elle
+    // n'a pas donnée.
+    if (session.plafond !== null && session.plafond !== undefined) {
+      const aValider = decisions
+        .filter((d) => (d.kind ?? (d.creditId ? 'credit' : 'item')) === 'credit')
+        .filter((d) => d.decision === 'valide')
+        .map((d) => d.creditId);
+
+      if (aValider.length > 0) {
+        const { rows: montants } = await client.query(
+          `SELECT c.id, c.reference, c.amount, btrim(u.full_name) AS client
+           FROM credit_requests c JOIN users u ON u.id = c.user_id
+           WHERE c.id = ANY($1::uuid[])
+           ORDER BY c.amount DESC`,
+          [aValider]
+        );
+        const total = montants.reduce((s, r) => s + Number(r.amount), 0);
+        const plafond = Number(session.plafond);
+
+        if (total > plafond) {
+          const excedent = total - plafond;
+          // On nomme les dossiers, du plus gros au plus petit : le
+          // directeur doit pouvoir décider lesquels retirer de la file
+          // sans aller rouvrir chaque dossier.
+          const liste = montants
+            .map((r) => `${r.client} ${r.reference} (${Number(r.amount)} F)`)
+            .join(', ');
+          throw new ApiError(
+            422,
+            `Les ${montants.length} dossiers à valider totalisent ${total} FCFA, `
+            + `soit ${excedent} FCFA au-dessus de l’enveloppe de ${plafond} FCFA fixée pour cette séance. `
+            + `Retirez des dossiers de la file (ils reviendront disponibles pour une prochaine séance) `
+            + `ou relevez l’enveloppe avant de tenir la séance. Dossiers concernés, du plus élevé au plus faible : ${liste}.`
+          );
+        }
+      }
+    }
+
     const resultats = [];
 
     for (const entry of decisions) {
@@ -478,6 +601,7 @@ export async function doubleValidateCredit({ creditId, actorId }) {
 export async function fetchAllSessions({ limite = 100 } = {}) {
   const { rows } = await query(
     `SELECT s.id, s.scheduled_for, s.status, s.held_at, s.note, s.created_at,
+            s.plafond,
             programmeur.full_name AS programmee_par,
             president.full_name   AS tenue_par,
             (SELECT count(*) FROM credit_requests c
@@ -518,9 +642,11 @@ export async function fetchAllSessions({ limite = 100 } = {}) {
 export async function fetchSessionDetail({ sessionId }) {
   const { rows: sessionRows } = await query(
     `SELECT s.id, s.scheduled_for, s.status, s.held_at, s.note, s.created_at,
+            s.plafond, s.plafond_le, plafonneur.full_name AS plafond_par_name,
             programmeur.full_name AS programmee_par,
             president.full_name   AS tenue_par
      FROM commission_sessions s
+     LEFT JOIN users plafonneur ON plafonneur.id = s.plafond_par
      JOIN users programmeur ON programmeur.id = s.scheduled_by
      LEFT JOIN users president ON president.id = s.held_by
      WHERE s.id = $1`,

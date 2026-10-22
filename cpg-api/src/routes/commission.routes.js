@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth, requirePermission } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
+import { ApiError } from '../middleware/errorHandler.js';
+import { can } from '../utils/permissions.js';
 import { audit } from '../services/auditService.js';
 import {
   scheduleSession, cancelSession, rescheduleSession, fetchPlannedSession, depositToCommission,
@@ -10,7 +12,7 @@ import {
   depositDifficultyCase, depositExceptionalRequest, withdrawCommissionItem, fetchCommissionItems,
   proposeCommissionItemDeletionRequest, fetchPendingCommissionItemDeletionRequests,
   decideCommissionItemDeletionRequest, cancelCommissionItemDirectly,
-  fetchAllSessions, fetchSessionDetail,
+  fetchAllSessions, fetchSessionDetail, definirPlafondSession, fetchEnveloppe,
 } from '../services/commissionService.js';
 
 const router = Router();
@@ -30,16 +32,77 @@ router.get('/seance', requirePermission('commission.lire'), async (req, res, nex
   }
 });
 
+/**
+ * PATCH /admin/commission/seance/:id/plafond — fixe ou corrige
+ * l'enveloppe de la séance.
+ *
+ * Réservé au directeur : le gestionnaire programme la séance et y
+ * dépose les dossiers, mais le montant engageable n'est pas à sa main.
+ * Modifiable jusqu'à la tenue — une enveloppe est une décision de
+ * trésorerie, elle peut évoluer. Envoyer `plafond: null` retire
+ * l'enveloppe et rend la séance libre comme avant.
+ */
+router.patch(
+  '/seance/:id/plafond',
+  requirePermission('commission.definir_plafond'),
+  validate(z.object({
+    plafond: z.coerce.number().int().positive().max(1000000000).nullable(),
+  })),
+  async (req, res, next) => {
+    try {
+      const resultat = await definirPlafondSession({
+        sessionId: req.params.id,
+        plafond: req.body.plafond,
+        actorId: req.user.id,
+      });
+      await audit(req, {
+        action: 'commission.plafond_defini',
+        entityType: 'commission_session',
+        entityId: req.params.id,
+        metadata: { plafond: req.body.plafond },
+      });
+      res.json(resultat);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/** GET /admin/commission/seance/:id/enveloppe — autorisé, déposé, reste. */
+router.get(
+  '/seance/:id/enveloppe',
+  requirePermission('commission.lire'),
+  async (req, res, next) => {
+    try {
+      const enveloppe = await fetchEnveloppe(req.params.id);
+      if (!enveloppe) throw new ApiError(404, 'Séance introuvable.');
+      res.json(enveloppe);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
 /** POST /admin/commission/seance — programme la prochaine commission. */
 router.post(
   '/seance',
   requirePermission('commission.programmer'),
   validate(z.object({
     dateHeure: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/, 'Format attendu : AAAA-MM-JJTHH:MM'),
+    // Enveloppe facultative ici : le directeur peut la poser tout de
+    // suite, le gestionnaire ne peut pas (verifie juste en dessous).
+    plafond: z.coerce.number().int().positive().max(1000000000).optional(),
   })),
   async (req, res, next) => {
     try {
-      const session = await scheduleSession({ scheduledFor: req.body.dateHeure, actorId: req.user.id });
+      if (req.body.plafond !== undefined && !can(req.user.role, 'commission.definir_plafond')) {
+        throw new ApiError(403, "L'enveloppe d'une seance est fixee par le directeur.");
+      }
+      const session = await scheduleSession({
+        scheduledFor: req.body.dateHeure,
+        actorId: req.user.id,
+        plafond: req.body.plafond ?? null,
+      });
       await audit(req, { action: 'commission.programmee', entityType: 'commission_session', entityId: session.id });
       res.status(201).json(session);
     } catch (error) {

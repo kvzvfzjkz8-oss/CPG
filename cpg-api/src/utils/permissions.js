@@ -212,6 +212,14 @@ export const PERMISSIONS = {
     // dossiers) mais ne peut pas trancher à sa place.
     'commission.tenir',
 
+    // L'enveloppe de la séance : le montant maximum que les octrois
+    // décidés ce jour-là pourront totaliser. C'est une décision de
+    // trésorerie — ce que la caisse pourra payer — donc elle n'est pas
+    // à la main du gestionnaire, même si c'est lui qui programme la
+    // séance et y dépose les dossiers. Le dépôt peut dépasser
+    // l'enveloppe ; la validation en séance, jamais.
+    'commission.definir_plafond',
+
     // Seul le directeur peut autoriser, au cas par cas, un client déjà
     // en crédit à repasser en commission pour un second dossier.
     'commission.autoriser_exception',

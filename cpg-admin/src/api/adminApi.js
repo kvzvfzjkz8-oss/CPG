@@ -1089,3 +1089,21 @@ export async function creerDemandePourClient({ clientId, montant, duree, motif, 
     body: { clientId, montant, duree, motif, produitId },
   });
 }
+
+/**
+ * Directeur : fixe (ou retire, avec null) l'enveloppe d'une séance de
+ * commission — le montant maximum que les octrois décidés ce jour-là
+ * pourront totaliser. Le dépôt peut dépasser cette enveloppe ; la
+ * validation en séance, jamais.
+ */
+export async function definirPlafondCommission(sessionId, plafond) {
+  return apiRequest(`/v1/admin/commission/seance/${sessionId}/plafond`, {
+    method: 'PATCH',
+    body: { plafond },
+  });
+}
+
+/** Autorisé, déposé, reste — les trois chiffres de l'enveloppe. */
+export async function fetchEnveloppeCommission(sessionId) {
+  return apiRequest(`/v1/admin/commission/seance/${sessionId}/enveloppe`);
+}
