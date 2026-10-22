@@ -1107,3 +1107,19 @@ export async function definirPlafondCommission(sessionId, plafond) {
 export async function fetchEnveloppeCommission(sessionId) {
   return apiRequest(`/v1/admin/commission/seance/${sessionId}/enveloppe`);
 }
+
+/**
+ * Comité : ajuste le montant et/ou la durée d'un dossier avant de le
+ * trancher. Le montant reste soumis au barème du produit, et la demande
+ * d'origine du client est conservée.
+ */
+export async function ajusterDossierCommission(creditId, { montant, duree, motif }) {
+  return apiRequest(`/v1/admin/commission/credits/${creditId}/ajuster`, {
+    method: 'PATCH',
+    body: {
+      ...(montant !== undefined ? { montant } : {}),
+      ...(duree !== undefined ? { duree } : {}),
+      ...(motif ? { motif } : {}),
+    },
+  });
+}

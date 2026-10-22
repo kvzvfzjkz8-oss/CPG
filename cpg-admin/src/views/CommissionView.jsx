@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  CalendarPlus, ListChecks, Gavel, Inbox, AlertTriangle, Sparkles, Check, X, Wallet,
+  CalendarPlus, ListChecks, Gavel, Inbox, AlertTriangle, Sparkles, Check, X, Wallet, Pencil,
 } from 'lucide-react';
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, Tabs, SectionTitle } from '../components/UI';
@@ -10,7 +10,7 @@ import {
   fetchLevel1Credits, depositCreditToCommission,
   fetchCommissionAgenda, depositDifficultyCase, depositExceptionalRequest,
   holdCommissionSession, searchClientPourDemande, fetchCreditRequests,
-  definirPlafondCommission,
+  definirPlafondCommission, ajusterDossierCommission,
 } from '../api/adminApi';
 
 const input = {
@@ -987,6 +987,9 @@ function HoldSessionPanel({ session, onHeld, role }) {
                 note={notes[`credit:${c.id}`] ?? ''}
                 onNote={(v) => setNotes((prev) => ({ ...prev, [`credit:${c.id}`]: v }))}
                 readOnly={!peutTenir}
+                extra={can(role, 'commission.ajuster_dossier')
+                  ? <AjustementDossier credit={c} onAjuste={load} />
+                  : null}
               />
             ))}
             {agenda.points.map((p) => (
@@ -1027,7 +1030,121 @@ function HoldSessionPanel({ session, onHeld, role }) {
   );
 }
 
-function AgendaRow({ titre, sousTitre, badge, badgeTone = 'neutral', decision, onDecision, note, onNote, readOnly }) {
+/**
+ * AJUSTER UN DOSSIER EN SÉANCE
+ *
+ * « Je vais modifier les montants demain en commission. »
+ *
+ * Un comité qui ne peut pas réduire un montant n'a que deux réponses :
+ * tout accorder ou tout refuser. Avec une enveloppe plafonnée, cela
+ * conduirait à écarter de bons dossiers faute de place. Ici, on ajuste.
+ *
+ * Le montant demandé par le client reste affiché à côté de celui
+ * retenu : sans ça, un dossier réduit devient indistinguable d'un
+ * dossier accordé tel quel.
+ */
+function AjustementDossier({ credit, onAjuste }) {
+  const [ouvert, setOuvert] = useState(false);
+  const [montant, setMontant] = useState('');
+  const [duree, setDuree] = useState('');
+  const [motif, setMotif] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [erreur, setErreur] = useState('');
+
+  const ajuste = credit.amount_initial !== null && credit.amount_initial !== undefined;
+
+  const enregistrer = async () => {
+    setBusy(true);
+    setErreur('');
+    try {
+      await ajusterDossierCommission(credit.id, {
+        montant: montant === '' ? undefined : Number(montant),
+        duree: duree === '' ? undefined : Number(duree),
+        motif: motif.trim() || undefined,
+      });
+      setOuvert(false);
+      setMontant(''); setDuree(''); setMotif('');
+      onAjuste();
+    } catch (e) {
+      setErreur(e.message ?? "L'ajustement n'a pas pu être enregistré.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const rienAChanger = montant === '' && duree === '';
+
+  return (
+    <div style={{ marginTop: 6 }}>
+      {ajuste && (
+        <p style={{ margin: '0 0 6px', fontSize: 11, color: colors.goldDark, fontFamily: fonts.body }}>
+          <Badge tone="gold">ajusté</Badge>{' '}
+          Demandé : <strong style={{ fontFamily: fonts.mono }}>{formatFCFA(credit.amount_initial)} F</strong>
+          {' '}sur {credit.duration_initial} mois
+          {credit.ajuste_par_nom ? ` — ajusté par ${credit.ajuste_par_nom}` : ''}
+        </p>
+      )}
+
+      {erreur && (
+        <p style={{ margin: '0 0 6px', fontSize: 11.5, color: colors.danger, fontFamily: fonts.body }}>{erreur}</p>
+      )}
+
+      {!ouvert ? (
+        <button
+          onClick={() => { setOuvert(true); setMontant(String(credit.amount)); setDuree(String(credit.duration_months)); }}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 8,
+            border: `1px solid ${colors.line}`, background: 'transparent', color: colors.forestLight,
+            fontSize: 11, fontFamily: fonts.body, cursor: 'pointer',
+          }}
+        >
+          <Pencil size={11} /> Modifier le montant ou la durée
+        </button>
+      ) : (
+        <div style={{
+          display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap',
+          padding: '10px 12px', borderRadius: 9, background: colors.bg, border: `1px solid ${colors.line}`,
+        }}>
+          <div style={{ width: 130 }}>
+            <label style={label}>Montant</label>
+            <input
+              style={{ ...input, fontFamily: fonts.mono }}
+              inputMode="numeric" autoFocus
+              value={montant}
+              onChange={(e) => setMontant(e.target.value.replace(/[^0-9]/g, ''))}
+            />
+          </div>
+          <div style={{ width: 90 }}>
+            <label style={label}>Durée (mois)</label>
+            <input
+              style={{ ...input, fontFamily: fonts.mono }}
+              inputMode="numeric"
+              value={duree}
+              onChange={(e) => setDuree(e.target.value.replace(/[^0-9]/g, ''))}
+            />
+          </div>
+          <div style={{ flex: '1 1 180px' }}>
+            <label style={label}>Motif (optionnel)</label>
+            <input
+              style={input}
+              placeholder="Ex. : capacité de remboursement"
+              value={motif}
+              onChange={(e) => setMotif(e.target.value)}
+            />
+          </div>
+          <button onClick={enregistrer} disabled={busy || rienAChanger} style={actionBtn(colors.forest, '#fff')}>
+            {busy ? 'Enregistrement…' : 'Appliquer'}
+          </button>
+          <button onClick={() => { setOuvert(false); setErreur(''); }} disabled={busy} style={actionBtn('transparent', colors.muted)}>
+            Annuler
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AgendaRow({ titre, sousTitre, badge, badgeTone = 'neutral', decision, onDecision, note, onNote, readOnly, extra }) {
   return (
     <div style={{ padding: '14px 20px', borderBottom: `1px solid ${colors.line}` }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, marginBottom: 8 }}>
@@ -1039,6 +1156,7 @@ function AgendaRow({ titre, sousTitre, badge, badgeTone = 'neutral', decision, o
           {sousTitre && (
             <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>{sousTitre}</p>
           )}
+          {extra}
         </div>
         {!readOnly && (
           <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>

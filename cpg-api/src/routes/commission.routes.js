@@ -13,6 +13,7 @@ import {
   proposeCommissionItemDeletionRequest, fetchPendingCommissionItemDeletionRequests,
   decideCommissionItemDeletionRequest, cancelCommissionItemDirectly,
   fetchAllSessions, fetchSessionDetail, definirPlafondSession, fetchEnveloppe,
+  ajusterDossierEnCommission,
 } from '../services/commissionService.js';
 
 const router = Router();
@@ -200,6 +201,52 @@ router.post(
         metadata: { autorisationConsommee: result.authorizationConsumed },
       });
       res.status(201).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * PATCH /admin/commission/credits/:id/ajuster — modifie le montant
+ * et/ou la durée d'un dossier avant qu'il soit tranché.
+ *
+ * Réservé à qui tient la séance. Le montant reste soumis au barème du
+ * produit, et la demande d'origine du client est conservée.
+ */
+router.patch(
+  '/credits/:id/ajuster',
+  requirePermission('commission.ajuster_dossier'),
+  validate(z.object({
+    montant: z.coerce.number().int().positive().max(1000000000).optional(),
+    duree: z.coerce.number().int().min(1).max(60).optional(),
+    motif: z.string().trim().max(500).optional(),
+  }).refine((b) => b.montant !== undefined || b.duree !== undefined, {
+    message: 'Indiquez au moins un nouveau montant ou une nouvelle durée.',
+  })),
+  async (req, res, next) => {
+    try {
+      const resultat = await ajusterDossierEnCommission({
+        creditId: req.params.id,
+        montant: req.body.montant,
+        duree: req.body.duree,
+        motif: req.body.motif,
+        actorId: req.user.id,
+      });
+      await audit(req, {
+        action: 'commission.dossier_ajuste',
+        entityType: 'credit_request',
+        entityId: req.params.id,
+        metadata: {
+          client: resultat.client,
+          montantDemande: resultat.amount_initial,
+          dureeDemandee: resultat.duration_initial,
+          montantRetenu: Number(resultat.amount),
+          dureeRetenue: Number(resultat.duration_months),
+          motif: req.body.motif ?? null,
+        },
+      });
+      res.json(resultat);
     } catch (error) {
       next(error);
     }

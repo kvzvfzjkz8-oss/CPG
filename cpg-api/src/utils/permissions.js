@@ -212,6 +212,14 @@ export const PERMISSIONS = {
     // dossiers) mais ne peut pas trancher à sa place.
     'commission.tenir',
 
+    // Ajuster un dossier en séance : réduire un montant, raccourcir
+    // une durée, avant de le valider. Sans cela, le comité n'a que deux
+    // réponses — tout accorder ou tout refuser — et l'enveloppe
+    // plafonnée conduirait à écarter de bons dossiers faute de place.
+    // Le barème du produit continue de s'appliquer, et la demande
+    // d'origine du client reste conservée.
+    'commission.ajuster_dossier',
+
     // L'enveloppe de la séance : le montant maximum que les octrois
     // décidés ce jour-là pourront totaliser. C'est une décision de
     // trésorerie — ce que la caisse pourra payer — donc elle n'est pas

@@ -1,5 +1,7 @@
 import { query, withTransaction } from '../db/index.js';
 import { ApiError } from '../middleware/errorHandler.js';
+import { validateAgainstScale } from '../utils/rateVersioning.js';
+import { computeSchedule, computeFileFee, DEFAULT_MONTHLY_RATE } from './creditService.js';
 
 /**
  * ═══════════════════════════════════════════════════════════════════
@@ -221,6 +223,120 @@ export async function depositToCommission({ creditId, note, actorId }) {
   });
 }
 
+/**
+ * Ajuste le montant et/ou la durée d'un dossier avant qu'il soit
+ * tranché en séance.
+ *
+ * Un comité qui ne peut pas réduire un montant n'a que deux réponses :
+ * tout accorder ou tout refuser. Avec une enveloppe plafonnée, cela
+ * conduirait à écarter de bons dossiers faute de place. Ajuster est la
+ * troisième voie, et c'est celle que le cahier des charges prévoyait
+ * dès la création du comité (migration 010) : « le gestionnaire dépose
+ * les demandes afin que le superviseur analyse et fasse des
+ * modifications avant que la commission ne se tienne ».
+ *
+ * Trois garde-fous :
+ *
+ *   • le dossier doit être EN ATTENTE de décision. Une fois tranché,
+ *     plus rien ne bouge : le montant validé est celui qui engage.
+ *
+ *   • le nouveau montant reste soumis au BARÈME DU PRODUIT — celui
+ *     sous lequel le dossier a été créé, pas celui du jour. C'est la
+ *     doctrine de versionnement de ce logiciel : on oppose au client le
+ *     barème applicable au moment de sa demande. Sans ce contrôle, le
+ *     comité pourrait accorder au-delà de ce que le produit autorise.
+ *
+ *   • la demande d'origine est conservée (amount_initial), et
+ *     uniquement au premier ajustement : plusieurs retouches ne doivent
+ *     pas écraser la demande du client par l'avant-dernière version.
+ *
+ * Les frais de dossier, assis sur le montant, sont recalculés. La
+ * mensualité ne l'est pas : elle se fixe à l'approbation finale, sur le
+ * montant qui sera alors en base. On en renvoie seulement l'aperçu,
+ * pour que le comité voie ce qu'il décide.
+ */
+export async function ajusterDossierEnCommission({ creditId, montant, duree, actorId, motif }) {
+  return withTransaction(async (client) => {
+    const { rows: creditRows } = await client.query(
+      `SELECT c.*, btrim(u.full_name) AS client_nom
+       FROM credit_requests c JOIN users u ON u.id = c.user_id
+       WHERE c.id = $1 FOR UPDATE OF c`,
+      [creditId]
+    );
+    const credit = creditRows[0];
+    if (!credit) throw new ApiError(404, 'Dossier introuvable.');
+    if (credit.status !== 'en_attente_commission') {
+      throw new ApiError(
+        409,
+        credit.commission_decision_by
+          ? 'Ce dossier a déjà été tranché en séance — son montant n’est plus modifiable.'
+          : 'Seul un dossier déposé en commission et non encore tranché peut être ajusté.'
+      );
+    }
+
+    const nouveauMontant = montant ?? Number(credit.amount);
+    const nouvelleDuree = duree ?? Number(credit.duration_months);
+
+    if (nouveauMontant === Number(credit.amount) && nouvelleDuree === Number(credit.duration_months)) {
+      throw new ApiError(422, 'Aucun changement : le montant et la durée sont déjà ceux-là.');
+    }
+
+    // Le barème sous lequel le dossier a été créé, pas celui du jour.
+    let fraisDossier = Number(credit.file_fee ?? 0);
+    if (credit.product_version_id) {
+      const { rows: version } = await client.query(
+        `SELECT min_amount, max_amount, min_duration, max_duration,
+                file_fee_fixed, file_fee_rate
+         FROM product_versions WHERE id = $1`,
+        [credit.product_version_id]
+      );
+      if (version[0]) {
+        validateAgainstScale(nouveauMontant, nouvelleDuree, version[0]);
+        fraisDossier = computeFileFee(nouveauMontant, {
+          fileFeeFixed: Number(version[0].file_fee_fixed),
+          fileFeeRate: Number(version[0].file_fee_rate),
+        });
+      }
+    }
+
+    const { rows: maj } = await client.query(
+      `UPDATE credit_requests
+       SET amount = $2,
+           duration_months = $3,
+           file_fee = $4,
+           -- Premier ajustement seulement : la demande du client ne doit
+           -- pas être écrasée par une retouche intermédiaire.
+           amount_initial   = COALESCE(amount_initial, amount),
+           duration_initial = COALESCE(duration_initial, duration_months),
+           ajuste_par = $5,
+           ajuste_le  = now(),
+           commission_note = CASE
+             WHEN $6::text IS NULL OR btrim($6::text) = '' THEN commission_note
+             WHEN commission_note IS NULL OR btrim(commission_note) = '' THEN $6::text
+             ELSE commission_note || E'\\n' || $6::text
+           END
+       WHERE id = $1
+       RETURNING id, reference, amount, duration_months, file_fee,
+                 amount_initial, duration_initial, monthly_rate, commission_note`,
+      [creditId, nouveauMontant, nouvelleDuree, fraisDossier, actorId, motif ?? null]
+    );
+
+    const d = maj[0];
+    const apercu = computeSchedule(
+      Number(d.amount),
+      Number(d.duration_months),
+      Number(d.monthly_rate ?? DEFAULT_MONTHLY_RATE)
+    );
+
+    return {
+      ...d,
+      client: credit.client_nom,
+      mensualiteApercu: apercu.monthlyPayment,
+      totalDuApercu: apercu.totalDue,
+    };
+  });
+}
+
 /** Retire un dossier de la file d'attente avant la séance — revient à « valide_niveau1 ». */
 export async function withdrawFromCommission({ creditId }) {
   const { rows } = await query(
@@ -238,9 +354,15 @@ export async function withdrawFromCommission({ creditId }) {
 export async function fetchCommissionQueue({ sessionId }) {
   const { rows } = await query(
     `SELECT c.id, c.reference, c.amount, c.duration_months, c.monthly_rate, c.commission_note,
+            -- Ce que le client avait demandé, si le comité l'a ajusté :
+            -- sans ça, un dossier réduit devient indistinguable d'un
+            -- dossier accordé tel quel.
+            c.amount_initial, c.duration_initial, c.ajuste_le,
+            aj.full_name AS ajuste_par_nom,
             u.full_name AS client, u.employer, u.job_title
      FROM credit_requests c
      JOIN users u ON u.id = c.user_id
+     LEFT JOIN users aj ON aj.id = c.ajuste_par
      WHERE c.commission_session_id = $1 AND c.status = 'en_attente_commission'
      ORDER BY u.full_name`,
     [sessionId]

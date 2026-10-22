@@ -168,6 +168,17 @@ export const PERMISSIONS = {
     'commission.programmer',
     'commission.tenir',
 
+    // L'enveloppe de la séance : le montant maximum que les octrois
+    // décidés ce jour-là pourront totaliser. Décision de trésorerie,
+    // donc pas à la main du gestionnaire, même s'il programme la séance.
+    'commission.definir_plafond',
+
+    // Ajuster un dossier en séance : réduire un montant, raccourcir une
+    // durée, avant de le valider. Sans cela, le comité n'a que deux
+    // réponses — tout accorder ou tout refuser — et l'enveloppe
+    // plafonnée conduirait à écarter de bons dossiers faute de place.
+    'commission.ajuster_dossier',
+
     // Seul le directeur peut autoriser, au cas par cas, un client déjà
     // en crédit à repasser en commission pour un second dossier.
     'commission.autoriser_exception',
