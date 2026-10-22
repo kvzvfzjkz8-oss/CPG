@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  CalendarPlus, ListChecks, Gavel, Inbox, AlertTriangle, Sparkles, Check, X, Wallet, Pencil,
+  CalendarPlus, ListChecks, Gavel, Inbox, AlertTriangle, Sparkles, Check, X, Wallet, Pencil, Undo2,
 } from 'lucide-react';
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, Tabs, SectionTitle } from '../components/UI';
@@ -10,7 +10,7 @@ import {
   fetchLevel1Credits, depositCreditToCommission,
   fetchCommissionAgenda, depositDifficultyCase, depositExceptionalRequest,
   holdCommissionSession, searchClientPourDemande, fetchCreditRequests,
-  definirPlafondCommission, ajusterDossierCommission,
+  definirPlafondCommission, ajusterDossierCommission, withdrawCreditFromCommission,
 } from '../api/adminApi';
 
 const input = {
@@ -197,6 +197,13 @@ export default function CommissionView({ role }) {
 
   return (
     <div>
+      {/* L'enveloppe au-dessus des sous-onglets : elle doit se voir au
+          dépôt comme en séance, sans avoir à revenir sur « Séance ».
+          Le gestionnaire dépose en sachant ce qui reste. */}
+      {hasOpenSession && (
+        <EnveloppePanel session={session} role={role} onChange={loadSession} />
+      )}
+
       <Tabs
         value={tab}
         onChange={setTab}
@@ -210,10 +217,20 @@ export default function CommissionView({ role }) {
         <SessionPanel session={session} loading={loadingSession} onChange={loadSession} role={role} />
       )}
       {tab === 'deposer' && (
-        <DepositPanel hasOpenSession={hasOpenSession} role={role} sessionId={session?.id} />
+        <DepositPanel
+          hasOpenSession={hasOpenSession}
+          role={role}
+          sessionId={session?.id}
+          onDepose={loadSession}
+        />
       )}
       {tab === 'tenir' && (
-        <HoldSessionPanel session={session} onHeld={loadSession} role={role} />
+        <HoldSessionPanel
+          session={session}
+          onHeld={loadSession}
+          onChange={loadSession}
+          role={role}
+        />
       )}
     </div>
   );
@@ -291,9 +308,6 @@ function SessionPanel({ session, loading, onChange, role }) {
   return (
     <div>
       <Toast text={toast} />
-      {session?.status === 'planifiee' && (
-        <EnveloppePanel session={session} role={role} onChange={onChange} />
-      )}
       {error && (
         <div style={{
           background: colors.dangerPale, border: `1px solid ${colors.danger}`, borderRadius: 12,
@@ -379,7 +393,7 @@ function SessionPanel({ session, loading, onChange, role }) {
    DÉPOSER — nouveaux dossiers, difficultés, demandes exceptionnelles
    ═══════════════════════════════════════════════════════════════════ */
 
-function DepositPanel({ hasOpenSession, role, sessionId }) {
+function DepositPanel({ hasOpenSession, role, sessionId, onDepose }) {
   const [sub, setSub] = useState('nouveaux');
 
   if (!can(role, 'commission.deposer')) {
@@ -426,14 +440,14 @@ function DepositPanel({ hasOpenSession, role, sessionId }) {
         ))}
       </div>
 
-      {sub === 'nouveaux' && <NewCreditsDeposit hasOpenSession={hasOpenSession} />}
+      {sub === 'nouveaux' && <NewCreditsDeposit hasOpenSession={hasOpenSession} onDepose={onDepose} />}
       {sub === 'difficulte' && <DifficultyDeposit hasOpenSession={hasOpenSession} sessionId={sessionId} />}
       {sub === 'exceptionnelle' && <ExceptionalDeposit hasOpenSession={hasOpenSession} sessionId={sessionId} />}
     </div>
   );
 }
 
-function NewCreditsDeposit({ hasOpenSession }) {
+function NewCreditsDeposit({ hasOpenSession, onDepose }) {
   const [credits, setCredits] = useState([]);
   const [loading, setLoading] = useState(true);
   const [notes, setNotes] = useState({});
@@ -463,6 +477,9 @@ function NewCreditsDeposit({ hasOpenSession }) {
       await depositCreditToCommission(credit.id, notes[credit.id] ?? '');
       flash(`${credit.id} déposé dans l'ordre du jour de la commission.`);
       await load();
+      // L'enveloppe affichée en tête d'onglet doit refléter ce dépôt
+      // tout de suite : c'est le « solde mis à jour naturellement ».
+      onDepose?.();
     } catch (e) {
       flash(e.message);
     } finally {
@@ -827,7 +844,7 @@ function ExceptionalDeposit({ hasOpenSession, sessionId }) {
    TENIR LA SÉANCE — décisions par point
    ═══════════════════════════════════════════════════════════════════ */
 
-function HoldSessionPanel({ session, onHeld, role }) {
+function HoldSessionPanel({ session, onHeld, onChange, role }) {
   const peutTenir = can(role, 'commission.tenir');
   const [agenda, setAgenda] = useState({ credits: [], points: [] });
   const [loading, setLoading] = useState(true);
@@ -988,7 +1005,18 @@ function HoldSessionPanel({ session, onHeld, role }) {
                 onNote={(v) => setNotes((prev) => ({ ...prev, [`credit:${c.id}`]: v }))}
                 readOnly={!peutTenir}
                 extra={can(role, 'commission.ajuster_dossier')
-                  ? <AjustementDossier credit={c} onAjuste={load} />
+                  ? (
+                    <AjustementDossier
+                      credit={c}
+                      onAjuste={() => {
+                        // L'ordre du jour ET l'enveloppe affichée en
+                        // tête d'onglet : un montant ajusté ou un
+                        // dossier retiré change les deux.
+                        load();
+                        onChange?.();
+                      }}
+                    />
+                  )
                   : null}
               />
             ))}
@@ -1072,6 +1100,19 @@ function AjustementDossier({ credit, onAjuste }) {
     }
   };
 
+  const retirer = async () => {
+    setBusy(true);
+    setErreur('');
+    try {
+      await withdrawCreditFromCommission(credit.id);
+      onAjuste();
+    } catch (e) {
+      setErreur(e.message ?? "Le dossier n'a pas pu être retiré de la séance.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const rienAChanger = montant === '' && duree === '';
 
   return (
@@ -1090,16 +1131,35 @@ function AjustementDossier({ credit, onAjuste }) {
       )}
 
       {!ouvert ? (
-        <button
-          onClick={() => { setOuvert(true); setMontant(String(credit.amount)); setDuree(String(credit.duration_months)); }}
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 8,
-            border: `1px solid ${colors.line}`, background: 'transparent', color: colors.forestLight,
-            fontSize: 11, fontFamily: fonts.body, cursor: 'pointer',
-          }}
-        >
-          <Pencil size={11} /> Modifier le montant ou la durée
-        </button>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <button
+            onClick={() => { setOuvert(true); setMontant(String(credit.amount)); setDuree(String(credit.duration_months)); }}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 8,
+              border: `1px solid ${colors.line}`, background: 'transparent', color: colors.forestLight,
+              fontSize: 11, fontFamily: fonts.body, cursor: 'pointer',
+            }}
+          >
+            <Pencil size={11} /> Modifier le montant ou la durée
+          </button>
+
+          {/* Retirer de la file plutôt que rejeter : le dossier revient
+              à « validé niveau 1 » et pourra être redéposé pour une
+              prochaine séance. C'est la soupape de l'enveloppe — écarter
+              un dossier faute de place ne doit pas le condamner. */}
+          <button
+            onClick={retirer}
+            disabled={busy}
+            title="Le dossier sort de l'ordre du jour et redevient déposable pour une prochaine séance"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 8,
+              border: `1px solid ${colors.line}`, background: 'transparent', color: colors.muted,
+              fontSize: 11, fontFamily: fonts.body, cursor: busy ? 'not-allowed' : 'pointer',
+            }}
+          >
+            <Undo2 size={11} /> Retirer de la séance
+          </button>
+        </div>
       ) : (
         <div style={{
           display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap',
