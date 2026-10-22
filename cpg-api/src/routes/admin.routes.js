@@ -1035,9 +1035,21 @@ router.post(
         throw new ApiError(422, 'Seul un compte client peut être supprimé ainsi.');
       }
 
+      // Un crédit « annulé » ne bloque pas davantage qu'un crédit
+      // « rejeté » : dans les deux cas rien n'est dû. Une annulation
+      // extourne intégralement le déblocage et sa commission — c'est
+      // la convention de ce logiciel, on n'efface jamais, on
+      // contre-passe. Le garde-fou ne visait que 'rejete', ce qui
+      // rendait impossible la suppression d'un compte créé par erreur
+      // puis annulé : exactement le cas des doublons, le motif le plus
+      // fréquent de suppression (ROGUE Eric, 22/10/2026).
+      //
+      // Tout le reste du contrôle est inchangé, et c'est lui qui
+      // compte : un dossier en cours, validé ou soldé bloque toujours,
+      // et le solde doit être à zéro.
       const { rows: creditsActifs } = await query(
         `SELECT reference, status FROM credit_requests
-         WHERE user_id = $1 AND status NOT IN ('rejete')`,
+         WHERE user_id = $1 AND status NOT IN ('rejete', 'annule')`,
         [req.params.id]
       );
       if (creditsActifs.length > 0) {
