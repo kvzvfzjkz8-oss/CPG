@@ -128,6 +128,8 @@ export const PERMISSIONS = {
     // Suivi de la paie en lecture : répondre aux agents qui appellent
     // pour savoir où en est leur salaire, sans déranger le guichet.
     'caisse.suivi_paie',
+    // Historique des transactions d'un client, en lecture.
+    'caisse.consulter_solde_client',
   ],
   // Le directeur ajoute l'autorité de barème : activer un produit,
   // fixer un taux hors marge, trancher les propositions du gestionnaire,
@@ -210,6 +212,8 @@ export const PERMISSIONS = {
     'caisse.consulter_toutes_caisses',
     'caisse.gerer_principale',
     'caisse.suivi_paie',
+    // Historique des transactions d'un client, en lecture.
+    'caisse.consulter_solde_client',
   ],
 
   // La caissière sert les retraits au guichet, dans la limite de son

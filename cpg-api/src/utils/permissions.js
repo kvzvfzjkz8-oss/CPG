@@ -147,6 +147,20 @@ export const PERMISSIONS = {
     // déclenchement au jour le jour reste au poste de l'opérateur.
     'operations.lire',
 
+    // Historique des transactions d'un client, en lecture.
+    //
+    // Cette permission ne portait que sur la caissière, alors que la
+    // fiche client — et son bouton « voir l'historique » — s'ouvre
+    // aussi depuis « Crédits en cours » chez le gestionnaire et le
+    // directeur. L'appel échouait donc en silence chez eux : le
+    // panneau restait vide, sans message, et on croyait le client sans
+    // historique (constaté le 23/10/2026).
+    //
+    // C'est une lecture, sur un dossier qu'ils gèrent déjà de bout en
+    // bout : le directeur voit toutes les caisses et le journal
+    // d'audit, le gestionnaire crée le client et monte son dossier.
+    'caisse.consulter_solde_client',
+
     // Suivi de la paie en lecture : le gestionnaire répond aux agents
     // qui l'appellent pour savoir où en est leur salaire, sans avoir à
     // déranger le guichet.
@@ -275,6 +289,20 @@ export const PERMISSIONS = {
     'caisse.consulter_toutes_caisses',
     'caisse.gerer_principale',
     'caisse.suivi_paie',
+    // Historique des transactions d'un client, en lecture.
+    //
+    // Cette permission ne portait que sur la caissière, alors que la
+    // fiche client — et son bouton « voir l'historique » — s'ouvre
+    // aussi depuis « Crédits en cours » chez le gestionnaire et le
+    // directeur. L'appel échouait donc en silence chez eux : le
+    // panneau restait vide, sans message, et on croyait le client sans
+    // historique (constaté le 23/10/2026).
+    //
+    // C'est une lecture, sur un dossier qu'ils gèrent déjà de bout en
+    // bout : le directeur voit toutes les caisses et le journal
+    // d'audit, le gestionnaire crée le client et monte son dossier.
+    'caisse.consulter_solde_client',
+
   ],
 
   // La caissière sert les retraits au guichet, dans la limite de son

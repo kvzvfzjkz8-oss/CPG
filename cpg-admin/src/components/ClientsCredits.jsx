@@ -257,6 +257,7 @@ export function ClientDetailModal({ clientId, nom, onClose }) {
   const [error, setError] = useState('');
   const [historique, setHistorique] = useState(null);
   const [historiqueOuvert, setHistoriqueOuvert] = useState(false);
+  const [historiqueErreur, setHistoriqueErreur] = useState('');
   const [imprBusy, setImprBusy] = useState(false);
   const [situBusy, setSituBusy] = useState(false);
 
@@ -268,12 +269,25 @@ export function ClientDetailModal({ clientId, nom, onClose }) {
       .finally(() => setLoading(false));
   }, [clientId]);
 
+  /**
+   * L'historique n'avait AUCUNE gestion d'erreur : un appel qui échoue
+   * laissait « Chargement… » à l'écran pour toujours. Et il échouait
+   * vraiment — la route était réservée à la caissière, donc muette
+   * chez le directeur et le gestionnaire (corrigé le 23/10/2026).
+   * Un écran qui charge sans fin est pire qu'un message d'erreur : on
+   * en conclut que le client n'a pas d'historique.
+   */
+  const chargerHistorique = () => {
+    setHistoriqueErreur('');
+    fetchHistoriqueClient(clientId)
+      .then((d) => setHistorique(d.transactions))
+      .catch((e) => setHistoriqueErreur(e.message ?? 'L’historique n’a pas pu être chargé.'));
+  };
+
   const voirHistorique = () => {
     if (historiqueOuvert) { setHistoriqueOuvert(false); return; }
     setHistoriqueOuvert(true);
-    if (!historique) {
-      fetchHistoriqueClient(clientId).then((d) => setHistorique(d.transactions));
-    }
+    if (!historique) chargerHistorique();
   };
 
   const imprimer = async () => {
@@ -369,7 +383,25 @@ export function ClientDetailModal({ clientId, nom, onClose }) {
 
             {historiqueOuvert && (
               <div style={{ marginBottom: 20 }}>
-                {!historique ? (
+                {historiqueErreur ? (
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px',
+                    borderRadius: 9, border: `1px solid ${colors.danger}`, background: colors.dangerPale,
+                    fontSize: 12, color: colors.danger, fontFamily: fonts.body,
+                  }}>
+                    <span style={{ flex: 1 }}>{historiqueErreur}</span>
+                    <button
+                      onClick={chargerHistorique}
+                      style={{
+                        border: `1px solid ${colors.danger}`, background: 'transparent',
+                        color: colors.danger, borderRadius: 8, padding: '4px 10px',
+                        fontSize: 11, fontFamily: fonts.body, cursor: 'pointer',
+                      }}
+                    >
+                      Réessayer
+                    </button>
+                  </div>
+                ) : !historique ? (
                   <p style={{ fontSize: 12, color: colors.muted, fontFamily: fonts.body }}>Chargement…</p>
                 ) : historique.length === 0 ? (
                   <p style={{ fontSize: 12, color: colors.muted, fontFamily: fonts.body, fontStyle: 'italic' }}>Aucune transaction.</p>
