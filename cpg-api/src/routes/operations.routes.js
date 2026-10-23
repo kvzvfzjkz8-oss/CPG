@@ -18,6 +18,10 @@ import {
   fetchMonthInstallments, collectInstallments, fetchClientsDouteux,
 } from '../services/operationsService.js';
 import { previewFraisPonctuel } from '../services/feeService.js';
+import {
+  fetchRegleEnVigueur, fetchHistoriqueRegles, definirRegle, retirerRegle,
+  calculerSolde, soldeParAnticipation,
+} from '../services/remboursementAnticipeService.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -226,6 +230,142 @@ router.post(
       });
 
       res.status(201).json({ ...rows[0], client: client[0].nom, soldeClient: Number(client[0].solde) });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/* ═══════════════════════════════════════════════════════════════════
+   REMBOURSEMENT ANTICIPÉ D'UN CRÉDIT
+   ═══════════════════════════════════════════════════════════════════
+
+   Solder un crédit avant son terme. C'est utile seul — un agent qui
+   veut solder avec son propre argent n'avait aucun moyen de le faire —
+   et c'est la brique sur laquelle le rachat se posera.
+
+   Le montant n'est JAMAIS saisi : il est calculé depuis la règle en
+   vigueur. Et tant que la direction n'a pas posé cette règle, rien ne
+   peut être soldé : le choix de la base engage l'établissement sur des
+   années, le logiciel ne le prend pas à sa place. */
+
+/** GET /admin/operations/remboursement-anticipe/regle — la règle en vigueur. */
+router.get(
+  '/remboursement-anticipe/regle',
+  requirePermission('operations.lire'),
+  async (req, res, next) => {
+    try {
+      const [regle, historique] = await Promise.all([
+        fetchRegleEnVigueur(),
+        fetchHistoriqueRegles(),
+      ]);
+      res.json({ regle, historique });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/** PUT /admin/operations/remboursement-anticipe/regle — la direction la pose. */
+router.put(
+  '/remboursement-anticipe/regle',
+  requirePermission('credits.definir_regle_remboursement_anticipe'),
+  validate(z.object({
+    base: z.enum(['capital_restant', 'reste_mensualites']),
+    indemniteMois: z.coerce.number().int().min(0).max(6).default(0),
+    echeancesMinimum: z.coerce.number().int().min(0).max(60).default(1),
+    note: z.string().trim().max(500).optional(),
+  })),
+  async (req, res, next) => {
+    try {
+      const regle = await definirRegle({ ...req.body, actorId: req.user.id });
+      await audit(req, {
+        action: 'credits.regle_remboursement_anticipe_definie',
+        entityType: 'remboursement_anticipe_regle',
+        entityId: regle.id,
+        metadata: {
+          base: regle.base,
+          indemniteMois: regle.indemnite_mois,
+          echeancesMinimum: regle.echeances_minimum,
+        },
+      });
+      res.json(regle);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * DELETE /admin/operations/remboursement-anticipe/regle — suspend les
+ * remboursements anticipés.
+ *
+ * Fermer la porte est une décision en soi : la direction peut vouloir
+ * revoir sa politique sans laisser courir la précédente. La règle
+ * retirée reste dans l'historique.
+ */
+router.delete(
+  '/remboursement-anticipe/regle',
+  requirePermission('credits.definir_regle_remboursement_anticipe'),
+  async (req, res, next) => {
+    try {
+      const retiree = await retirerRegle();
+      await audit(req, {
+        action: 'credits.regle_remboursement_anticipe_retiree',
+        entityType: 'remboursement_anticipe_regle',
+        entityId: retiree.id,
+        metadata: { base: retiree.base },
+      });
+      res.json({ retiree: true, ...retiree });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * GET /admin/operations/credits/:id/solde-anticipe — ce qu'il faudrait
+ * payer aujourd'hui, et le détail du calcul.
+ *
+ * Renvoie les DEUX bases, pas seulement celle retenue : on doit voir ce
+ * qu'on réclame et ce à quoi on renonce. Aucune écriture.
+ */
+router.get(
+  '/credits/:id/solde-anticipe',
+  requirePermission('operations.lire'),
+  async (req, res, next) => {
+    try {
+      res.json(await calculerSolde({ creditId: req.params.id }));
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/** POST /admin/operations/credits/:id/solder — exécute le solde anticipé. */
+router.post(
+  '/credits/:id/solder',
+  requirePermission('credits.solder_par_anticipation'),
+  async (req, res, next) => {
+    try {
+      const resultat = await soldeParAnticipation({
+        creditId: req.params.id,
+        actorId: req.user.id,
+      });
+      await audit(req, {
+        action: 'credits.solde_par_anticipation',
+        entityType: 'credit_request',
+        entityId: req.params.id,
+        metadata: {
+          client: resultat.client,
+          montant: resultat.montant,
+          capitalRestant: resultat.capitalRestant,
+          interetsAbandonnes: resultat.interetsAbandonnes,
+          indemnite: resultat.indemnite,
+          echeancesSoldees: resultat.echeancesSoldees,
+        },
+      });
+      res.json(resultat);
     } catch (error) {
       next(error);
     }

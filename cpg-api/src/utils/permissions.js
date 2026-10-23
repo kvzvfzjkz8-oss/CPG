@@ -220,6 +220,20 @@ export const PERMISSIONS = {
     // d'origine du client reste conservée.
     'commission.ajuster_dossier',
 
+    // Remboursement anticipé d'un crédit, et le rachat qui se pose
+    // dessus. Deux permissions distinctes à dessein :
+    //
+    //   • definir_regle fixe la BASE du calcul — capital restant ou
+    //     reste des mensualités. C'est un choix de politique qui
+    //     engage l'établissement sur des années : 8 673 641 F d'écart
+    //     sur le portefeuille au 23/10/2026. Direction seule.
+    //
+    //   • solder exécute l'opération sur un crédit donné, selon la
+    //     règle en vigueur. Le montant n'est jamais saisi : il est
+    //     calculé.
+    'credits.definir_regle_remboursement_anticipe',
+    'credits.solder_par_anticipation',
+
     // L'enveloppe de la séance : le montant maximum que les octrois
     // décidés ce jour-là pourront totaliser. C'est une décision de
     // trésorerie — ce que la caisse pourra payer — donc elle n'est pas
