@@ -271,8 +271,11 @@ router.put(
   '/remboursement-anticipe/regle',
   requirePermission('credits.definir_regle_remboursement_anticipe'),
   validate(z.object({
-    base: z.enum(['capital_restant', 'reste_mensualites']),
-    indemniteMois: z.coerce.number().int().min(0).max(6).default(0),
+    // La formule de la direction : capital restant + part × intérêts
+    // restants + pénalité × intérêt d'une mensualité. Les deux taux
+    // sont des fractions (0,35 pour 35 %).
+    partInteretsRestants: z.coerce.number().min(0).max(1),
+    penaliteInteretMensualite: z.coerce.number().min(0).max(1).default(0),
     echeancesMinimum: z.coerce.number().int().min(0).max(60).default(1),
     note: z.string().trim().max(500).optional(),
   })),
@@ -284,8 +287,8 @@ router.put(
         entityType: 'remboursement_anticipe_regle',
         entityId: regle.id,
         metadata: {
-          base: regle.base,
-          indemniteMois: regle.indemnite_mois,
+          partInteretsRestants: regle.part_interets_restants,
+          penaliteInteretMensualite: regle.penalite_interet_mensualite,
           echeancesMinimum: regle.echeances_minimum,
         },
       });
@@ -314,7 +317,7 @@ router.delete(
         action: 'credits.regle_remboursement_anticipe_retiree',
         entityType: 'remboursement_anticipe_regle',
         entityId: retiree.id,
-        metadata: { base: retiree.base },
+        metadata: { regle: retiree.id },
       });
       res.json({ retiree: true, ...retiree });
     } catch (error) {
@@ -360,8 +363,9 @@ router.post(
           client: resultat.client,
           montant: resultat.montant,
           capitalRestant: resultat.capitalRestant,
+          partInterets: resultat.partInterets,
+          penalite: resultat.penalite,
           interetsAbandonnes: resultat.interetsAbandonnes,
-          indemnite: resultat.indemnite,
           echeancesSoldees: resultat.echeancesSoldees,
         },
       });

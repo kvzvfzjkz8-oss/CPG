@@ -175,7 +175,7 @@ describe(
   { skip: !hasTestDatabase() && 'DATABASE_URL ne pointe pas vers une base de test' },
   () => {
     test('solder débite une seule fois, règle toutes les échéances et clôt le crédit', async () => {
-      await poserRegle({ base: 'capital_restant', indemniteMois: 1, echeancesMinimum: 1 });
+      await poserRegle({ partInteretsRestants: 0.35, penaliteInteretMensualite: 0.05, echeancesMinimum: 1 });
       const { creditId, clientId } = await creditApprouve('F', 3);
 
       const { body: avant } = await calcul(creditId);
@@ -219,7 +219,7 @@ describe(
     });
 
     test('un crédit déjà soldé ne peut pas l’être deux fois', async () => {
-      await poserRegle({ base: 'capital_restant', indemniteMois: 0, echeancesMinimum: 1 });
+      await poserRegle({ partInteretsRestants: 0, penaliteInteretMensualite: 0, echeancesMinimum: 1 });
       const { creditId, clientId } = await creditApprouve('G', 2);
       const { body: c } = await calcul(creditId);
       await api('/v1/caisse/encaissements', {
@@ -241,7 +241,7 @@ describe(
     // d'abord vider le compte — ce que fait un agent qui retire son
     // argent au guichet, le cas réel.
     test('un solde non couvert par le compte est refusé', async () => {
-      await poserRegle({ base: 'capital_restant', indemniteMois: 0, echeancesMinimum: 1 });
+      await poserRegle({ partInteretsRestants: 0, penaliteInteretMensualite: 0, echeancesMinimum: 1 });
       const { creditId, clientId } = await creditApprouve('H', 2);
 
       const { body: avant } = await api(`/v1/caisse/clients/${clientId}/transactions`, {
@@ -266,7 +266,7 @@ describe(
     });
 
     test('un opérateur ne peut pas solder un crédit', async () => {
-      await poserRegle({ base: 'capital_restant', indemniteMois: 0, echeancesMinimum: 1 });
+      await poserRegle({ partInteretsRestants: 0, penaliteInteretMensualite: 0, echeancesMinimum: 1 });
       const { creditId } = await creditApprouve('I', 2);
       const { status } = await api(`/v1/admin/operations/credits/${creditId}/solder`, {
         method: 'POST', token: operateurToken,

@@ -187,12 +187,12 @@ describe(
       const { creditId } = await creditApprouve('A', 2);
       const { status, body } = await calcul(creditId);
       assert.equal(status, 422);
-      assert.match(body.error, /règle de remboursement anticipé/i);
+      assert.match(body.error, /règle de rachat/i);
       assert.match(body.error, /direction doit/i, 'le message doit dire qui décide');
     });
 
     test('le gestionnaire ne peut pas retirer la règle non plus', async () => {
-      await poserRegle({ base: 'capital_restant', indemniteMois: 0 });
+      await poserRegle({ partInteretsRestants: 0, penaliteInteretMensualite: 0 });
       const { status } = await api('/v1/admin/operations/remboursement-anticipe/regle', {
         method: 'DELETE', token: gestionnaireToken,
       });
@@ -202,43 +202,48 @@ describe(
     test('le gestionnaire ne peut pas poser la règle', async () => {
       const { status } = await api('/v1/admin/operations/remboursement-anticipe/regle', {
         method: 'PUT', token: gestionnaireToken,
-        body: { base: 'capital_restant', indemniteMois: 1 },
+        body: { partInteretsRestants: 0.35, penaliteInteretMensualite: 0.05 },
       });
       assert.equal(status, 403, 'la base du calcul engage l’établissement : direction seule');
     });
 
-    // Une indemnité par-dessus cette base serait comptée deux fois :
-    // le reste des mensualités contient déjà tous les intérêts, y
-    // compris ceux des mois que le client n'utilisera pas.
-    test('une indemnité par-dessus le reste des mensualités est refusée', async () => {
-      const { status, body } = await poserRegle({ base: 'reste_mensualites', indemniteMois: 2 });
+    // Une part au-delà de 100 % ferait payer plus d'intérêts que le
+    // crédit n'en portait : la formule le refuse, en base comme dans
+    // le service.
+    test('une part d’intérêts supérieure à 100 % est refusée', async () => {
+      const { status } = await poserRegle({ partInteretsRestants: 1.5, penaliteInteretMensualite: 0 });
       assert.equal(status, 422);
-      assert.match(body.error, /deux fois/i, 'le message doit expliquer le double compte');
+
+      const { status: pen } = await poserRegle({
+        partInteretsRestants: 0.35, penaliteInteretMensualite: 2,
+      });
+      assert.equal(pen, 422, 'une pénalité au-delà d’une mensualité entière n’a plus de sens');
     });
 
     test('la direction pose la règle, et l’ancienne est conservée', async () => {
       const { status: a } = await poserRegle({
-        base: 'reste_mensualites', indemniteMois: 0, note: 'Première décision',
+        partInteretsRestants: 1, penaliteInteretMensualite: 0, note: 'Première décision',
       });
       assert.equal(a, 200);
 
       const { status: b } = await poserRegle({
-        base: 'capital_restant', indemniteMois: 1, echeancesMinimum: 1, note: 'Révision',
+        partInteretsRestants: 0.35, penaliteInteretMensualite: 0.05,
+        echeancesMinimum: 1, note: 'Révision',
       });
       assert.equal(b, 200);
 
       const { body } = await api('/v1/admin/operations/remboursement-anticipe/regle', {
         token: directeurToken,
       });
-      assert.equal(body.regle.base, 'capital_restant');
-      assert.equal(Number(body.regle.indemnite_mois), 1);
+      assert.equal(Number(body.regle.part_interets_restants), 0.35);
+      assert.equal(Number(body.regle.penalite_interet_mensualite), 0.05);
       assert.ok(body.regle.definie_par_nom, 'qui a posé la règle doit être tracé');
       assert.ok(
         body.historique.length >= 2,
         'l’ancienne règle doit rester dans l’historique — on n’écrase jamais une décision'
       );
       assert.ok(
-        body.historique.some((h) => h.base === 'reste_mensualites' && h.remplacee_le),
+        body.historique.some((h) => Number(h.part_interets_restants) === 1 && h.remplacee_le),
         'la règle remplacée doit porter sa date de remplacement'
       );
     });

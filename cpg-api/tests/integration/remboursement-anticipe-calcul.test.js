@@ -174,8 +174,46 @@ describe(
   'Remboursement anticipé — le calcul',
   { skip: !hasTestDatabase() && 'DATABASE_URL ne pointe pas vers une base de test' },
   () => {
-    test('le calcul expose les deux bases, et l’écart entre elles', async () => {
-      await poserRegle({ base: 'capital_restant', indemniteMois: 0, echeancesMinimum: 1 });
+    // La formule de la direction, refaite à la main :
+    //   capital restant + 35 % des intérêts restants
+    //                   + 5 % de l'intérêt d'UNE mensualité
+    test('le calcul applique la formule, terme par terme', async () => {
+      await poserRegle({ partInteretsRestants: 0.35, penaliteInteretMensualite: 0.05, echeancesMinimum: 1 });
+      const { creditId } = await creditApprouve('B2', 3);
+
+      const { status, body } = await calcul(creditId);
+      assert.equal(status, 200);
+
+      const n = body.credit.echeancesTotal;
+      const k = body.credit.echeancesPayees;
+      const capital = body.credit.capital;
+      const interetTotal = body.credit.interetTotal;
+
+      assert.equal(body.capitalRestant, Math.round((capital * (n - k)) / n));
+      assert.equal(body.interetsRestants, Math.round((interetTotal * (n - k)) / n));
+      assert.equal(body.interetParMensualite, Math.round(interetTotal / n));
+      assert.equal(body.partInterets, Math.round(body.interetsRestants * 0.35));
+      assert.equal(body.penalite, Math.round(body.interetParMensualite * 0.05));
+      assert.equal(
+        body.montant,
+        body.capitalRestant + body.partInterets + body.penalite,
+        'le montant est la somme exacte des trois termes'
+      );
+
+      // Ce à quoi CPG renonce doit être dit, pas déduit.
+      assert.equal(body.interetsAbandonnes, body.interetsRestants - body.partInterets);
+      assert.ok(
+        body.montant < body.resteMensualites,
+        'la formule doit coûter moins au client que la totalité des mensualités restantes'
+      );
+      assert.ok(
+        body.montant > body.capitalRestant,
+        'et plus que le capital seul — CPG garde une part des intérêts'
+      );
+    });
+
+    test('la part à 100 % équivaut au reste des mensualités', async () => {
+      await poserRegle({ partInteretsRestants: 1, penaliteInteretMensualite: 0, echeancesMinimum: 1 });
       const { creditId } = await creditApprouve('B', 3);
 
       const { status, body } = await calcul(creditId);
@@ -186,48 +224,36 @@ describe(
       // Intérêt simple : capital restant = capital × (n − k) / n.
       const attendu = Math.round((CAPITAL * (DUREE - 3)) / DUREE);
       assert.equal(body.capitalRestant, attendu, 'capital restant linéaire sur les échéances');
-
-      assert.ok(
-        body.resteMensualites > body.capitalRestant,
-        'le reste des mensualités porte en plus les intérêts des mois non utilisés'
-      );
       assert.equal(
-        body.interetsNonCourus, body.resteMensualites - body.capitalRestant,
-        'l’écart doit être explicitement chiffré — c’est ce à quoi CPG renonce'
+        body.montant, body.resteMensualites,
+        'avec 100 % des intérêts et aucune pénalité, on retombe exactement sur le reste des mensualités'
       );
-      assert.equal(body.montant, body.capitalRestant, 'sans indemnité, on solde le capital seul');
+      assert.equal(body.interetsAbandonnes, 0, 'CPG ne renonce alors à rien');
     });
 
-    test('l’indemnité s’ajoute au capital, calculée sur le taux du crédit', async () => {
-      await poserRegle({ base: 'capital_restant', indemniteMois: 2, echeancesMinimum: 1 });
-      const { creditId } = await creditApprouve('C', 3);
 
-      const { body } = await calcul(creditId);
-      const capitalRestant = Math.round((CAPITAL * (DUREE - 3)) / DUREE);
-      assert.equal(body.capitalRestant, capitalRestant);
-      assert.equal(body.indemnite, Math.round(capitalRestant * TAUX * 2));
-      assert.equal(body.montant, capitalRestant + body.indemnite);
-    });
-
-    test('changer la base change le montant réclamé', async () => {
+    test('changer la part change le montant réclamé', async () => {
       const { creditId } = await creditApprouve('D', 3);
 
-      await poserRegle({ base: 'capital_restant', indemniteMois: 0 });
-      const { body: surCapital } = await calcul(creditId);
+      await poserRegle({ partInteretsRestants: 0, penaliteInteretMensualite: 0 });
+      const { body: sansInterets } = await calcul(creditId);
 
-      await poserRegle({ base: 'reste_mensualites', indemniteMois: 0 });
-      const { body: surMensualites } = await calcul(creditId);
+      await poserRegle({ partInteretsRestants: 0.35, penaliteInteretMensualite: 0.05 });
+      const { body: formule } = await calcul(creditId);
 
-      assert.equal(surCapital.montant, surCapital.capitalRestant);
-      assert.equal(surMensualites.montant, surMensualites.resteMensualites);
+      await poserRegle({ partInteretsRestants: 1, penaliteInteretMensualite: 0 });
+      const { body: tousInterets } = await calcul(creditId);
+
+      assert.equal(sansInterets.montant, sansInterets.capitalRestant);
+      assert.equal(tousInterets.montant, tousInterets.resteMensualites);
       assert.ok(
-        surMensualites.montant > surCapital.montant,
-        'les deux politiques doivent bien donner deux montants différents'
+        sansInterets.montant < formule.montant && formule.montant < tousInterets.montant,
+        'la formule de la direction doit se situer entre les deux extrêmes'
       );
     });
 
     test('la règle peut exiger un minimum d’échéances payées', async () => {
-      await poserRegle({ base: 'capital_restant', indemniteMois: 0, echeancesMinimum: 3 });
+      await poserRegle({ partInteretsRestants: 0, penaliteInteretMensualite: 0, echeancesMinimum: 3 });
       const { creditId } = await creditApprouve('E', 1);
 
       const { body } = await calcul(creditId);

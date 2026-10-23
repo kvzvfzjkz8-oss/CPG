@@ -41,6 +41,7 @@ import { DEFAULT_MONTHLY_RATE } from './creditService.js';
 export async function fetchRegleEnVigueur() {
   const { rows } = await query(
     `SELECT r.id, r.base, r.indemnite_mois, r.echeances_minimum, r.note,
+            r.part_interets_restants, r.penalite_interet_mensualite,
             r.definie_le, btrim(u.full_name) AS definie_par_nom
      FROM remboursement_anticipe_regles r
      JOIN users u ON u.id = r.definie_par
@@ -53,6 +54,7 @@ export async function fetchRegleEnVigueur() {
 export async function fetchHistoriqueRegles() {
   const { rows } = await query(
     `SELECT r.id, r.base, r.indemnite_mois, r.echeances_minimum, r.note,
+            r.part_interets_restants, r.penalite_interet_mensualite,
             r.definie_le, r.remplacee_le, btrim(u.full_name) AS definie_par_nom
      FROM remboursement_anticipe_regles r
      JOIN users u ON u.id = r.definie_par
@@ -67,15 +69,22 @@ export async function fetchHistoriqueRegles() {
  * client contestant un solde doit pouvoir se voir opposer la règle qui
  * s'appliquait ce jour-là.
  */
-export async function definirRegle({ base, indemniteMois = 0, echeancesMinimum = 1, note, actorId }) {
-  if (!['capital_restant', 'reste_mensualites'].includes(base)) {
-    throw new ApiError(422, 'Base inconnue : « capital_restant » ou « reste_mensualites » attendu.');
-  }
-  if (base === 'reste_mensualites' && Number(indemniteMois) !== 0) {
+export async function definirRegle({
+  partInteretsRestants, penaliteInteretMensualite = 0, echeancesMinimum = 1, note, actorId,
+}) {
+  const part = Number(partInteretsRestants);
+  const penalite = Number(penaliteInteretMensualite);
+  if (!Number.isFinite(part) || part < 0 || part > 1) {
     throw new ApiError(
       422,
-      'Une indemnité par-dessus le reste des mensualités serait comptée deux fois : cette base '
-      + 'contient déjà la totalité des intérêts, y compris ceux des mois non utilisés.'
+      'La part des intérêts restants doit être comprise entre 0 et 1 (0,35 pour 35 %).'
+    );
+  }
+  if (!Number.isFinite(penalite) || penalite < 0 || penalite > 1) {
+    throw new ApiError(
+      422,
+      'La pénalité doit être comprise entre 0 et 1 — c’est une fraction de l’intérêt contenu '
+      + 'dans UNE mensualité (0,05 pour 5 %).'
     );
   }
 
@@ -85,10 +94,11 @@ export async function definirRegle({ base, indemniteMois = 0, echeancesMinimum =
     );
     const { rows } = await client.query(
       `INSERT INTO remboursement_anticipe_regles
-         (base, indemnite_mois, echeances_minimum, note, definie_par)
+         (part_interets_restants, penalite_interet_mensualite, echeances_minimum, note, definie_par)
        VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, base, indemnite_mois, echeances_minimum, note, definie_le`,
-      [base, indemniteMois, echeancesMinimum, note ?? null, actorId]
+       RETURNING id, part_interets_restants, penalite_interet_mensualite,
+                 echeances_minimum, note, definie_le`,
+      [part, penalite, echeancesMinimum, note ?? null, actorId]
     );
     return rows[0];
   });
@@ -135,6 +145,8 @@ export async function calculerSolde({ creditId, client: externalClient }) {
              WHERE i.credit_id = c.id AND i.status = 'payee') AS echeances_payees,
             COALESCE((SELECT SUM(i.amount) FROM installments i
                       WHERE i.credit_id = c.id AND i.status <> 'payee'), 0)::bigint AS reste_mensualites,
+            COALESCE((SELECT SUM(i.amount) FROM installments i
+                      WHERE i.credit_id = c.id), 0)::bigint AS total_du,
             COALESCE(b.balance, 0)::bigint AS solde_client
      FROM credit_requests c
      JOIN users u ON u.id = c.user_id
@@ -160,29 +172,63 @@ export async function calculerSolde({ creditId, client: externalClient }) {
   if (k >= n) throw new ApiError(409, 'Toutes les échéances sont déjà payées.');
 
   const capital = Number(credit.amount);
-  const taux = Number(credit.monthly_rate ?? DEFAULT_MONTHLY_RATE);
+  const totalDu = Number(credit.total_du);
   const resteMensualites = Number(credit.reste_mensualites);
 
-  // Intérêt simple : la part de capital est linéaire sur les échéances.
+  // L'intérêt réel du crédit, déduit de son échéancier et non d'un taux
+  // supposé : les crédits repris de l'ancien logiciel portent leurs
+  // propres conditions, et les taux réels vont de 1,5 à 9,9 % par mois.
+  const interetTotal = Math.max(0, totalDu - capital);
+
+  // Intérêt simple : capital et intérêt se répartissent linéairement
+  // sur les échéances. Après k payées sur n, il reste (n − k) / n des
+  // deux.
   const capitalRestant = Math.round((capital * (n - k)) / n);
-  // Ce que CPG abandonnerait en soldant sur le capital seul.
-  const interetsNonCourus = Math.max(0, resteMensualites - capitalRestant);
+  const interetsRestants = Math.round((interetTotal * (n - k)) / n);
+  const interetParMensualite = Math.round(interetTotal / n);
 
   const regle = await fetchRegleEnVigueur();
   if (!regle) {
     throw new ApiError(
       422,
-      'Aucune règle de remboursement anticipé n’est en vigueur. La direction doit d’abord '
-      + 'choisir la base du calcul — capital restant, ou reste des mensualités — avant qu’un '
-      + 'crédit puisse être soldé en avance.'
+      'Aucune règle de rachat n’est en vigueur. La direction doit d’abord fixer la formule — '
+      + 'part des intérêts restants et pénalité — avant qu’un crédit puisse être racheté.'
     );
   }
 
-  const indemnite = regle.base === 'capital_restant'
-    ? Math.round(capitalRestant * taux * Number(regle.indemnite_mois))
-    : 0;
-  const assiette = regle.base === 'capital_restant' ? capitalRestant : resteMensualites;
-  const montant = assiette + indemnite;
+  // ─── LA FORMULE DE LA DIRECTION (23/10/2026) ──────────────────────
+  //
+  //   capital restant
+  // + part × intérêts restants                    (0,35)
+  // + pénalité × intérêt d'UNE mensualité          (0,05)
+  //
+  // Les deux taux sont des paramètres : avec part = 1 on retomberait
+  // sur la totalité des mensualités restantes, avec 0 sur le capital
+  // seul. 0,35 se situe entre les deux.
+  const part = regle.part_interets_restants === null || regle.part_interets_restants === undefined
+    ? null
+    : Number(regle.part_interets_restants);
+  const tauxPenalite = Number(regle.penalite_interet_mensualite ?? 0);
+
+  let partInterets;
+  let penalite;
+  if (part !== null) {
+    partInterets = Math.round(interetsRestants * part);
+    penalite = Math.round(interetParMensualite * tauxPenalite);
+  } else {
+    // Règle historique, antérieure à la formule : on honore ce qui
+    // était en vigueur ce jour-là plutôt que de réécrire le passé.
+    partInterets = regle.base === 'reste_mensualites' ? interetsRestants : 0;
+    penalite = regle.base === 'capital_restant'
+      ? Math.round(capitalRestant * Number(credit.monthly_rate ?? DEFAULT_MONTHLY_RATE)
+        * Number(regle.indemnite_mois ?? 0))
+      : 0;
+  }
+
+  const montant = capitalRestant + partInterets + penalite;
+  // Ce à quoi CPG renonce en appliquant la formule plutôt que de
+  // réclamer la totalité des mensualités restantes.
+  const interetsAbandonnes = Math.max(0, interetsRestants - partInterets);
 
   const echeancesManquantes = Math.max(0, Number(regle.echeances_minimum) - k);
 
@@ -193,23 +239,28 @@ export async function calculerSolde({ creditId, client: externalClient }) {
       client: credit.client_nom,
       clientNumber: credit.client_number,
       capital,
-      tauxMensuel: taux,
+      interetTotal,
       echeancesPayees: k,
       echeancesTotal: n,
     },
     regle: {
       id: regle.id,
-      base: regle.base,
-      indemniteMois: Number(regle.indemnite_mois),
+      partInteretsRestants: part,
+      penaliteInteretMensualite: tauxPenalite,
       echeancesMinimum: Number(regle.echeances_minimum),
       definieLe: regle.definie_le,
       definiePar: regle.definie_par_nom,
     },
-    // Les deux lectures, toujours : c'est ce qui permet de décider.
+    // La décomposition, terme par terme : le client doit pouvoir
+    // refaire le calcul devant le gestionnaire.
     capitalRestant,
+    interetsRestants,
+    interetParMensualite,
+    partInterets,
+    penalite,
+    // Et ce à quoi CPG renonce, pour que la décision soit éclairée.
     resteMensualites,
-    interetsNonCourus,
-    indemnite,
+    interetsAbandonnes,
     montant,
     soldeClient: Number(credit.solde_client),
     // Le client peut-il solder avec son propre argent, maintenant ?
@@ -312,8 +363,9 @@ export async function soldeParAnticipation({
       client: calcul.credit.client,
       montant: calcul.montant,
       capitalRestant: calcul.capitalRestant,
-      interetsAbandonnes: calcul.regle.base === 'capital_restant' ? calcul.interetsNonCourus : 0,
-      indemnite: calcul.indemnite,
+      partInterets: calcul.partInterets,
+      penalite: calcul.penalite,
+      interetsAbandonnes: calcul.interetsAbandonnes,
       echeancesSoldees,
       ledgerEntryId: ecriture[0].id,
       rachat: Boolean(rachatParCreditId),
