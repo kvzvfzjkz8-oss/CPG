@@ -66,6 +66,23 @@ router.get(
                   SELECT 1 FROM credit_requests autre
                   WHERE autre.user_id = c.user_id AND autre.status = 'approuve'
                 ) AS credit_en_cours,
+
+                -- ─────────────────────────────────────────────────────
+                -- CE QUE L'OPÉRATRICE DOIT VOIR AVANT DE VALIDER
+                --
+                -- Depuis le 23/10/2026, un crédit en cours ne bloque
+                -- plus le dépôt en commission. Le circuit est le même
+                -- pour tout le monde : demande, validation niveau 1,
+                -- dépôt. L'opératrice garde donc la main au niveau 1 —
+                -- elle peut refuser ou demander plus d'informations —
+                -- mais il faut pour cela qu'elle voie la situation, et
+                -- pas seulement un booléen « a déjà un crédit ».
+                COALESCE(enc.nombre, 0)::int   AS credits_en_cours_nombre,
+                COALESCE(enc.reste, 0)::bigint AS credits_en_cours_reste,
+                COALESCE(enc.en_retard, 0)::int AS credits_en_cours_retards,
+                COALESCE(sld.balance, 0)::bigint AS solde_client,
+                COALESCE(dec.jours_negatifs, 0)::int AS jours_negatifs_90j,
+                COALESCE(dec.solde_min, 0)::bigint AS solde_min_90j,
                 EXISTS (
                   SELECT 1 FROM commission_exception_authorizations a
                   WHERE a.client_user_id = c.user_id AND a.used_at IS NULL
@@ -74,6 +91,37 @@ router.get(
          JOIN users u ON u.id = c.user_id
          LEFT JOIN product_versions pv ON pv.id = c.product_version_id
          LEFT JOIN credit_products p ON p.id = pv.product_id
+         LEFT JOIN accounts a ON a.user_id = u.id
+         LEFT JOIN account_balances sld ON sld.account_id = a.id
+
+         -- Les crédits déjà approuvés de ce client, et ce qu'il en reste.
+         LEFT JOIN LATERAL (
+           SELECT count(*)::int nombre,
+                  SUM(x.reste) reste,
+                  SUM(x.en_retard)::int en_retard
+           FROM (
+             SELECT COALESCE((SELECT SUM(i.amount) FROM installments i
+                              WHERE i.credit_id = ac.id AND i.status <> 'payee'), 0) reste,
+                    (SELECT count(*)::int FROM installments i
+                     WHERE i.credit_id = ac.id AND i.status = 'en_retard') en_retard
+             FROM credit_requests ac
+             WHERE ac.user_id = u.id AND ac.status = 'approuve'
+           ) x
+         ) enc ON TRUE
+
+         -- Découverts des 90 derniers jours : solde glissant sur toutes
+         -- les écritures, puis fenêtre sur les trois derniers mois.
+         LEFT JOIN LATERAL (
+           SELECT min(h.solde_courant)::bigint solde_min,
+                  count(DISTINCT h.jour) FILTER (WHERE h.solde_courant < 0)::int jours_negatifs
+           FROM (
+             SELECT SUM(le.amount) OVER (ORDER BY le.created_at, le.id) solde_courant,
+                    le.created_at::date jour, le.created_at
+             FROM ledger_entries le WHERE le.account_id = a.id
+           ) h
+           WHERE h.created_at >= now() - interval '90 days'
+         ) dec ON TRUE
+
          WHERE ($1::credit_status IS NULL OR c.status = $1)
          ORDER BY u.full_name
          LIMIT $2`,

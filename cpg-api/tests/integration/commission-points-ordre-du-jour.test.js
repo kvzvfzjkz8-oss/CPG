@@ -135,7 +135,11 @@ describe(
       });
     });
 
-    test('sans autorisation, le dépôt du second dossier est refusé', async () => {
+    // Règle changée le 23/10/2026 : un crédit en cours ne bloque plus
+    // le dépôt. Le circuit est le même pour tous les clients — demande,
+    // validation niveau 1, dépôt — et c'est le comité qui tranche, en
+    // voyant la situation du client à l'ordre du jour.
+    test('le dépôt du second dossier passe, sans autorisation', async () => {
       const gestionnaireToken = await loginStaff('gestionnaire');
       await api('/v1/admin/commission/seance', {
         method: 'POST', token: gestionnaireToken, body: { dateHeure: '2026-11-10T09:00' },
@@ -144,17 +148,35 @@ describe(
       const { status } = await api(`/v1/admin/commission/credits/${secondCreditId}/deposer`, {
         method: 'POST', token: gestionnaireToken,
       });
-      assert.equal(status, 403);
+      assert.equal(status, 201);
+
+      // On le retire pour que la suite du fichier reparte d'un dossier
+      // encore déposable, comme avant.
+      await api(`/v1/admin/commission/credits/${secondCreditId}/retirer`, {
+        method: 'POST', token: gestionnaireToken,
+      });
     });
 
-    test('le dossier reste listé, signalé comme bloqué faute d’autorisation', async () => {
-      const { body } = await api('/v1/admin/credits?statut=valide_niveau1', {
+    // Le verrou a disparu, le signalement le remplace : c'est lui qui
+    // permet à l'opératrice de refuser ou de demander plus
+    // d'informations à son niveau, et au comité de décider ensuite.
+    test('le dossier est listé avec la situation du client', async () => {
+      const { body } = await api('/v1/admin/credits?statut=valide_niveau1&limite=200', {
         token: await loginStaff('gestionnaire'),
       });
       const ligne = body.credits.find((c) => c.id === secondCreditId);
       assert.ok(ligne, 'le dossier doit rester visible dans la liste de dépôt');
       assert.equal(ligne.credit_en_cours, true);
-      assert.equal(ligne.autorisation_exception_disponible, false);
+      assert.ok(
+        Number(ligne.credits_en_cours_nombre) >= 1,
+        'le nombre de crédits en cours doit être chiffré'
+      );
+      assert.ok(
+        Number(ligne.credits_en_cours_reste) > 0,
+        'le reste à payer du crédit en cours doit être chiffré'
+      );
+      assert.equal(typeof ligne.credits_en_cours_retards, 'number');
+      assert.equal(typeof ligne.jours_negatifs_90j, 'number');
     });
 
     test('la validation en séance crée l’autorisation d’exception', async () => {
@@ -203,16 +225,19 @@ describe(
       assert.ok(revalidationStatus >= 400, `la revalidation ne doit plus répondre, reçu ${revalidationStatus}`);
     });
 
-    test('le dossier est alors signalé comme déposable', async () => {
-      const { body } = await api('/v1/admin/credits?statut=valide_niveau1', {
+    test('l’autorisation reste tracée, même si elle ne conditionne plus rien', async () => {
+      const { body } = await api('/v1/admin/credits?statut=valide_niveau1&limite=200', {
         token: await loginStaff('gestionnaire'),
       });
       const ligne = body.credits.find((c) => c.id === secondCreditId);
       assert.equal(ligne.credit_en_cours, true);
-      assert.equal(ligne.autorisation_exception_disponible, true);
+      assert.equal(
+        ligne.autorisation_exception_disponible, true,
+        'l’autorisation accordée en séance reste visible — elle documente la décision'
+      );
     });
 
-    test('le dépôt réussit et consomme l’autorisation', async () => {
+    test('le dépôt réussit sans consommer l’autorisation', async () => {
       const gestionnaireToken = await loginStaff('gestionnaire');
       await api('/v1/admin/commission/seance', {
         method: 'POST', token: gestionnaireToken, body: { dateHeure: '2026-11-17T09:00' },
@@ -224,9 +249,13 @@ describe(
       assert.equal(status, 201);
       assert.equal(body.status, 'en_attente_commission');
 
-      // Une autorisation ne sert qu'une fois.
+      // L'autorisation n'est plus consommée à l'insu de personne : le
+      // dépôt ne la touche pas, elle reste disponible et tracée.
       const { body: restantes } = await api('/v1/admin/commission/autorisations', { token: gestionnaireToken });
-      assert.ok(!restantes.autorisations.some((a) => a.client === NOM_CLIENT));
+      assert.ok(
+        restantes.autorisations.some((a) => a.client === NOM_CLIENT),
+        'le dépôt ne doit plus consommer l’autorisation'
+      );
     });
   }
 );

@@ -156,10 +156,13 @@ export async function fetchPlannedSession() {
 
 /**
  * Dépose un dossier validé en premier niveau dans la file d'attente de
- * la prochaine commission. C'est ici que se vérifie la règle du crédit
- * en cours : un client qui a déjà un crédit actif ne peut être déposé
- * à nouveau sans autorisation d'exception du directeur, consommée au
- * passage.
+ * la prochaine commission.
+ *
+ * Un crédit déjà en cours ne bloque PLUS le dépôt (décision du
+ * 23/10/2026) : le gestionnaire dépose librement, et c'est au comité de
+ * trancher en voyant la situation complète du client — crédits en
+ * cours, reste à payer, retards, découverts. Voir fetchCommissionQueue,
+ * qui construit ce signalement.
  */
 export async function depositToCommission({ creditId, note, actorId }) {
   return withTransaction(async (client) => {
@@ -183,33 +186,26 @@ export async function depositToCommission({ creditId, note, actorId }) {
       throw new ApiError(409, 'Seul un dossier validé en premier niveau peut être déposé en commission.');
     }
 
-    // Un client avec un crédit actif ne repasse en commission qu'avec
-    // une autorisation d'exception du directeur, non encore consommée.
-    const { rows: activeCredit } = await client.query(
-      `SELECT 1 FROM credit_requests WHERE user_id = $1 AND status = 'approuve' LIMIT 1`,
-      [credit.user_id]
-    );
-    let consumedAuthorizationId = null;
-    if (activeCredit[0]) {
-      const { rows: authorization } = await client.query(
-        `SELECT id FROM commission_exception_authorizations
-         WHERE client_user_id = $1 AND used_at IS NULL
-         ORDER BY granted_at LIMIT 1 FOR UPDATE`,
-        [credit.user_id]
-      );
-      if (!authorization[0]) {
-        throw new ApiError(
-          403,
-          'Ce client a déjà un crédit en cours : une autorisation spéciale du directeur est requise avant de déposer un nouveau dossier en commission.'
-        );
-      }
-      consumedAuthorizationId = authorization[0].id;
-      await client.query(
-        `UPDATE commission_exception_authorizations
-         SET used_at = now(), used_for_credit_id = $2 WHERE id = $1`,
-        [authorization[0].id, credit.id]
-      );
-    }
+    // ─────────────────────────────────────────────────────────────────
+    // UN CRÉDIT EN COURS NE BLOQUE PLUS LE DÉPÔT.
+    //
+    // Décision de la direction du 23/10/2026 : le gestionnaire dépose
+    // librement, y compris pour un client qui a déjà un crédit. Le
+    // verrou qui exigeait une autorisation d'exception du directeur
+    // retenait des dossiers en attente pour une formalité, alors que
+    // c'est le comité qui tranche de toute façon.
+    //
+    // Le contrôle ne disparaît pas, il CHANGE DE PLACE : au lieu
+    // d'interdire le dépôt, on documente la situation du client pour
+    // que le comité décide en connaissance de cause. L'ordre du jour
+    // affiche désormais, pour chaque dossier, les crédits déjà en cours
+    // avec leur reste à payer, les échéances en retard, et les
+    // découverts des trois derniers mois (voir fetchCommissionQueue).
+    //
+    // Les autorisations d'exception restent accordables et tracées,
+    // mais elles ne conditionnent plus rien et ne sont plus consommées
+    // à l'insu de personne.
+    const consumedAuthorizationId = null;
 
     const { rows: updated } = await client.query(
       `UPDATE credit_requests
@@ -359,10 +355,77 @@ export async function fetchCommissionQueue({ sessionId }) {
             -- dossier accordé tel quel.
             c.amount_initial, c.duration_initial, c.ajuste_le,
             aj.full_name AS ajuste_par_nom,
-            u.full_name AS client, u.employer, u.job_title
+            u.full_name AS client, u.employer, u.job_title, u.client_number,
+
+            -- ─────────────────────────────────────────────────────────
+            -- LA SITUATION DU CLIENT
+            --
+            -- Depuis le 23/10/2026, un crédit en cours ne bloque plus
+            -- le dépôt. Le contrôle est donc ici : le comité doit voir
+            -- d'un coup d'œil s'il s'apprête à accorder un second
+            -- crédit à quelqu'un qui n'a pas fini le premier, et
+            -- comment celui-ci se comporte.
+            COALESCE(b.balance, 0)::bigint AS solde_actuel,
+            COALESCE(enc.nombre, 0)::int   AS credits_en_cours,
+            COALESCE(enc.reste, 0)::bigint AS reste_a_payer,
+            COALESCE(enc.mensualites, 0)::bigint AS mensualites_en_cours,
+            COALESCE(enc.en_retard, 0)::int AS echeances_en_retard,
+            enc.details                    AS details_credits_en_cours,
+            -- Découverts des 90 derniers jours : le solde le plus bas
+            -- atteint, et combien de jours il est resté négatif. Un
+            -- agent qui plonge chaque mois n'est pas dans la même
+            -- situation qu'un agent à l'équilibre.
+            COALESCE(dec.solde_min, 0)::bigint AS solde_min_90j,
+            COALESCE(dec.jours_negatifs, 0)::int AS jours_negatifs_90j
      FROM credit_requests c
      JOIN users u ON u.id = c.user_id
      LEFT JOIN users aj ON aj.id = c.ajuste_par
+     LEFT JOIN accounts a ON a.user_id = u.id
+     LEFT JOIN account_balances b ON b.account_id = a.id
+
+     -- Les crédits déjà approuvés de ce client, avec leur reste réel.
+     LEFT JOIN LATERAL (
+       SELECT count(*)::int nombre,
+              SUM(x.reste) reste,
+              SUM(x.mensualite) mensualites,
+              SUM(x.en_retard)::int en_retard,
+              json_agg(json_build_object(
+                'reference', x.reference,
+                'montant', x.montant,
+                'mensualite', x.mensualite,
+                'echeances_payees', x.payees,
+                'echeances_total', x.total,
+                'reste', x.reste,
+                'en_retard', x.en_retard
+              ) ORDER BY x.reference) details
+       FROM (
+         SELECT ac.reference, ac.amount montant, COALESCE(ac.monthly_payment, 0) mensualite,
+                (SELECT count(*)::int FROM installments i WHERE i.credit_id = ac.id AND i.status = 'payee') payees,
+                (SELECT count(*)::int FROM installments i WHERE i.credit_id = ac.id) total,
+                COALESCE((SELECT SUM(i.amount) FROM installments i
+                          WHERE i.credit_id = ac.id AND i.status <> 'payee'), 0) reste,
+                (SELECT count(*)::int FROM installments i
+                 WHERE i.credit_id = ac.id AND i.status = 'en_retard') en_retard
+         FROM credit_requests ac
+         WHERE ac.user_id = u.id AND ac.status = 'approuve'
+       ) x
+     ) enc ON TRUE
+
+     -- Historique du solde : somme glissante sur TOUTES les écritures
+     -- (pour que le solde soit juste), puis on ne regarde que les 90
+     -- derniers jours.
+     LEFT JOIN LATERAL (
+       SELECT min(h.solde_courant)::bigint solde_min,
+              count(DISTINCT h.jour) FILTER (WHERE h.solde_courant < 0)::int jours_negatifs
+       FROM (
+         SELECT SUM(le.amount) OVER (ORDER BY le.created_at, le.id) solde_courant,
+                le.created_at::date jour, le.created_at
+         FROM ledger_entries le
+         WHERE le.account_id = a.id
+       ) h
+       WHERE h.created_at >= now() - interval '90 days'
+     ) dec ON TRUE
+
      WHERE c.commission_session_id = $1 AND c.status = 'en_attente_commission'
      ORDER BY u.full_name`,
     [sessionId]

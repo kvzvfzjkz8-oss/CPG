@@ -47,8 +47,20 @@ after(async () => {
   // Ne pas laisser de séance « planifiee » derrière soi : commission.test.js
   // exige qu'il n'y en ait aucune au démarrage, et les fichiers partagent
   // une seule base.
+  // Retirer les dossiers AVANT d'annuler la séance : une séance annulée
+  // qui en contient encore les laisse à « en_attente_commission »
+  // rattachés à une séance morte, invisibles et gênants pour les
+  // fichiers suivants, qui partagent la même base.
   const { body } = await api('/v1/admin/commission/seance', { token: gestionnaireToken });
   if (body?.seance?.id) {
+    const { body: file } = await api(`/v1/admin/commission/file-attente/${body.seance.id}`, {
+      token: gestionnaireToken,
+    });
+    for (const d of file?.dossiers ?? []) {
+      await api(`/v1/admin/commission/credits/${d.id}/retirer`, {
+        method: 'POST', token: gestionnaireToken,
+      });
+    }
     await api(`/v1/admin/commission/seance/${body.seance.id}`, {
       method: 'DELETE', token: gestionnaireToken,
     });

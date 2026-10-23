@@ -749,8 +749,12 @@ export async function fetchCommissionSessionDetail(sessionId) {
 }
 
 /** Dossiers validés niveau 1, prêts à être déposés en commission. */
-export async function fetchLevel1Credits() {
-  const { credits } = await apiRequest('/v1/admin/credits?statut=valide_niveau1');
+export async function fetchLevel1Credits(limite = 200) {
+  // Sans limite explicite, le serveur applique son defaut de 50 : la
+  // liste des dossiers a deposer en commission etait donc tronquee a 50
+  // sans le dire, et des clients restaient invisibles. Plafond porte a
+  // 200 sur decision de la direction (23/10/2026).
+  const { credits } = await apiRequest(`/v1/admin/credits?statut=valide_niveau1&limite=${limite}`);
   return credits;
 }
 

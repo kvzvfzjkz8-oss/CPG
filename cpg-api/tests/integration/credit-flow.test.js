@@ -312,7 +312,16 @@ describe(
       assert.match(body.error, /commission/);
     });
 
-    test('un client avec un crédit actif ne peut pas être redéposé sans autorisation du directeur', async () => {
+    // Règle changée le 23/10/2026 : un crédit en cours ne bloque plus le
+    // dépôt. Le gestionnaire dépose librement et c'est le comité qui
+    // tranche, en voyant la situation du client à l'ordre du jour
+    // (crédits en cours, reste à payer, retards, découverts — voir
+    // commission-depot-credit-en-cours.test.js).
+    //
+    // Ce test vérifie donc désormais l'inverse de ce qu'il vérifiait :
+    // que le dépôt PASSE, et qu'aucune autorisation n'est exigée ni
+    // consommée au passage.
+    test('un client avec un crédit actif peut être redéposé sans autorisation', async () => {
       const { body: created } = await api('/v1/client/credits', {
         method: 'POST', token: clientToken,
         body: { produitId, montant: 55000, duree: 3, motif: 'Troisième dossier' },
@@ -327,24 +336,27 @@ describe(
       const { status, body } = await api(`/v1/admin/commission/credits/${created.id}/deposer`, {
         method: 'POST', token: gestionnaireToken,
       });
-      assert.equal(status, 403);
-      assert.match(body.error, /autorisation spéciale/);
+      assert.equal(status, 201, `le dépôt ne doit plus être bloqué (reçu : ${JSON.stringify(body)})`);
 
-      const { body: compte } = await api('/v1/client/compte', { token: clientToken });
-      void compte;
       const directeurToken = await loginStaff('directeur');
-      const { body: utilisateurs } = await api('/v1/admin/utilisateurs', { token: directeurToken });
-      const clientUser = utilisateurs.utilisateurs.find((u) => u.phone === clientPhone);
-      const { status: authStatus } = await api('/v1/admin/commission/autorisations', {
-        method: 'POST', token: directeurToken,
-        body: { clientId: clientUser.id, motif: 'Situation exceptionnelle validée par la direction' },
-      });
-      assert.equal(authStatus, 201);
 
-      const { status: secondAttempt } = await api(`/v1/admin/commission/credits/${created.id}/deposer`, {
-        method: 'POST', token: gestionnaireToken,
+      // Le dossier est bien à l'ordre du jour, et il y porte le
+      // signalement destiné au comité.
+      const { body: file } = await api(`/v1/admin/commission/file-attente/${session.id}`, {
+        token: directeurToken,
       });
-      assert.equal(secondAttempt, 201);
+      const ligne = file.dossiers.find((d) => d.id === created.id);
+      assert.ok(ligne, 'le dossier déposé doit figurer à l’ordre du jour');
+      assert.ok(
+        Number(ligne.credits_en_cours) >= 1,
+        'le crédit déjà en cours doit être signalé au comité'
+      );
+      assert.ok(Number(ligne.reste_a_payer) > 0, 'le reste à payer doit être chiffré');
+
+      // Aucune autorisation n'a été exigée : le 201 ci-dessus le prouve
+      // à lui seul, puisque ce test n'en a créé aucune. On ne compte pas
+      // la liste globale — les fichiers de tests partagent une base et
+      // d'autres en laissent derrière eux.
 
       // Referme la séance pour ne pas bloquer les fichiers de tests
       // suivants, qui partagent la même base.

@@ -497,12 +497,14 @@ function NewCreditsDeposit({ hasOpenSession, onDepose }) {
         </p>
       )}
       {credits.map((c) => {
-        // Un client déjà en crédit ne repasse en commission qu'avec une
-        // autorisation d'exception du directeur, accordée en validant une
-        // demande exceptionnelle en séance. Tant qu'elle manque, le
-        // serveur refusera le dépôt : autant le dire avant le clic.
-        const autorisationManquante = c.credit_en_cours && !c.autorisation_exception_disponible;
-        const depotImpossible = !hasOpenSession || autorisationManquante;
+        // Un crédit en cours ne bloque PLUS le dépôt (décision du
+        // 23/10/2026). Il est seulement signalé, ici au gestionnaire et
+        // surtout à l'ordre du jour du comité, qui voit en plus le reste
+        // à payer, les retards et les découverts.
+        //
+        // Attention : désactiver le bouton ici reviendrait à remettre le
+        // verrou côté navigateur alors que le serveur l'a levé.
+        const depotImpossible = !hasOpenSession;
 
         return (
           <div key={c.id} style={{ padding: '14px 20px', borderBottom: `1px solid ${colors.line}` }}>
@@ -517,27 +519,25 @@ function NewCreditsDeposit({ hasOpenSession, onDepose }) {
                 {c.credit_en_cours && (
                   <p
                     style={{
-                      margin: '4px 0 0',
-                      fontSize: 11,
-                      fontWeight: 500,
-                      color: autorisationManquante ? '#9A3412' : colors.forest,
-                      fontFamily: fonts.body,
+                      margin: '4px 0 0', display: 'inline-flex', alignItems: 'center', gap: 5,
+                      fontSize: 11, fontWeight: 600, color: colors.goldDark, fontFamily: fonts.body,
+                      background: colors.goldPale, border: `1px solid ${colors.gold}`,
+                      borderRadius: 7, padding: '3px 8px',
                     }}
                   >
-                    {autorisationManquante
-                      ? 'Crédit en cours — en attente d’une demande exceptionnelle validée par le directeur'
-                      : 'Crédit en cours — autorisation exceptionnelle accordée, dépôt possible'}
+                    <AlertTriangle size={11} />
+                    Crédit déjà en cours — le dépôt est possible, le comité verra le détail
                   </p>
                 )}
               </div>
               <button
                 onClick={() => deposit(c)}
                 disabled={depotImpossible || busyId === c.id}
-                title={
-                  autorisationManquante
-                    ? 'Ce client a déjà un crédit en cours. Déposez une demande exceptionnelle et faites-la valider par le directeur en séance.'
-                    : undefined
-                }
+                title={depotImpossible
+                  ? 'Programmez une séance de commission avant de déposer.'
+                  : c.credit_en_cours
+                    ? 'Ce client a déjà un crédit en cours. Le dépôt est autorisé : le comité décidera en voyant son reste à payer, ses retards et ses découverts.'
+                    : undefined}
                 style={{ ...actionBtn(colors.forest, '#fff'), opacity: depotImpossible ? 0.5 : 1 }}
               >
                 <Inbox size={12} /> Déposer
@@ -1004,20 +1004,25 @@ function HoldSessionPanel({ session, onHeld, onChange, role }) {
                 note={notes[`credit:${c.id}`] ?? ''}
                 onNote={(v) => setNotes((prev) => ({ ...prev, [`credit:${c.id}`]: v }))}
                 readOnly={!peutTenir}
-                extra={can(role, 'commission.ajuster_dossier')
-                  ? (
-                    <AjustementDossier
-                      credit={c}
-                      onAjuste={() => {
-                        // L'ordre du jour ET l'enveloppe affichée en
-                        // tête d'onglet : un montant ajusté ou un
-                        // dossier retiré change les deux.
-                        load();
-                        onChange?.();
-                      }}
-                    />
-                  )
-                  : null}
+                extra={(
+                  <>
+                    {/* Le signalement d'abord : il doit être lu avant
+                        qu'on touche au montant. */}
+                    <SituationClient dossier={c} />
+                    {can(role, 'commission.ajuster_dossier') && (
+                      <AjustementDossier
+                        credit={c}
+                        onAjuste={() => {
+                          // L'ordre du jour ET l'enveloppe affichée en
+                          // tête d'onglet : un montant ajusté ou un
+                          // dossier retiré change les deux.
+                          load();
+                          onChange?.();
+                        }}
+                      />
+                    )}
+                  </>
+                )}
               />
             ))}
             {agenda.points.map((p) => (
@@ -1198,6 +1203,112 @@ function AjustementDossier({ credit, onAjuste }) {
           <button onClick={() => { setOuvert(false); setErreur(''); }} disabled={busy} style={actionBtn('transparent', colors.muted)}>
             Annuler
           </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * LA SITUATION DU CLIENT, À L'ORDRE DU JOUR
+ *
+ * « Tous les noms ayant déjà des crédits doivent être marqués afin que
+ *   le directeur sache, et si possible les détails de l'ancien crédit,
+ *   ou encore les clients ayant des découverts sur les derniers mois. »
+ *
+ * Depuis le 23/10/2026, un crédit en cours ne bloque plus le dépôt. Le
+ * contrôle est donc ici, et il doit être lisible d'un coup d'œil : un
+ * bandeau qui ne se confond pas avec le reste de la ligne, les chiffres
+ * qui comptent, et le détail de chaque ancien crédit.
+ *
+ * Rien ne s'affiche pour un client sans antécédent : un signalement qui
+ * apparaît sur tout le monde ne signale plus rien.
+ */
+function SituationClient({ dossier }) {
+  const credits = Number(dossier.credits_en_cours ?? 0);
+  const retards = Number(dossier.echeances_en_retard ?? 0);
+  const joursNegatifs = Number(dossier.jours_negatifs_90j ?? 0);
+  const soldeMin = Number(dossier.solde_min_90j ?? 0);
+  const solde = Number(dossier.solde_actuel ?? 0);
+
+  const aSignaler = credits > 0 || joursNegatifs > 0 || solde < 0;
+  if (!aSignaler) return null;
+
+  // Le ton suit la gravité : un retard d'échéance ou un découvert
+  // installé ne se lit pas comme un simple second dossier.
+  const grave = retards > 0 || joursNegatifs >= 25;
+  const bordure = grave ? colors.danger : colors.gold;
+  const fond = grave ? colors.dangerPale : colors.goldPale;
+  const encre = grave ? colors.danger : colors.goldDark;
+
+  const details = Array.isArray(dossier.details_credits_en_cours)
+    ? dossier.details_credits_en_cours
+    : [];
+
+  return (
+    <div style={{
+      marginTop: 8, padding: '10px 12px', borderRadius: 9,
+      border: `1px solid ${bordure}`, background: fond,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', marginBottom: credits > 0 ? 7 : 0 }}>
+        <AlertTriangle size={13} color={encre} style={{ flexShrink: 0 }} />
+        <span style={{ fontSize: 11.5, fontWeight: 700, color: encre, fontFamily: fonts.body }}>
+          {credits > 0
+            ? `Déjà ${credits} crédit${credits > 1 ? 's' : ''} en cours`
+            : 'Compte en difficulté'}
+        </span>
+        {retards > 0 && (
+          <Badge tone="danger">{retards} échéance{retards > 1 ? 's' : ''} en retard</Badge>
+        )}
+        {joursNegatifs > 0 && (
+          <Badge tone={joursNegatifs >= 25 ? 'danger' : 'gold'}>
+            {joursNegatifs} jour{joursNegatifs > 1 ? 's' : ''} en négatif sur 90
+          </Badge>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 11, fontFamily: fonts.body, color: colors.ink }}>
+        {credits > 0 && (
+          <span>
+            Reste à payer :{' '}
+            <strong style={{ fontFamily: fonts.mono }}>{formatFCFA(dossier.reste_a_payer)} F</strong>
+          </span>
+        )}
+        {credits > 0 && Number(dossier.mensualites_en_cours) > 0 && (
+          <span>
+            Mensualité déjà engagée :{' '}
+            <strong style={{ fontFamily: fonts.mono }}>{formatFCFA(dossier.mensualites_en_cours)} F</strong>
+          </span>
+        )}
+        <span>
+          Solde :{' '}
+          <strong style={{ fontFamily: fonts.mono, color: solde < 0 ? colors.danger : colors.forestLight }}>
+            {formatFCFA(solde)} F
+          </strong>
+        </span>
+        {soldeMin < 0 && (
+          <span>
+            Plus bas atteint :{' '}
+            <strong style={{ fontFamily: fonts.mono, color: colors.danger }}>{formatFCFA(soldeMin)} F</strong>
+          </span>
+        )}
+      </div>
+
+      {details.length > 0 && (
+        <div style={{ marginTop: 7, borderTop: `1px solid ${bordure}`, paddingTop: 7 }}>
+          {details.map((d) => (
+            <p key={d.reference} style={{ margin: '2px 0 0', fontSize: 10.5, color: colors.ink, fontFamily: fonts.body }}>
+              <strong style={{ fontFamily: fonts.mono }}>{d.reference}</strong>
+              {' — '}{formatFCFA(d.montant)} F, mensualité {formatFCFA(d.mensualite)} F,
+              {' '}échéances {d.echeances_payees}/{d.echeances_total} payées,
+              {' '}reste <strong style={{ fontFamily: fonts.mono }}>{formatFCFA(d.reste)} F</strong>
+              {Number(d.en_retard) > 0 && (
+                <span style={{ color: colors.danger, fontWeight: 600 }}>
+                  {' '}· {d.en_retard} en retard
+                </span>
+              )}
+            </p>
+          ))}
         </div>
       )}
     </div>
