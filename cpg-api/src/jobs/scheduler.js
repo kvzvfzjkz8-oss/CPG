@@ -3,6 +3,7 @@ import { query } from '../db/index.js';
 import { runInstallmentCollection } from '../services/operationsService.js';
 import { runAgiosBatch, runTenueCompteBatch } from '../services/feeService.js';
 import { balayerCaisses, MONTANT_BASE_CAISSE } from '../services/clotureCaisseService.js';
+import { runInteretsDecouvert, soldeLesDecouvertsAFlot } from '../services/decouvertService.js';
 import { auditAutomated } from '../services/auditService.js';
 
 /**
@@ -171,6 +172,76 @@ async function cloturerLesCaisses(motif) {
   }
 }
 
+
+/**
+ * L'intérêt mensuel des découverts autorisés — décision du 30/10/2026 :
+ * le taux du produit appliqué à ce qui reste à découvert, donc
+ * décroissant à mesure que le compte se renfloue.
+ *
+ * Un découvert n'a pas d'échéancier : sans cette tâche, il ne
+ * rapporterait rien. Le service refuse de prélever deux fois le même
+ * mois, une relance est donc sans danger.
+ */
+async function preleverInteretsDecouvert() {
+  const actor = await getSystemActor();
+  if (!actor) {
+    console.error('[planifié] Aucun compte technique (rôle admin) trouvé : intérêts de découvert annulés.');
+    return;
+  }
+
+  try {
+    const result = await runInteretsDecouvert({ actorId: actor.id });
+    await auditAutomated({
+      actorId: actor.id,
+      actorRole: actor.role,
+      action: 'operations.interets_decouvert_preleves_auto',
+      entityType: 'periode',
+      entityId: result.periode,
+      metadata: {
+        total: result.total, soldes: result.soldes, echecs: result.echecs,
+        decouverts: result.resultats,
+      },
+    });
+    console.log(
+      `[planifié] Découverts : ${result.total} FCFA d'intérêts prélevés, ${result.soldes} soldé(s).`
+    );
+  } catch (error) {
+    console.error('[planifié] Échec du prélèvement des intérêts de découvert :', error.message);
+  }
+}
+
+/**
+ * Éteint chaque jour les découverts dont le compte est repassé à flot.
+ *
+ * Passage quotidien plutôt qu'un appel greffé sur chaque mouvement
+ * créditeur : le salaire, un dépôt au guichet, un ajustement et une
+ * annulation remontent tous un solde, et instrumenter ces quatre
+ * chemins pour gagner quelques heures de fraîcheur aurait multiplié les
+ * endroits où se tromper. Un découvert resté « approuvé » à tort
+ * bloquerait le client au dépôt d'un dossier en commission.
+ */
+async function eteindreDecouvertsRembourses() {
+  try {
+    const result = await soldeLesDecouvertsAFlot();
+    if (result.nombre > 0) {
+      const actor = await getSystemActor();
+      if (actor) {
+        await auditAutomated({
+          actorId: actor.id,
+          actorRole: actor.role,
+          action: 'operations.decouverts_eteints_auto',
+          entityType: 'periode',
+          entityId: new Date().toISOString().slice(0, 10),
+          metadata: { eteints: result.eteints },
+        });
+      }
+      console.log(`[planifié] Découverts remboursés et soldés : ${result.nombre}.`);
+    }
+  } catch (error) {
+    console.error('[planifié] Échec de l’extinction des découverts remboursés :', error.message);
+  }
+}
+
 /**
  * Démarre les tâches planifiées. Appelé une fois au lancement du
  * serveur (src/server.js) — jamais pendant les tests, qui utilisent
@@ -218,13 +289,27 @@ export function startScheduler() {
     { timezone: 'Africa/Libreville' }
   );
 
+  // Les intérêts de découvert avant les agios du 30, pour que le mois
+  // soit complet quand les agios lisent les soldes journaliers. L'ordre
+  // n'est plus critique depuis que la neutralisation se fait par
+  // référence, mais il reste le plus lisible.
+  cron.schedule('0 2 30 * *', preleverInteretsDecouvert, { timezone: 'Africa/Libreville' });
+
+  // Juste après la collecte des échéances : les comptes viennent d'être
+  // mouvementés, c'est le bon moment pour éteindre ce qui est remboursé.
+  cron.schedule('5 6 * * *', eteindreDecouvertsRembourses, { timezone: 'Africa/Libreville' });
+
   console.log(
     'Tâches planifiées démarrées : échéances (quotidien, 6h) · agios (le 30, 3h) · '
-    + 'frais de tenue (le 25, 3h) · renvoi des excédents de caisse (15h30 et 19h, heure de Libreville).'
+    + 'frais de tenue (le 25, 3h) · renvoi des excédents de caisse (15h30 et 19h, heure de Libreville) · '
+    + 'intérêts de découvert (le 30, 2h) · extinction des découverts remboursés (quotidien, 6h05).'
   );
 }
 
 // Exportées pour permettre un déclenchement manuel de secours (route
 // /admin/operations/echeances/executer et l'équivalent agios déjà en
 // place) sans dupliquer la logique de résolution de l'acteur système.
-export { collectInstallments, collectAgios, collectTenueCompte, cloturerLesCaisses, getSystemActor };
+export {
+  collectInstallments, collectAgios, collectTenueCompte, cloturerLesCaisses,
+  preleverInteretsDecouvert, eteindreDecouvertsRembourses, getSystemActor,
+};

@@ -1025,6 +1025,16 @@ export async function fetchCoffreMouvements(coffre, mois) {
   return apiRequest(`/v1/caisse/coffres/${coffre}/mouvements${qs}`);
 }
 
+/** Les découverts autorisés en cours — ils n'ont pas d'échéancier. */
+export async function fetchDecouverts() {
+  return apiRequest('/v1/admin/operations/decouverts');
+}
+
+/** Relance à la main le prélèvement mensuel des intérêts de découvert. */
+export async function preleverInteretsDecouvert() {
+  return apiRequest('/v1/admin/operations/decouverts/interets', { method: 'POST' });
+}
+
 /** Déclenche tout de suite le renvoi des excédents de caisse (directeur). */
 export async function renvoyerExcedentsCaisse() {
   return apiRequest('/v1/caisse/excedents/renvoyer', { method: 'POST' });

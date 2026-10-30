@@ -100,11 +100,19 @@ router.get(
                   SUM(x.reste) reste,
                   SUM(x.en_retard)::int en_retard
            FROM (
-             SELECT COALESCE((SELECT SUM(i.amount) FROM installments i
-                              WHERE i.credit_id = ac.id AND i.status <> 'payee'), 0) reste,
+             -- Meme regle que dans fetchCommissionQueue : un decouvert
+             -- n'a pas d'echeancier, son reste du est le negatif du
+             -- compte plafonne a l'autorisation.
+             SELECT CASE WHEN p.nature = 'decouvert'
+                         THEN LEAST(ac.amount, GREATEST(0, -COALESCE(sld.balance, 0)))
+                         ELSE COALESCE((SELECT SUM(i.amount) FROM installments i
+                                        WHERE i.credit_id = ac.id AND i.status <> 'payee'), 0)
+                    END reste,
                     (SELECT count(*)::int FROM installments i
                      WHERE i.credit_id = ac.id AND i.status = 'en_retard') en_retard
              FROM credit_requests ac
+             JOIN product_versions pv ON pv.id = ac.product_version_id
+             JOIN credit_products p ON p.id = pv.product_id
              WHERE ac.user_id = u.id AND ac.status = 'approuve'
            ) x
          ) enc ON TRUE
@@ -412,17 +420,37 @@ router.post(
           );
         }
 
+        // La nature du produit decide de tout ce qui suit : un credit
+        // credite le compte et s'amortit par echeances, un decouvert le
+        // debite et se renfloue tout seul.
+        const { rows: produit } = await client.query(
+          `SELECT p.nature, p.code FROM product_versions pv
+           JOIN credit_products p ON p.id = pv.product_id
+           WHERE pv.id = $1`,
+          [credit.product_version_id]
+        );
+        const estDecouvert = produit[0]?.nature === 'decouvert';
+
         const { monthlyPayment, totalDue } = computeSchedule(
           credit.amount,
           credit.duration_months,
           Number(credit.monthly_rate)
         );
 
+        // Pour un découvert, la mensualité n'est pas une annuité : c'est
+        // l'intérêt du premier mois, calculé sur la totalité de
+        // l'autorisation. Il décroîtra ensuite avec l'encours. On
+        // l'enregistre quand même, c'est ce que les écrans affichent
+        // comme charge mensuelle attendue.
+        const chargeMensuelle = estDecouvert
+          ? Math.round(credit.amount * Number(credit.monthly_rate))
+          : monthlyPayment;
+
         const { rows: updated } = await client.query(
           `UPDATE credit_requests
            SET status = 'approuve', approved_by = $2, approved_at = now(), monthly_payment = $3
            WHERE id = $1 RETURNING id, reference, amount, monthly_payment`,
-          [credit.id, req.user.id, monthlyPayment]
+          [credit.id, req.user.id, chargeMensuelle]
         );
 
         const { rows: account } = await client.query(
@@ -437,16 +465,40 @@ router.post(
         // qui prélève la commission crédit configurée (1 % par
         // défaut, ajustable depuis Catalogue → Services & agios sans
         // toucher au code).
-        await client.query(
-          `INSERT INTO ledger_entries (account_id, type, amount, label, reference, created_by)
-           VALUES ($1, 'deblocage_credit', $2, $3, $4, $5)`,
-          [account[0].id, credit.amount, `Déblocage crédit ${credit.reference}`, credit.reference, req.user.id]
-        );
+        //
+        // Un découvert n'écrit RIEN ici : l'approbation ouvre une
+        // autorisation de débit, elle ne verse pas de fonds. « Le
+        // client repart avec les billets, et c'est le retrait au
+        // guichet qui met le compte en négatif, pas l'approbation »
+        // (direction, 30/10/2026).
+        //
+        // C'est ce qui rend le produit cohérent avec la caisse : un
+        // crédit porté au compte à l'approbation, puis retiré au
+        // guichet, fait sortir l'argent par la caissière. Un découvert
+        // débité à l'approbation aurait mis le client en négatif SANS
+        // qu'aucun billet ne quitte CPG, et le retrait lui aurait
+        // ensuite été refusé faute de solde.
+        if (!estDecouvert) {
+          await client.query(
+            `INSERT INTO ledger_entries (account_id, type, amount, label, reference, created_by)
+             VALUES ($1, 'deblocage_credit', $2, $3, $4, $5)`,
+            [
+              account[0].id, credit.amount,
+              `Déblocage crédit ${credit.reference}`, credit.reference, req.user.id,
+            ]
+          );
+        }
 
+        // La commission crédit s'applique aussi au découvert : c'est un
+        // octroi, et « il suit le même cours que les autres crédits ».
+        // La référence rattache le frais au dossier, pour que les agios
+        // sachent distinguer ce que le découvert a mis sur le compte
+        // d'un dépassement imputable au client.
         const fraisApplique = await applyTriggeredFee({
           accountId: account[0].id,
           triggerOn: 'deblocage_credit',
           operationAmount: credit.amount,
+          reference: credit.reference,
           client,
         });
 
@@ -459,20 +511,29 @@ router.post(
         // (« Paiement à un client », déjà en place) — jamais les deux
         // à la fois.
 
-        // Génération de l'échéancier.
-        const installments = buildInstallments(
-          new Date(),
-          credit.duration_months,
-          monthlyPayment,
-          totalDue
-        );
-
-        for (const inst of installments) {
-          await client.query(
-            `INSERT INTO installments (credit_id, sequence, due_date, amount)
-             VALUES ($1, $2, $3, $4)`,
-            [credit.id, inst.sequence, inst.dueDate, inst.amount]
+        // Génération de l'échéancier — sauf pour un découvert, qui n'en
+        // a pas. La collecte des échéances ne prélève que sur un compte
+        // provisionné et marque « en retard » sinon : un découvert
+        // laissant le compte négatif par construction, chaque échéance
+        // serait tombée en retard tous les mois sans qu'un franc ne
+        // bouge. Sa récupération est le renflouement du compte, et son
+        // intérêt est prélevé mensuellement sur l'encours restant
+        // (runInteretsDecouvert).
+        if (!estDecouvert) {
+          const installments = buildInstallments(
+            new Date(),
+            credit.duration_months,
+            monthlyPayment,
+            totalDue
           );
+
+          for (const inst of installments) {
+            await client.query(
+              `INSERT INTO installments (credit_id, sequence, due_date, amount)
+               VALUES ($1, $2, $3, $4)`,
+              [credit.id, inst.sequence, inst.dueDate, inst.amount]
+            );
+          }
         }
 
         return { credit: updated[0], userId: credit.user_id, fraisPreleves: fraisApplique.amount };

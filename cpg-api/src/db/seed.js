@@ -102,6 +102,35 @@ async function seed() {
       [brouillon[0].id, gestionnaire.id]
     );
 
+    // Le découvert autorisé, en brouillon lui aussi — comme en
+    // production (migration 054), où fixer son taux et l'activer
+    // appartiennent au directeur. Il est repris ici parce que ce
+    // script TRUNCATE credit_products : sans cette ligne, un
+    // environnement de développement perdrait le produit créé par la
+    // migration, et plus rien ne permettrait de tester un découvert.
+    //
+    // 2,5 % et non les 5 % de la migration : ce script fixe le plafond
+    // réglementaire `credit_monthly` à 3 % pour les tests, là où la
+    // production est à 10 %. Un barème au-dessus du plafond ne pourrait
+    // plus être modifié depuis le catalogue.
+    const { rows: decouvert } = await client.query(
+      `INSERT INTO credit_products (code, name, description, status, nature, created_by)
+       VALUES ('DECOUVERT', 'Découvert autorisé',
+               'Débit autorisé sur le compte : le compte est débité du montant accordé au lieu '
+               || 'd''être crédité, et se renfloue au fil des versements.',
+               'brouillon', 'decouvert', $1)
+       RETURNING id`,
+      [gestionnaire.id]
+    );
+    await client.query(
+      `INSERT INTO product_versions
+         (product_id, version, monthly_rate, min_amount, max_amount, min_duration, max_duration,
+          file_fee_fixed, created_by, note)
+       VALUES ($1, 1, 0.0250, 10000, 500000, 1, 3, 0, $2,
+               'Barème initial — taux et bornes à confirmer par la direction avant activation')`,
+      [decouvert[0].id, gestionnaire.id]
+    );
+
     console.log('Création des services annexes et agios…');
     const services = [
       ['AGIOS_DECOUVERT', 'Agios sur solde débiteur',

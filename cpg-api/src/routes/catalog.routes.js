@@ -64,6 +64,11 @@ const createProductSchema = z.object({
   code: z.string().regex(/^[A-Z0-9_]{3,30}$/, 'Code en majuscules, chiffres et tirets bas.'),
   nom: z.string().min(3).max(120),
   description: z.string().max(500).optional(),
+  // Un decouvert suit le meme circuit qu'un credit ; seule sa
+  // recuperation differe (compte debite au lieu d'etre credite, pas
+  // d'echeancier). Par defaut on cree un credit : la nature est un
+  // choix explicite, jamais un effet de bord.
+  nature: z.enum(['credit', 'decouvert']).optional().default('credit'),
   bareme: scaleSchema,
 });
 
@@ -78,6 +83,7 @@ router.post(
         name: req.body.nom,
         description: req.body.description,
         scale: req.body.bareme,
+        nature: req.body.nature,
         actorId: req.user.id,
       });
 
@@ -85,7 +91,7 @@ router.post(
         action: 'catalogue.produit_cree',
         entityType: 'credit_product',
         entityId: result.product.id,
-        metadata: { code: req.body.code, taux: req.body.bareme.monthlyRate },
+        metadata: { code: req.body.code, nature: req.body.nature, taux: req.body.bareme.monthlyRate },
       });
 
       res.status(201).json({

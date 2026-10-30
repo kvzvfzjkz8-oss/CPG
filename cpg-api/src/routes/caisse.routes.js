@@ -10,6 +10,7 @@ import { audit } from '../services/auditService.js';
 import { appliquerFraisPonctuel } from '../services/feeService.js';
 import { genererBrouillardPDF } from '../services/brouillardService.js';
 import { balayerCaisses, cloturerCaisse, MONTANT_BASE_CAISSE } from '../services/clotureCaisseService.js';
+import { plafondNegatifAutorise } from '../services/decouvertService.js';
 import { fetchCoffres, transfererDepuisCoffre, cloturerCoffre, fetchCoffreClotures, fetchEcheancesAttendues, fetchCoffreParMois, fetchCoffreMouvements } from '../services/coffreService.js';
 import { genererHistoriquePDF } from '../services/historiqueService.js';
 
@@ -87,12 +88,22 @@ router.get(
       if (q.length < 2) return res.json({ resultats: [] });
 
       const { rows } = await query(
+        // Le decouvert autorise accompagne le solde : sans lui, la
+        // caissiere ne comprend pas qu'un retrait passe sur un compte
+        // negatif, ou refuse d'elle-meme un client qui en a le droit.
+        // `disponible` est ce qu'elle peut servir, limite comprise.
         `SELECT u.id, u.full_name, u.client_number, u.phone, b.balance,
+                COALESCE(dec.plafond, 0)::bigint AS decouvert_autorise,
+                (b.balance + COALESCE(dec.plafond, 0))::bigint AS disponible,
                 (u.full_name ILIKE $1 OR u.client_number ILIKE $1) AS exact,
                 word_similarity(unaccent($2), unaccent(u.full_name)) AS proximite
          FROM users u
          JOIN accounts a ON a.user_id = u.id
          JOIN account_balances b ON b.account_id = a.id
+         LEFT JOIN LATERAL (
+           SELECT SUM(montant) AS plafond FROM decouverts_autorisations_jour d
+           WHERE d.account_id = a.id
+         ) dec ON TRUE
          WHERE u.role = 'client'
            AND u.status <> 'supprime'
            AND (
@@ -507,15 +518,34 @@ router.post(
     try {
       const { justifie, fichier } = lireJustification(req);
       const { rows: client } = await query(
-        `SELECT b.balance FROM users u
+        `SELECT a.id AS account_id, b.balance FROM users u
          JOIN accounts a ON a.user_id = u.id
          JOIN account_balances b ON b.account_id = a.id
          WHERE u.id = $1 AND u.role = 'client'`,
         [req.body.clientId]
       );
       if (!client[0]) throw new ApiError(404, 'Client introuvable.');
-      if (client[0].balance < req.body.montant) {
-        throw new ApiError(422, 'Le solde du client est insuffisant pour ce retrait.');
+
+      // Un découvert autorisé est un droit à tirer en dessous de zéro :
+      // « le compte peut être en négatif, mais le quota autorisé peut
+      // faire en sorte que le client puisse toutefois prendre encore
+      // malgré son solde négatif » (direction, 30/10/2026). Le contrôle
+      // ne porte donc plus sur zéro mais sur cette limite, et le tirage
+      // peut se faire en une ou plusieurs fois.
+      //
+      // Sans autorisation, plafond = 0 et la règle est celle d'avant.
+      const plafond = await plafondNegatifAutorise(client[0].account_id);
+      const disponible = Number(client[0].balance) + plafond;
+
+      if (disponible < req.body.montant) {
+        throw new ApiError(
+          422,
+          plafond > 0
+            ? `Ce client dispose de ${disponible} FCFA — solde de ${client[0].balance} FCFA `
+              + `et découvert autorisé de ${plafond} FCFA. Le retrait de ${req.body.montant} FCFA `
+              + 'dépasserait son autorisation.'
+            : 'Le solde du client est insuffisant pour ce retrait.'
+        );
       }
 
       const { rows } = await query(
@@ -840,8 +870,20 @@ async function validerUneOperation({ operationId, userId }) {
         [operation.client_id]
       );
       if (!compte[0]) throw new ApiError(404, 'Compte du client introuvable.');
-      if (compte[0].balance < operation.montant) {
-        throw new ApiError(422, 'Le solde du client ne couvre plus ce retrait — à rejeter.');
+
+      // Même règle qu'au dépôt de la demande, et c'est essentiel que
+      // les deux soient d'accord : un retrait accepté au guichet puis
+      // refusé à la validation ferait revenir le client pour rien. Le
+      // solde a pu bouger entre-temps, d'où le recontrôle.
+      const plafondClient = await plafondNegatifAutorise(compte[0].account_id, client);
+      if (Number(compte[0].balance) + plafondClient < Number(operation.montant)) {
+        throw new ApiError(
+          422,
+          plafondClient > 0
+            ? `Le solde du client (${compte[0].balance} FCFA) et son découvert autorisé `
+              + `(${plafondClient} FCFA) ne couvrent plus ce retrait — à rejeter.`
+            : 'Le solde du client ne couvre plus ce retrait — à rejeter.'
+        );
       }
 
       const { rows: entry } = await client.query(

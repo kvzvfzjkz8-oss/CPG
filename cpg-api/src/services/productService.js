@@ -33,7 +33,7 @@ export async function listActiveProducts() {
 /** Catalogue complet, y compris brouillons et suspendus. */
 export async function listAllProducts() {
   const { rows } = await query(
-    `SELECT p.id, p.code, p.name, p.description, p.status, p.created_at, p.activated_at,
+    `SELECT p.id, p.code, p.name, p.description, p.status, p.nature, p.created_at, p.activated_at,
             v.id AS version_id, v.version, v.monthly_rate, v.min_amount, v.max_amount,
             v.min_duration, v.max_duration, v.file_fee_fixed, v.file_fee_rate,
             v.late_penalty_rate, v.effective_from
@@ -63,16 +63,21 @@ export async function getProductHistory(productId) {
  * Le produit naît en brouillon : il faut une activation explicite par
  * le directeur pour qu'il soit proposé aux clients.
  */
-export async function createProduct({ code, name, description, scale, actorId }) {
+export async function createProduct({ code, name, description, scale, nature = 'credit', actorId }) {
   const ceiling = await getCeiling('credit_monthly');
   validateProductScale(scale, ceiling);
 
   return withTransaction(async (client) => {
     const { rows: product } = await client.query(
-      `INSERT INTO credit_products (code, name, description, status, created_by)
-       VALUES ($1, $2, $3, 'brouillon', $4)
-       RETURNING id, code, name, status`,
-      [code, name, description ?? null, actorId]
+      // `nature` decide de tout le comportement a l'octroi : un credit
+      // credite le compte et s'amortit par echeances, un decouvert le
+      // debite et se renfloue de lui-meme. Elle est fixee a la creation
+      // et ne change plus — un produit qui changerait de nature
+      // rendrait incomprehensibles les dossiers deja accordes.
+      `INSERT INTO credit_products (code, name, description, status, nature, created_by)
+       VALUES ($1, $2, $3, 'brouillon', $4, $5)
+       RETURNING id, code, name, status, nature`,
+      [code, name, description ?? null, nature, actorId]
     );
 
     const { rows: version } = await client.query(

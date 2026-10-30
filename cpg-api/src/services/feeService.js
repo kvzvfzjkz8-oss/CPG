@@ -2,6 +2,7 @@ import { query, withTransaction } from '../db/index.js';
 import { computeFee, computeAgios, buildDailyBalances } from './feeCalculator.js';
 import { classifyRateChange, RateError } from '../utils/rateVersioning.js';
 import { getCeiling } from './productService.js';
+import { autorisationsDecouvert, neutraliserDecouvertAutorise } from './decouvertService.js';
 
 /**
  * ═══════════════════════════════════════════════════════════════════
@@ -260,7 +261,19 @@ export async function runAgiosForAccount({
     periodEnd
   );
 
-  const result = computeAgios(dailyBalances, {
+  // Un découvert AUTORISÉ n'est pas un solde débiteur : il porte
+  // l'intérêt de son produit, pas les agios. Sans cette neutralisation,
+  // le client paierait deux fois le même négatif — l'intérêt mensuel du
+  // découvert et les 5 000 F du solde débiteur. Décision du 30/10/2026.
+  //
+  // Le dépassement, lui, reste un découvert subi : la part du négatif
+  // qui excède l'autorisation continue de porter les agios.
+  const soldesAgios = neutraliserDecouvertAutorise(
+    dailyBalances,
+    await autorisationsDecouvert(accountId)
+  );
+
+  const result = computeAgios(soldesAgios, {
     rate: Number(feeVersion.rate),
     minAmount: Number(feeVersion.min_amount ?? 0),
     maxAmount: feeVersion.max_amount === null ? null : Number(feeVersion.max_amount),
@@ -498,7 +511,9 @@ export async function runTenueCompteBatch({ periodStart, periodEnd }) {
  * sans l'autre. Sans client fourni, ouvre sa propre transaction (usage
  * autonome, ex. lors d'un retrait au guichet).
  */
-export async function applyTriggeredFee({ accountId, triggerOn, operationAmount, client: externalClient }) {
+export async function applyTriggeredFee({
+  accountId, triggerOn, operationAmount, reference = null, client: externalClient,
+}) {
   const runner = externalClient ?? { query: query };
 
   const { rows } = await runner.query(
@@ -523,10 +538,14 @@ export async function applyTriggeredFee({ accountId, triggerOn, operationAmount,
   if (amount <= 0) return { amount: 0 };
 
   const apply = async (client) => {
+    // `reference` est facultative et sert à rattacher le frais à ce qui
+    // l'a déclenché. Indispensable pour un découvert : c'est par la
+    // référence que les agios reconnaissent ce que le découvert a mis
+    // sur le compte, et ce qui, au-delà, est un dépassement du client.
     const { rows: entry } = await client.query(
-      `INSERT INTO ledger_entries (account_id, type, amount, label)
-       VALUES ($1, 'frais', $2, $3) RETURNING id`,
-      [accountId, -amount, version.name]
+      `INSERT INTO ledger_entries (account_id, type, amount, label, reference)
+       VALUES ($1, 'frais', $2, $3, $4) RETURNING id`,
+      [accountId, -amount, version.name, reference]
     );
 
     await client.query(

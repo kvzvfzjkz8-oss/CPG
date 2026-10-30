@@ -18,6 +18,7 @@ import {
   fetchMonthInstallments, collectInstallments, fetchClientsDouteux,
 } from '../services/operationsService.js';
 import { previewFraisPonctuel } from '../services/feeService.js';
+import { fetchDecouvertsEnCours, runInteretsDecouvert } from '../services/decouvertService.js';
 import {
   fetchRegleEnVigueur, fetchHistoriqueRegles, definirRegle, retirerRegle,
   calculerSolde, soldeParAnticipation,
@@ -681,6 +682,61 @@ router.post(
 /* ═══════════════════════════════════════════════════════════════════
    PRÉLÈVEMENT DES ÉCHÉANCES DE CRÉDIT
    ═══════════════════════════════════════════════════════════════════ */
+
+/**
+ * GET /admin/operations/decouverts — les découverts autorisés en cours.
+ *
+ * Un découvert n'a pas d'échéancier : il n'apparaît donc dans aucun des
+ * écrans d'échéances. C'est ici qu'on le suit — encours réel, intérêt
+ * du mois à venir, dépassement éventuel, et autorisation échue.
+ */
+router.get(
+  '/decouverts',
+  requirePermission('operations.lire'),
+  async (req, res, next) => {
+    try {
+      const decouverts = await fetchDecouvertsEnCours();
+      res.json({
+        decouverts,
+        encoursTotal: decouverts.reduce((s, d) => s + d.encours, 0),
+        autoriseTotal: decouverts.reduce((s, d) => s + d.montantAutorise, 0),
+        depassements: decouverts.filter((d) => d.depassement > 0).length,
+        echus: decouverts.filter((d) => d.echu).length,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /admin/operations/decouverts/interets — relance à la main le
+ * prélèvement mensuel des intérêts de découvert.
+ *
+ * La tâche planifiée le fait le 30 de chaque mois ; cette route sert
+ * quand elle a échoué ou que le serveur était arrêté. Le service refuse
+ * de prélever deux fois le même mois, donc une relance est sans danger.
+ */
+router.post(
+  '/decouverts/interets',
+  requirePermission('operations.executer_echeances'),
+  async (req, res, next) => {
+    try {
+      const result = await runInteretsDecouvert({ actorId: req.user.id });
+
+      await audit(req, {
+        action: 'operations.interets_decouvert_preleves',
+        entityType: 'periode',
+        entityId: result.periode,
+        metadata: { total: result.total, soldes: result.soldes, echecs: result.echecs },
+      });
+
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 /** POST /admin/operations/echeances/executer — prélève les échéances arrivées à terme. */
 router.post(

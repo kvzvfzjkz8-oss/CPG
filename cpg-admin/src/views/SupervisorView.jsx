@@ -599,6 +599,13 @@ function SimulationPanel() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
+  // Un produit de nature « decouvert » ne se lit pas comme un crédit :
+  // le compte sera DÉBITÉ et non crédité, et il n'y aura pas
+  // d'échéancier. L'écran doit le dire avant la simulation, sinon le
+  // gestionnaire propose au client l'inverse de ce qui va se passer.
+  const produitChoisi = products.find((p) => p.id === productId);
+  const estDecouvert = produitChoisi?.nature === 'decouvert';
+
   useEffect(() => {
     fetchProducts().then((list) => {
       setProducts(list.filter((p) => p.status === 'actif'));
@@ -639,9 +646,30 @@ function SimulationPanel() {
           >
             <option value="">Barème par défaut (générique)</option>
             {products.map((p) => (
-              <option key={p.id} value={p.id}>{p.name}</option>
+              <option key={p.id} value={p.id}>
+                {p.name}{p.nature === 'decouvert' ? ' — découvert' : ''}
+              </option>
             ))}
           </select>
+
+          {estDecouvert && (
+            <div style={{
+              background: colors.goldPale, border: `1px solid ${colors.gold}`, borderRadius: 10,
+              padding: '10px 12px', margin: '0 0 14px',
+            }}>
+              <p style={{ margin: 0, fontSize: 11, fontWeight: 700, color: colors.goldDark, fontFamily: fonts.body }}>
+                Découvert autorisé — un droit à débit, pas un versement
+              </p>
+              <p style={{ margin: '4px 0 0', fontSize: 11, color: colors.goldDark, fontFamily: fonts.body, lineHeight: 1.5 }}>
+                L'approbation ne crédite pas le compte : elle ouvre une autorisation. Le client
+                retire ensuite au guichet, en une ou plusieurs fois, et c'est le retrait qui met son
+                compte en négatif — jusqu'à la limite accordée, même si le solde est déjà négatif.
+                Il n'y a pas d'échéancier : le découvert se rembourse à mesure que le compte se
+                renfloue, et l'intérêt du mois porte sur ce qui reste à découvert. La mensualité et
+                le total dû ci-contre sont donc indicatifs, ce ne sont pas des échéances.
+              </p>
+            </div>
+          )}
 
           <label style={{ fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>Montant demandé (FCFA)</label>
           <input
@@ -710,6 +738,19 @@ function SimulationPanel() {
               </div>
             ))}
           </div>
+
+          {estDecouvert && (
+            <p style={{
+              margin: '16px 0 0', fontSize: 11, color: colors.goldDark, fontFamily: fonts.body,
+              background: colors.goldPale, border: `1px solid ${colors.gold}`, borderRadius: 10,
+              padding: '10px 12px', lineHeight: 1.5,
+            }}>
+              Produit de type découvert : « Mensualité » doit se lire comme l'intérêt du premier
+              mois si l'autorisation est tirée en entier — il décroîtra ensuite avec l'encours.
+              « Net reçu par le client » est le montant qu'il pourra retirer au guichet. Aucune
+              échéance ne sera créée.
+            </p>
+          )}
 
           <p style={{ margin: '16px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body, fontStyle: 'italic' }}>
             {result.avertissement}

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   Upload, ShieldCheck, CalendarClock, FileWarning, Check, X, Undo2, Search, Pencil, Clock, Trash2,
+  TrendingDown,
 } from 'lucide-react';
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, Tabs, SectionTitle } from '../components/UI';
@@ -10,6 +11,7 @@ import {
   reverseLedgerTransaction, fetchInstallmentsByReference, proposeInstallmentAdjustment,
   fetchSchedulerStatus, runAgiosBatch, fetchCompteAgios, runTenueCompteBatch, fetchCompteTenue,
   fetchCreditRequests, supprimerCreditActif,
+  fetchDecouverts, preleverInteretsDecouvert,
 } from '../api/adminApi';
 import { useAuth } from '../auth/AuthContext';
 
@@ -41,6 +43,7 @@ function pct(n) {
 const TYPE_LABELS = {
   salaire: 'Salaire', paiement_credit: 'Échéance crédit', deblocage_credit: 'Déblocage crédit',
   frais: 'Agios / frais', depot: 'Dépôt', retrait: 'Retrait', ajustement: 'Ajustement', annulation: 'Annulation',
+  decouvert: 'Découvert autorisé',
 };
 
 export default function OperationsView() {
@@ -55,11 +58,13 @@ export default function OperationsView() {
           { key: 'paie', label: 'Paie des agents', icon: Upload },
           { key: 'verification', label: 'Vérification', icon: ShieldCheck },
           { key: 'echeances', label: 'Corriger une échéance', icon: CalendarClock },
+          { key: 'decouverts', label: 'Découverts', icon: TrendingDown },
         ]}
       />
       {tab === 'paie' && <PayrollImport />}
       {tab === 'verification' && <Verification />}
       {tab === 'echeances' && <InstallmentCorrection />}
+      {tab === 'decouverts' && <DecouvertsPanel />}
     </div>
   );
 }
@@ -134,6 +139,160 @@ function ChampAgent({ valeur, onChange }) {
 /* ═══════════════════════════════════════════════════════════════════
    PAIE DES AGENTS — import en deux temps
    ═══════════════════════════════════════════════════════════════════ */
+
+
+/**
+ * Les découverts autorisés en cours.
+ *
+ * Un découvert n'a pas d'échéancier : il n'apparaît donc dans aucun
+ * écran d'échéances, ni dans la vérification mensuelle. Sans cet
+ * onglet, un découvert serait invisible entre son octroi et son
+ * extinction.
+ *
+ * L'encours affiché n'est pas une colonne en base : c'est le négatif du
+ * compte, plafonné à l'autorisation. Le dépassement, lui, est la part
+ * du négatif que le découvert ne couvre pas — elle porte les agios.
+ */
+function DecouvertsPanel() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [erreur, setErreur] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [resultat, setResultat] = useState(null);
+
+  const load = () => {
+    setLoading(true);
+    setErreur('');
+    fetchDecouverts()
+      .then(setData)
+      .catch((e) => setErreur(e.message || 'Chargement impossible.'))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const relancer = () => {
+    setBusy(true);
+    setErreur('');
+    setResultat(null);
+    preleverInteretsDecouvert()
+      .then((r) => { setResultat(r); load(); })
+      .catch((e) => setErreur(e.message || 'Prélèvement impossible.'))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <Card style={{ padding: 0, overflow: 'hidden' }}>
+      <SectionTitle
+        right={
+          <button
+            onClick={relancer}
+            disabled={busy}
+            style={{
+              border: `1px solid ${colors.forest}`, background: 'transparent', borderRadius: 8,
+              padding: '6px 12px', fontSize: 11, fontWeight: 600, color: colors.forest,
+              fontFamily: fonts.body, cursor: busy ? 'default' : 'pointer',
+            }}
+          >
+            {busy ? 'Prélèvement…' : 'Prélever les intérêts du mois'}
+          </button>
+        }
+      >
+        Découverts autorisés en cours
+      </SectionTitle>
+
+      <p style={{ margin: 0, padding: '10px 20px', fontSize: 11, color: colors.muted, fontFamily: fonts.body, borderBottom: `1px solid ${colors.line}` }}>
+        L'approbation ouvre une autorisation de débit : le client retire au guichet, en une ou
+        plusieurs fois, jusqu'à la limite accordée. Il n'y a pas d'échéancier — l'intérêt du mois
+        est prélevé le 30 sur le montant encore à découvert, et le dossier est soldé dès que le
+        compte repasse à zéro. Une relance ne prélève jamais deux fois le même mois.
+      </p>
+
+      {erreur && (
+        <div style={{ padding: '12px 20px', borderBottom: `1px solid ${colors.line}` }}>
+          <p style={{ margin: 0, fontSize: 12, color: colors.danger, fontFamily: fonts.body }}>{erreur}</p>
+          <button
+            onClick={load}
+            style={{ marginTop: 6, border: 'none', background: 'transparent', cursor: 'pointer', color: colors.forest, fontSize: 12, fontWeight: 600, fontFamily: fonts.body, textDecoration: 'underline', padding: 0 }}
+          >
+            Réessayer
+          </button>
+        </div>
+      )}
+
+      {resultat && (
+        <p style={{ margin: 0, padding: '12px 20px', fontSize: 12, color: colors.forest, fontFamily: fonts.body, background: colors.forestPale, borderBottom: `1px solid ${colors.line}` }}>
+          {formatFCFA(resultat.total)} F d'intérêts prélevés sur {resultat.periode}
+          {resultat.soldes > 0 && ` · ${resultat.soldes} découvert(s) soldé(s)`}
+          {resultat.echecs > 0 && ` · ${resultat.echecs} en échec`}.
+        </p>
+      )}
+
+      {loading && (
+        <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
+          Chargement…
+        </p>
+      )}
+
+      {!loading && !erreur && data && (
+        <>
+          <div style={{ display: 'flex', gap: 24, padding: '14px 20px', borderBottom: `1px solid ${colors.line}` }}>
+            {[
+              ['Encours total', `${formatFCFA(data.encoursTotal)} F`, colors.ink],
+              ['Autorisé', `${formatFCFA(data.autoriseTotal)} F`, colors.muted],
+              ['Dépassements', String(data.depassements), data.depassements > 0 ? colors.danger : colors.muted],
+              ['Autorisations échues', String(data.echus), data.echus > 0 ? colors.danger : colors.muted],
+            ].map(([l, v, c]) => (
+              <div key={l}>
+                <p style={{ margin: 0, fontSize: 10, color: colors.muted, fontFamily: fonts.body, textTransform: 'uppercase', letterSpacing: 0.4 }}>{l}</p>
+                <p style={{ margin: '3px 0 0', fontSize: 15, fontWeight: 700, color: c, fontFamily: fonts.mono }}>{v}</p>
+              </div>
+            ))}
+          </div>
+
+          {data.decouverts.length === 0 ? (
+            <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
+              Aucun découvert en cours.
+            </p>
+          ) : (
+            data.decouverts.map((d) => (
+              <div key={d.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: '12px 20px', borderBottom: `1px solid ${colors.line}` }}>
+                <div style={{ minWidth: 0 }}>
+                  <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>
+                    {d.client}
+                    {d.numeroClient && (
+                      <span style={{ color: colors.muted, fontFamily: fonts.mono, fontSize: 11 }}> · {d.numeroClient}</span>
+                    )}
+                  </p>
+                  <p style={{ margin: '2px 0 0', fontSize: 10, color: colors.muted, fontFamily: fonts.body }}>
+                    {d.reference} · autorisé {formatFCFA(d.montantAutorise)} F sur {d.dureeMois} mois
+                    {' · '}intérêt du mois ≈ {formatFCFA(Math.round(d.encours * d.tauxMensuel))} F
+                    {!d.tire && ' · pas encore tiré'}
+                  </p>
+                  {(d.depassement > 0 || d.echu) && (
+                    <p style={{ margin: '3px 0 0', fontSize: 10, color: colors.danger, fontFamily: fonts.body, fontWeight: 600 }}>
+                      {d.depassement > 0 && `Dépassement de ${formatFCFA(d.depassement)} F — cette part porte les agios`}
+                      {d.depassement > 0 && d.echu && ' · '}
+                      {d.echu && 'Autorisation échue'}
+                    </p>
+                  )}
+                </div>
+                <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                  <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.mono }}>
+                    {formatFCFA(d.encours)} F
+                  </p>
+                  <p style={{ margin: '2px 0 0', fontSize: 10, color: colors.muted, fontFamily: fonts.body }}>
+                    solde du compte {formatFCFA(d.solde)} F
+                  </p>
+                </div>
+              </div>
+            ))
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
 
 function PayrollImport() {
   const [step, setStep] = useState('form'); // form | apercu | confirme

@@ -391,6 +391,7 @@ export async function fetchCommissionQueue({ sessionId }) {
               SUM(x.en_retard)::int en_retard,
               json_agg(json_build_object(
                 'reference', x.reference,
+                'nature', x.nature,
                 'montant', x.montant,
                 'mensualite', x.mensualite,
                 'echeances_payees', x.payees,
@@ -399,14 +400,24 @@ export async function fetchCommissionQueue({ sessionId }) {
                 'en_retard', x.en_retard
               ) ORDER BY x.reference) details
        FROM (
-         SELECT ac.reference, ac.amount montant, COALESCE(ac.monthly_payment, 0) mensualite,
+         SELECT ac.reference, p.nature, ac.amount montant, COALESCE(ac.monthly_payment, 0) mensualite,
                 (SELECT count(*)::int FROM installments i WHERE i.credit_id = ac.id AND i.status = 'payee') payees,
                 (SELECT count(*)::int FROM installments i WHERE i.credit_id = ac.id) total,
-                COALESCE((SELECT SUM(i.amount) FROM installments i
-                          WHERE i.credit_id = ac.id AND i.status <> 'payee'), 0) reste,
+                -- Un decouvert n'a pas d'echeancier : son reste du est le
+                -- negatif du compte, plafonne a l'autorisation. Sans ce
+                -- CASE, la somme des echeances impayees valait 0 et le
+                -- comite lisait « 1 credit en cours, reste a payer 0 F »
+                -- pour un client qui devait encore tout son decouvert.
+                CASE WHEN p.nature = 'decouvert'
+                     THEN LEAST(ac.amount, GREATEST(0, -COALESCE(b.balance, 0)))
+                     ELSE COALESCE((SELECT SUM(i.amount) FROM installments i
+                                    WHERE i.credit_id = ac.id AND i.status <> 'payee'), 0)
+                END reste,
                 (SELECT count(*)::int FROM installments i
                  WHERE i.credit_id = ac.id AND i.status = 'en_retard') en_retard
          FROM credit_requests ac
+         JOIN product_versions pv ON pv.id = ac.product_version_id
+         JOIN credit_products p ON p.id = pv.product_id
          WHERE ac.user_id = u.id AND ac.status = 'approuve'
        ) x
      ) enc ON TRUE

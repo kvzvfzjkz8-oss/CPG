@@ -440,7 +440,16 @@ function OperationForm({ type, onCancel, onDone }) {
                   }}
                 >
                   <span style={{ fontSize: 13, color: colors.ink, fontFamily: fonts.body }}>{r.full_name}</span>
-                  <span style={{ fontSize: 12, fontFamily: fonts.mono, color: colors.muted }}>{formatFCFA(r.balance)} F</span>
+                  <span style={{ textAlign: 'right' }}>
+                    <span style={{ display: 'block', fontSize: 12, fontFamily: fonts.mono, color: r.balance < 0 ? colors.danger : colors.muted }}>
+                      {formatFCFA(r.balance)} F
+                    </span>
+                    {Number(r.decouvert_autorise) > 0 && (
+                      <span style={{ display: 'block', fontSize: 10, fontFamily: fonts.body, color: colors.goldDark }}>
+                        + {formatFCFA(r.decouvert_autorise)} F autorisés
+                      </span>
+                    )}
+                  </span>
                 </button>
               ))}
             </div>
@@ -455,6 +464,16 @@ function OperationForm({ type, onCancel, onDone }) {
               <div>
                 <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: colors.forest, fontFamily: fonts.body }}>{client.full_name}</p>
                 <p style={{ margin: 0, fontSize: 11, color: colors.forestLight, fontFamily: fonts.body }}>{client.client_number} · Solde : {formatFCFA(client.balance)} F</p>
+                {/* Un decouvert autorise permet de servir un client dont
+                    le compte est deja negatif. Sans cette ligne, la
+                    caissiere croirait a une erreur du logiciel — ou
+                    refuserait d'elle-meme un client qui en a le droit. */}
+                {Number(client.decouvert_autorise) > 0 && (
+                  <p style={{ margin: '3px 0 0', fontSize: 11, fontWeight: 600, color: colors.goldDark, fontFamily: fonts.body }}>
+                    Découvert autorisé de {formatFCFA(client.decouvert_autorise)} F —
+                    disponible : {formatFCFA(client.disponible)} F
+                  </p>
+                )}
               </div>
               <button type="button" onClick={() => setClient(null)} style={{ border: 'none', background: 'transparent', color: colors.forestLight, fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: fonts.body }}>
                 Changer
