@@ -246,6 +246,134 @@ export async function fetchCoffreParMois(coffre) {
 }
 
 /**
+ * Le détail ligne à ligne d'un coffre — « j'aimerais que dans l'onglet
+ * coffre, pour ce qui est des remboursements collectés, tu puisses
+ * détailler les remboursements lorsqu'on clique sur le chiffre ».
+ *
+ * fetchCoffreParMois() donne la répartition par mois ; ici on descend
+ * d'un cran : qui a payé, combien, quand, sur quel crédit et quelle
+ * échéance. Sans ce niveau, un total de plusieurs millions ne se
+ * vérifie pas — il se croit.
+ *
+ * `mois` est facultatif : absent, on liste toute la période depuis la
+ * dernière clôture du coffre, le plus récent en premier.
+ *
+ * Toutes les écritures ne sont pas rattachables à une échéance : au
+ * 27/10/2026, 79 des 210 remboursements le sont. Les autres viennent
+ * des crédits repris du fichier d'import, dont les échéances n'ont
+ * jamais existé dans le logiciel. On les affiche quand même, avec leur
+ * libellé — les taire ferait un détail dont la somme ne tombe pas sur
+ * le total.
+ */
+export async function fetchCoffreMouvements(coffre, { mois, limite = 300 } = {}) {
+  if (!TYPES_VALIDES.includes(coffre)) {
+    throw new ApiError(422, 'Coffre invalide.');
+  }
+  if (mois && !/^\d{4}-\d{2}$/.test(mois)) {
+    throw new ApiError(422, 'Mois invalide (format attendu : AAAA-MM).');
+  }
+  const depuis = await dernierePeriodeDebut(query, coffre);
+
+  let rows;
+  if (coffre === 'remboursements') {
+    // -le.amount pour la meme raison que dans totalCollecte() : un
+    // paiement_credit est un debit chez le client, donc une entree vue
+    // du coffre.
+    ({ rows } = await query(
+      // Une ligne par ECRITURE, jamais par echeance : un meme
+      // prelevement peut couvrir plusieurs echeances d'un client (c'est
+      // ce que fait l'operateur quand il en coche deux), et une
+      // jointure directe dupliquait alors l'ecriture. Le detail
+      // totalisait 5 645 902 F la ou le coffre en comptait 3 826 102 —
+      // un ecran de verification qui invente 1 819 800 F ne verifie
+      // plus rien. D'ou les sous-requetes scalaires : elles decrivent
+      // l'ecriture sans la multiplier.
+      `SELECT le.id, le.created_at, (-le.amount)::bigint AS montant, le.label,
+              btrim(u.full_name) AS client, u.client_number,
+              (SELECT string_agg(DISTINCT cr.reference, ', ')
+                 FROM installments i
+                 JOIN credit_requests cr ON cr.id = i.credit_id
+                WHERE i.ledger_entry_id = le.id) AS credit,
+              (SELECT string_agg(i.sequence::text, ', ' ORDER BY i.sequence)
+                 FROM installments i
+                WHERE i.ledger_entry_id = le.id) AS echeances
+       FROM ledger_entries le
+       JOIN accounts a ON a.id = le.account_id
+       JOIN users u ON u.id = a.user_id
+       WHERE le.type = 'paiement_credit'
+         AND ($1::timestamptz IS NULL OR le.created_at > $1)
+         AND ($2::text IS NULL OR to_char(le.created_at, 'YYYY-MM') = $2)
+       ORDER BY le.created_at DESC
+       LIMIT $3`,
+      [depuis, mois ?? null, limite]
+    ));
+  } else {
+    const codes = coffre === 'frais_dossier' ? [CODE_FRAIS_DOSSIER] : CODES_FRAIS_AGIOS;
+    ({ rows } = await query(
+      `SELECT af.id, af.created_at, af.amount::bigint AS montant,
+              f.code AS label,
+              btrim(u.full_name) AS client, u.client_number,
+              NULL::text AS credit, NULL::text AS echeances
+       FROM applied_fees af
+       JOIN fee_versions fv ON fv.id = af.fee_version_id
+       JOIN fee_definitions f ON f.id = fv.fee_id
+       JOIN accounts a ON a.id = af.account_id
+       JOIN users u ON u.id = a.user_id
+       WHERE f.code = ANY($1::text[])
+         AND ($2::timestamptz IS NULL OR af.created_at > $2)
+         AND ($3::text IS NULL OR to_char(af.created_at, 'YYYY-MM') = $3)
+       ORDER BY af.created_at DESC
+       LIMIT $4`,
+      [codes, depuis, mois ?? null, limite]
+    ));
+  }
+
+  // Le total porte sur TOUTE la periode demandee, pas sur les lignes
+  // renvoyees : au-dela de la limite, le detail est tronque mais la
+  // somme affichee reste la vraie. L'ecran le dit a l'utilisateur.
+  const { rows: somme } = coffre === 'remboursements'
+    ? await query(
+      `SELECT COALESCE(SUM(-amount), 0) AS total, count(*)::int AS nombre
+       FROM ledger_entries
+       WHERE type = 'paiement_credit'
+         AND ($1::timestamptz IS NULL OR created_at > $1)
+         AND ($2::text IS NULL OR to_char(created_at, 'YYYY-MM') = $2)`,
+      [depuis, mois ?? null]
+    )
+    : await query(
+      `SELECT COALESCE(SUM(af.amount), 0) AS total, count(*)::int AS nombre
+       FROM applied_fees af
+       JOIN fee_versions fv ON fv.id = af.fee_version_id
+       JOIN fee_definitions f ON f.id = fv.fee_id
+       WHERE f.code = ANY($1::text[])
+         AND ($2::timestamptz IS NULL OR af.created_at > $2)
+         AND ($3::text IS NULL OR to_char(af.created_at, 'YYYY-MM') = $3)`,
+      [coffre === 'frais_dossier' ? [CODE_FRAIS_DOSSIER] : CODES_FRAIS_AGIOS, depuis, mois ?? null]
+    );
+
+  return {
+    coffre,
+    mois: mois ?? null,
+    periodeDepuis: depuis,
+    total: Number(somme[0].total),
+    nombre: somme[0].nombre,
+    tronque: somme[0].nombre > rows.length,
+    mouvements: rows.map((r) => ({
+      id: r.id,
+      date: r.created_at,
+      montant: Number(r.montant),
+      libelle: r.label,
+      client: r.client,
+      numeroClient: r.client_number,
+      credit: r.credit,
+      // Les echeances couvertes par cette ecriture, en texte : « 1 » le
+      // plus souvent, « 1, 2 » quand un prelevement en a soldé deux.
+      echeances: r.echeances,
+    })),
+  };
+}
+
+/**
  * Montant attendu sur les échéances de crédit pas encore prélevées
  * pour un mois donné — sert à mettre en regard, dans le coffre
  * « Remboursements », ce qui a déjà été encaissé et ce qui reste

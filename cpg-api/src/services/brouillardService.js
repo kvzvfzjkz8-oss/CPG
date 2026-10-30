@@ -66,6 +66,48 @@ const horsCaisse = (op) =>
   || op.type === 'frais_ponctuel';
 
 /**
+ * L'arithmetique du brouillard, isolee du dessin : solde courant ligne
+ * a ligne, solde de cloture, total Mobile Money. Elle est a part parce
+ * qu'elle se verifie — un PDF ne se relit pas en test, un nombre si.
+ *
+ * Le solde de cloture qu'elle renvoie doit etre EGAL au solde que la
+ * vue caisse_soldes donne a la meme caissiere en fin de journee. Si les
+ * deux divergent, c'est le brouillard qui ment au directeur, et c'est
+ * exactement ce qui s'est produit au 23/10/2026.
+ */
+export function calculerBrouillard({ soldeOuverture, operations }) {
+  let solde = Number(soldeOuverture);
+  const lignes = [['—', 'Solde d\'ouverture', '', '', '', formatFCFA(solde)]];
+  let totalMobileMoney = 0;
+  operations.forEach((op) => {
+    const signe = ENTREE.has(op.type) ? 1 : -1;
+    // montant est un bigint : pg le renvoie en CHAINE. `solde += signe *
+    // op.montant` s'en sortait par la multiplication, mais une addition
+    // directe concatene — le total Mobile Money serait devenu
+    // « 0383500214500 ». Un seul endroit ou convertir, ici.
+    const montant = Number(op.montant);
+    if (sortMobileMoney(op)) totalMobileMoney += montant;
+    else if (!horsCaisse(op)) solde += signe * montant;
+    const heure = new Date(op.decidee_le ?? op.demandee_le).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    // Une depense ou un reapprovisionnement n'a pas de client : plutot
+    // qu'une case vide, on y met le motif, qui dit a quoi l'argent a
+    // servi. Sinon le brouillard laisse des sorties inexpliquees.
+    const tiers = op.client
+      ? tronquer(op.client, 26)
+      : tronquer(op.motif ?? '—', 26);
+    lignes.push([
+      heure,
+      tronquer(LABELS[op.type] ?? op.type, 20),
+      tiers,
+      op.client_number ?? '',
+      `${signe > 0 ? '+' : '-'}${formatFCFA(montant)}`,
+      sortMobileMoney(op) ? `(${op.mode_paiement})` : horsCaisse(op) ? '(CPG)' : formatFCFA(solde),
+    ]);
+  });
+  return { lignes, soldeCloture: solde, totalMobileMoney };
+}
+
+/**
  * Brouillard de caisse — relevé quotidien d'une caissière : solde
  * d'ouverture, chaque opération validée de la journée avec le solde
  * courant après chacune, solde de clôture. Un seul document par
@@ -87,30 +129,9 @@ export function genererBrouillardPDF({ caissiere, date, soldeOuverture, operatio
     .font('Helvetica').text(`     ${formatDateFr(date)}`, { align: 'right' });
   doc.moveDown(1.2);
 
-  let solde = soldeOuverture;
-  const lignes = [['—', 'Solde d\'ouverture', '', '', '', formatFCFA(solde)]];
-  let totalMobileMoney = 0;
-  operations.forEach((op) => {
-    const signe = ENTREE.has(op.type) ? 1 : -1;
-    if (sortMobileMoney(op)) totalMobileMoney += op.montant;
-    else if (!horsCaisse(op)) solde += signe * op.montant;
-    const heure = new Date(op.decidee_le ?? op.demandee_le).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
-    // Une depense ou un reapprovisionnement n'a pas de client : plutot
-    // qu'une case vide, on y met le motif, qui dit a quoi l'argent a
-    // servi. Sinon le brouillard laisse des sorties inexpliquees.
-    const tiers = op.client
-      ? tronquer(op.client, 26)
-      : tronquer(op.motif ?? '—', 26);
-    lignes.push([
-      heure,
-      tronquer(LABELS[op.type] ?? op.type, 20),
-      tiers,
-      op.client_number ?? '',
-      `${signe > 0 ? '+' : '-'}${formatFCFA(op.montant)}`,
-      sortMobileMoney(op) ? `(${op.mode_paiement})` : horsCaisse(op) ? '(CPG)' : formatFCFA(solde),
-    ]);
+  const { lignes, soldeCloture, totalMobileMoney } = calculerBrouillard({
+    soldeOuverture, operations,
   });
-  const soldeCloture = solde;
 
   const tableTop = doc.y;
   const cols = [

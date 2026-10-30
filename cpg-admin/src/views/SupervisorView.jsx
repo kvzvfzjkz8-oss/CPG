@@ -20,6 +20,7 @@ import {
   supprimerCreditDoubleValidation,
   fetchDemandesCaisseEnAttente, validerOperationCaisse, validerOperationsCaisseEnLot, rejeterOperationCaisse,
   fetchAuditLog, fetchCaissePrincipale, alimenterCaissePrincipale, fetchToutesLesCaisses,
+  renvoyerExcedentsCaisse,
   fetchComptesSoldes, zeroOutAccountBalances,
   simulateCredit, fetchProducts, creerDemandePourClient, searchClientPourDemande,
   fetchCreditApprouvePourClient, ouvrirContratCredit, ouvrirBrouillardCaisse, ouvrirJustificatifCaisse,
@@ -943,35 +944,117 @@ function CaissePrincipalePanel() {
 function CaissesCaissiersPanel() {
   const [caisses, setCaisses] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [erreur, setErreur] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [resultat, setResultat] = useState(null);
 
   const load = () => {
     setLoading(true);
-    fetchToutesLesCaisses().then(setCaisses).finally(() => setLoading(false));
+    setErreur('');
+    fetchToutesLesCaisses()
+      .then(setCaisses)
+      .catch((e) => setErreur(e.message || 'Chargement impossible.'))
+      .finally(() => setLoading(false));
   };
 
   useEffect(() => { load(); }, []);
 
+  // Le renvoi part seul a 15h30 et repasse a 19h. Ce bouton sert quand
+  // le serveur etait arrete a ces heures-la : une tache planifiee
+  // manquee ne se rejoue pas d'elle-meme.
+  const renvoyer = () => {
+    setBusy(true);
+    setErreur('');
+    setResultat(null);
+    renvoyerExcedentsCaisse()
+      .then((r) => { setResultat(r); load(); })
+      .catch((e) => setErreur(e.message || 'Renvoi impossible.'))
+      .finally(() => setBusy(false));
+  };
+
+  const enRetard = caisses.filter((c) => Number(c.excedentRestant) > 0);
+
   return (
     <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 16 }}>
-      <SectionTitle>Solde des caisses des caissières</SectionTitle>
-      {!loading && caisses.length === 0 && (
+      <SectionTitle
+        right={
+          <button
+            onClick={renvoyer}
+            disabled={busy}
+            style={{
+              border: `1px solid ${colors.forest}`, background: 'transparent', borderRadius: 8,
+              padding: '6px 12px', fontSize: 11, fontWeight: 600, color: colors.forest,
+              fontFamily: fonts.body, cursor: busy ? 'default' : 'pointer',
+            }}
+          >
+            {busy ? 'Renvoi…' : 'Renvoyer les excédents maintenant'}
+          </button>
+        }
+      >
+        Solde des caisses des caissières
+      </SectionTitle>
+
+      <p style={{ margin: 0, padding: '10px 20px', fontSize: 11, color: colors.muted, fontFamily: fonts.body, borderBottom: `1px solid ${colors.line}` }}>
+        Le logiciel clôture les caisses non clôturées à 15h30 et renvoie ce qui dépasse le fonds
+        de caisse. Un second passage a lieu à 19h pour ce qui est entré après.
+      </p>
+
+      {erreur && (
+        <div style={{ padding: '12px 20px', borderBottom: `1px solid ${colors.line}` }}>
+          <p style={{ margin: 0, fontSize: 12, color: colors.danger, fontFamily: fonts.body }}>{erreur}</p>
+          <button
+            onClick={load}
+            style={{ marginTop: 6, border: 'none', background: 'transparent', cursor: 'pointer', color: colors.forest, fontSize: 12, fontWeight: 600, fontFamily: fonts.body, textDecoration: 'underline', padding: 0 }}
+          >
+            Réessayer
+          </button>
+        </div>
+      )}
+
+      {resultat && (
+        <p style={{ margin: 0, padding: '12px 20px', fontSize: 12, color: colors.forest, fontFamily: fonts.body, background: colors.forestPale, borderBottom: `1px solid ${colors.line}` }}>
+          {formatFCFA(resultat.renvoye)} F renvoyés à la caisse principale
+          {resultat.echecs > 0 && ` — ${resultat.echecs} caisse(s) en échec`}.
+        </p>
+      )}
+
+      {!loading && !erreur && caisses.length === 0 && (
         <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
           Aucune caissière active.
         </p>
       )}
-      {caisses.map((c) => (
-        <div key={c.caissierId} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 20px', borderBottom: `1px solid ${colors.line}` }}>
-          <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>
-            {c.caissier}
-          </p>
-          <p style={{ margin: 0, fontSize: 13, fontWeight: 600, fontFamily: fonts.mono, color: c.solde < 0 ? colors.danger : colors.ink }}>
-            {formatFCFA(c.solde)} F
-          </p>
-        </div>
-      ))}
+
+      {caisses.map((c) => {
+        const reste = Number(c.excedentRestant);
+        return (
+          <div key={c.caissierId} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: '12px 20px', borderBottom: `1px solid ${colors.line}` }}>
+            <div style={{ minWidth: 0 }}>
+              <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>
+                {c.caissier}
+              </p>
+              <p style={{ margin: '2px 0 0', fontSize: 10, color: reste > 0 ? colors.danger : colors.muted, fontFamily: fonts.body }}>
+                {!c.cloturee && `Pas encore clôturée aujourd'hui`}
+                {c.cloturee && c.clotureeParLeLogiciel && `Clôturée par le logiciel à 15h30 — ${formatFCFA(c.excedentRenvoye)} F renvoyés`}
+                {c.cloturee && !c.clotureeParLeLogiciel && `Clôturée par elle-même — ${formatFCFA(c.excedentRenvoye)} F renvoyés`}
+                {reste > 0 && ` · ${formatFCFA(reste)} F encore au-delà du fonds de caisse`}
+              </p>
+            </div>
+            <p style={{ margin: 0, fontSize: 13, fontWeight: 600, fontFamily: fonts.mono, flexShrink: 0, color: c.solde < 0 ? colors.danger : colors.ink }}>
+              {formatFCFA(c.solde)} F
+            </p>
+          </div>
+        );
+      })}
+
+      {enRetard.length > 0 && (
+        <p style={{ margin: 0, padding: '12px 20px', fontSize: 11, color: colors.danger, fontFamily: fonts.body }}>
+          {enRetard.length} caisse(s) portent encore de l'argent au-delà du fonds de caisse.
+        </p>
+      )}
     </Card>
   );
 }
+
 
 /**
  * Zone dangereuse, réservée au directeur : remise à zéro du solde de

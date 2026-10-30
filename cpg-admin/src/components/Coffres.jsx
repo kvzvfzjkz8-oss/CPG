@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { X, ChevronLeft, ChevronRight } from 'lucide-react';
+import { X, ChevronLeft, ChevronRight, ChevronDown } from 'lucide-react';
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, SectionTitle } from './UI';
-import { fetchCoffres, transfererDepuisCoffre, cloturerCoffre, fetchCoffreClotures, fetchEcheancesAttendues, fetchCoffreParMois } from '../api/adminApi';
+import { fetchCoffres, transfererDepuisCoffre, cloturerCoffre, fetchCoffreClotures, fetchEcheancesAttendues, fetchCoffreParMois, fetchCoffreMouvements } from '../api/adminApi';
 
 const NOMS_MOIS = [
   'janvier', 'février', 'mars', 'avril', 'mai', 'juin',
@@ -27,13 +27,49 @@ function libelleMois(mois) {
  * directeur de voir clairement ce qui est rentré, mois par mois, pas
  * seulement un chiffre global agrégé.
  */
+const boutonLien = {
+  marginTop: 8, border: 'none', background: 'transparent', cursor: 'pointer',
+  color: colors.forest, fontSize: 12, fontWeight: 600, fontFamily: fonts.body,
+  textDecoration: 'underline', padding: 0,
+};
+
 function CoffreParMoisModal({ coffre, label, onClose }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [erreur, setErreur] = useState(null);
 
-  useEffect(() => {
-    fetchCoffreParMois(coffre).then(setData).finally(() => setLoading(false));
-  }, [coffre]);
+  // Mois déplié, et le détail chargé par mois. Un écran qui avale ses
+  // erreurs affiche « Chargement… » pour toujours et fait croire qu'il
+  // n'y a rien à voir : chaque chargement a donc son état d'erreur et
+  // son bouton pour réessayer.
+  const [deplie, setDeplie] = useState(null);
+  const [details, setDetails] = useState({});
+
+  const charger = () => {
+    setLoading(true);
+    setErreur(null);
+    fetchCoffreParMois(coffre)
+      .then(setData)
+      .catch((e) => setErreur(e.message || 'Chargement impossible.'))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(charger, [coffre]);
+
+  const chargerDetail = (mois) => {
+    setDetails((d) => ({ ...d, [mois]: { ...(d[mois] ?? {}), loading: true, erreur: null } }));
+    fetchCoffreMouvements(coffre, mois)
+      .then((r) => setDetails((d) => ({ ...d, [mois]: { loading: false, erreur: null, data: r } })))
+      .catch((e) => setDetails((d) => ({
+        ...d, [mois]: { loading: false, erreur: e.message || 'Chargement impossible.' },
+      })));
+  };
+
+  const basculer = (mois) => {
+    if (deplie === mois) { setDeplie(null); return; }
+    setDeplie(mois);
+    if (!details[mois]?.data) chargerDetail(mois);
+  };
 
   return (
     <div
@@ -44,7 +80,7 @@ function CoffreParMoisModal({ coffre, label, onClose }) {
         padding: '5vh 16px', overflowY: 'auto', zIndex: 100,
       }}
     >
-      <Card onClick={(e) => e.stopPropagation()} style={{ padding: 0, overflow: 'hidden', width: '100%', maxWidth: 560, maxHeight: '90vh', overflowY: 'auto' }}>
+      <Card onClick={(e) => e.stopPropagation()} style={{ padding: 0, overflow: 'hidden', width: '100%', maxWidth: 640, maxHeight: '90vh', overflowY: 'auto' }}>
         <SectionTitle
           right={
             <button onClick={onClose} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: colors.muted }}>
@@ -55,7 +91,12 @@ function CoffreParMoisModal({ coffre, label, onClose }) {
           {label} — détail par mois
         </SectionTitle>
 
-        {loading || !data ? (
+        {erreur ? (
+          <div style={{ padding: 24, textAlign: 'center' }}>
+            <p style={{ margin: 0, fontSize: 13, color: colors.danger, fontFamily: fonts.body }}>{erreur}</p>
+            <button onClick={charger} style={boutonLien}>Réessayer</button>
+          </div>
+        ) : loading || !data ? (
           <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>Chargement…</p>
         ) : (
           <>
@@ -66,6 +107,9 @@ function CoffreParMoisModal({ coffre, label, onClose }) {
               <p style={{ margin: '4px 0 0', fontSize: 24, fontWeight: 700, color: colors.forest, fontFamily: fonts.mono }}>
                 {formatFCFA(data.total)} F
               </p>
+              <p style={{ margin: '6px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+                Cliquez sur un mois pour voir le détail des mouvements.
+              </p>
             </div>
 
             {data.parMois.length === 0 ? (
@@ -73,21 +117,91 @@ function CoffreParMoisModal({ coffre, label, onClose }) {
                 Aucun mouvement sur la période.
               </p>
             ) : (
-              data.parMois.map((m) => (
-                <div key={m.mois} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 20px', borderBottom: `1px solid ${colors.line}` }}>
-                  <p style={{ margin: 0, fontSize: 13, color: colors.ink, fontFamily: fonts.body, textTransform: 'capitalize' }}>
-                    {libelleMois(m.mois)}
-                  </p>
-                  <div style={{ textAlign: 'right' }}>
-                    <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.mono }}>
-                      {formatFCFA(m.total)} F
-                    </p>
-                    <p style={{ margin: '2px 0 0', fontSize: 10, color: colors.muted, fontFamily: fonts.body }}>
-                      {m.nombre} mouvement{m.nombre > 1 ? 's' : ''}
-                    </p>
+              data.parMois.map((m) => {
+                const ouvert = deplie === m.mois;
+                const d = details[m.mois];
+                return (
+                  <div key={m.mois} style={{ borderBottom: `1px solid ${colors.line}` }}>
+                    <button
+                      onClick={() => basculer(m.mois)}
+                      style={{
+                        width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                        gap: 12, padding: '12px 20px', border: 'none', cursor: 'pointer',
+                        background: ouvert ? colors.forestPale : 'transparent', textAlign: 'left',
+                      }}
+                    >
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        {ouvert ? <ChevronDown size={14} color={colors.muted} /> : <ChevronRight size={14} color={colors.muted} />}
+                        <span style={{ fontSize: 13, color: colors.ink, fontFamily: fonts.body, textTransform: 'capitalize' }}>
+                          {libelleMois(m.mois)}
+                        </span>
+                      </span>
+                      <span style={{ textAlign: 'right' }}>
+                        <span style={{ display: 'block', fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.mono }}>
+                          {formatFCFA(m.total)} F
+                        </span>
+                        <span style={{ display: 'block', fontSize: 10, color: colors.muted, fontFamily: fonts.body }}>
+                          {m.nombre} mouvement{m.nombre > 1 ? 's' : ''}
+                        </span>
+                      </span>
+                    </button>
+
+                    {ouvert && (
+                      <div style={{ background: colors.bg ?? '#FAFBFA', padding: '4px 0' }}>
+                        {d?.loading && (
+                          <p style={{ margin: 0, padding: '14px 20px', fontSize: 12, color: colors.muted, fontFamily: fonts.body }}>
+                            Chargement du détail…
+                          </p>
+                        )}
+                        {d?.erreur && (
+                          <div style={{ padding: '14px 20px' }}>
+                            <p style={{ margin: 0, fontSize: 12, color: colors.danger, fontFamily: fonts.body }}>{d.erreur}</p>
+                            <button onClick={() => chargerDetail(m.mois)} style={boutonLien}>Réessayer</button>
+                          </div>
+                        )}
+                        {d?.data && d.data.mouvements.length === 0 && (
+                          <p style={{ margin: 0, padding: '14px 20px', fontSize: 12, color: colors.muted, fontFamily: fonts.body }}>
+                            Aucune ligne sur ce mois.
+                          </p>
+                        )}
+                        {d?.data?.mouvements.map((mv) => (
+                          <div
+                            key={mv.id}
+                            style={{
+                              display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
+                              gap: 12, padding: '8px 20px 8px 42px',
+                            }}
+                          >
+                            <span style={{ minWidth: 0 }}>
+                              <span style={{ display: 'block', fontSize: 12, color: colors.ink, fontFamily: fonts.body, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {mv.client ?? '—'}
+                                {mv.numeroClient && (
+                                  <span style={{ color: colors.muted, fontFamily: fonts.mono, fontSize: 11 }}> · {mv.numeroClient}</span>
+                                )}
+                              </span>
+                              <span style={{ display: 'block', fontSize: 10, color: colors.muted, fontFamily: fonts.body }}>
+                                {new Date(mv.date).toLocaleDateString('fr-FR')}
+                                {mv.credit && ` · ${mv.credit}`}
+                                {mv.echeances && ` · échéance${mv.echeances.includes(',') ? 's' : ''} ${mv.echeances}`}
+                                {!mv.credit && mv.libelle && ` · ${mv.libelle}`}
+                              </span>
+                            </span>
+                            <span style={{ fontSize: 12, fontWeight: 600, color: colors.ink, fontFamily: fonts.mono, flexShrink: 0 }}>
+                              {formatFCFA(mv.montant)} F
+                            </span>
+                          </div>
+                        ))}
+                        {d?.data?.tronque && (
+                          <p style={{ margin: 0, padding: '8px 20px 12px 42px', fontSize: 10, color: colors.muted, fontFamily: fonts.body }}>
+                            {d.data.nombre} mouvements sur ce mois ; les {d.data.mouvements.length} plus récents sont affichés.
+                            Le total ci-dessus porte bien sur l'ensemble.
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </>
         )}
@@ -95,6 +209,7 @@ function CoffreParMoisModal({ coffre, label, onClose }) {
     </div>
   );
 }
+
 
 /**
  * Détail des échéances attendues pour un mois donné — ouvert en

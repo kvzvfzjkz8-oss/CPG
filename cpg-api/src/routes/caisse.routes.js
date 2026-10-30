@@ -9,7 +9,8 @@ import { notifyUser } from '../services/pushService.js';
 import { audit } from '../services/auditService.js';
 import { appliquerFraisPonctuel } from '../services/feeService.js';
 import { genererBrouillardPDF } from '../services/brouillardService.js';
-import { fetchCoffres, transfererDepuisCoffre, cloturerCoffre, fetchCoffreClotures, fetchEcheancesAttendues, fetchCoffreParMois } from '../services/coffreService.js';
+import { balayerCaisses, cloturerCaisse, MONTANT_BASE_CAISSE } from '../services/clotureCaisseService.js';
+import { fetchCoffres, transfererDepuisCoffre, cloturerCoffre, fetchCoffreClotures, fetchEcheancesAttendues, fetchCoffreParMois, fetchCoffreMouvements } from '../services/coffreService.js';
 import { genererHistoriquePDF } from '../services/historiqueService.js';
 
 // Justificatif joint à une demande de caisse (reçu, facture...) —
@@ -331,11 +332,25 @@ router.get(
   async (req, res, next) => {
     try {
       const { rows } = await query(
-        `SELECT u.id AS "caissierId", u.full_name AS "caissier", COALESCE(cs.solde, 0) AS solde
+        // L'etat de la cloture du jour accompagne le solde : c'est le
+        // seul endroit ou le directeur voit d'un coup d'oeil quelle
+        // caisse a ete tenue, laquelle le logiciel a rattrapee a 15h30,
+        // et laquelle porte encore de l'argent au-dela du fonds de
+        // caisse. Sans cela, le renvoi automatique serait invisible.
+        `SELECT u.id AS "caissierId", u.full_name AS "caissier", COALESCE(cs.solde, 0) AS solde,
+                (cl.id IS NOT NULL) AS "cloturee",
+                cl.automatique AS "clotureeParLeLogiciel",
+                cl.cloturee_le AS "clotureeLe",
+                COALESCE(cl.excedent_renvoye, 0) AS "excedentRenvoye",
+                GREATEST(COALESCE(cs.solde, 0) - $1::bigint, 0) AS "excedentRestant"
          FROM users u
          LEFT JOIN caisse_soldes cs ON cs.caissier_id = u.id
+         LEFT JOIN caisse_clotures cl
+           ON cl.caissier_id = u.id
+          AND cl.jour_cloture = (now() AT TIME ZONE 'UTC')::date
          WHERE u.role = 'caissier' AND u.status = 'actif'
-         ORDER BY u.full_name`
+         ORDER BY u.full_name`,
+        [MONTANT_BASE_CAISSE]
       );
       res.json(rows);
     } catch (error) {
@@ -378,7 +393,7 @@ router.get(
  * FCFA restants, l'excédent doit repartir vers la caisse principale
  * avant que la journée puisse être close.
  */
-const MONTANT_BASE_CAISSE = 200000;
+
 
 /** GET /caisse/cloture-du-jour — a-t-elle déjà clôturé aujourd'hui ? */
 router.get(
@@ -387,7 +402,7 @@ router.get(
   async (req, res, next) => {
     try {
       const { rows } = await query(
-        `SELECT id, solde_avant, excedent_renvoye, cloturee_le
+        `SELECT id, solde_avant, excedent_renvoye, cloturee_le, automatique
          FROM caisse_clotures
          WHERE caissier_id = $1 AND jour_cloture = (now() AT TIME ZONE 'UTC')::date`,
         [req.user.id]
@@ -410,35 +425,11 @@ router.post(
   requirePermission('caisse.cloturer'),
   async (req, res, next) => {
     try {
-      const result = await withTransaction(async (client) => {
-        const { rows: solde } = await client.query(
-          'SELECT solde FROM caisse_soldes WHERE caissier_id = $1',
-          [req.user.id]
-        );
-        const soldeActuel = solde[0]?.solde ?? 0;
-        const excedent = Math.max(0, soldeActuel - MONTANT_BASE_CAISSE);
-
-        if (excedent > 0) {
-          await client.query(
-            `INSERT INTO caisse_operations (caissier_id, type, montant, motif, statut, decidee_le, decidee_par)
-             VALUES ($1, 'retour_excedent', $2, 'Excédent renvoyé à la clôture', 'validee', now(), $1)`,
-            [req.user.id, excedent]
-          );
-          await client.query(
-            `INSERT INTO caisse_principale_mouvements (type, montant, caissier_id, motif, cree_par)
-             VALUES ('alimentation', $1, $2, 'Excédent renvoyé — clôture de caisse', $2)`,
-            [excedent, req.user.id]
-          );
-        }
-
-        const { rows: cloture } = await client.query(
-          `INSERT INTO caisse_clotures (caissier_id, solde_avant, excedent_renvoye)
-           VALUES ($1, $2, $3)
-           RETURNING id, solde_avant, excedent_renvoye, cloturee_le`,
-          [req.user.id, soldeActuel, excedent]
-        );
-
-        return cloture[0];
+      // Le calcul et les ecritures vivent dans le service : la tache
+      // planifiee de 15h30 clot les caisses oubliees par le meme
+      // chemin, et les deux ne peuvent pas diverger.
+      const result = await cloturerCaisse({
+        caissierId: req.user.id, acteurId: req.user.id, automatique: false,
       });
 
       await audit(req, {
@@ -453,6 +444,40 @@ router.post(
       if (error.code === '23505') {
         return next(new ApiError(409, 'La caisse a déjà été clôturée aujourd\'hui.'));
       }
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /caisse/excedents/renvoyer — déclenche tout de suite ce que la
+ * tâche de 15h30 fait seule : clôturer les caisses oubliées et renvoyer
+ * ce qui dépasse le fonds de caisse.
+ *
+ * Réservé au directeur. Deux usages : vérifier que le mécanisme marche
+ * sans attendre 15h30, et rattraper un soir où le serveur était arrêté
+ * au moment où la tâche devait partir — une tâche planifiée manquée ne
+ * se rejoue pas d'elle-même.
+ */
+router.post(
+  '/excedents/renvoyer',
+  requirePermission('caisse.gerer_principale'),
+  async (req, res, next) => {
+    try {
+      const result = await balayerCaisses({
+        acteurId: req.user.id,
+        motif: 'Excédent renvoyé — demande du directeur',
+      });
+
+      await audit(req, {
+        action: 'caisse.excedents_renvoyes',
+        entityType: 'periode',
+        entityId: new Date().toISOString().slice(0, 10),
+        metadata: { renvoye: result.renvoye, echecs: result.echecs, caisses: result.resultats },
+      });
+
+      res.json({ ...result, fondsDeCaisse: MONTANT_BASE_CAISSE });
+    } catch (error) {
       next(error);
     }
   }
@@ -1142,9 +1167,30 @@ router.get(
 
       // Solde juste avant le premier mouvement du jour demandé —
       // c'est le solde d'ouverture du brouillard.
+      //
+      // Ce calcul est le decalque EXACT de la vue caisse_soldes (voir la
+      // migration 045), borne a une date. Il doit le rester : c'est le
+      // meme tiroir qu'on compte. Deux ecarts s'y etaient glisses et
+      // faisaient mentir le brouillard :
+      //
+      //   • pas de filtre sur mode_paiement : les retraits Mobile Money
+      //     etaient retranches du solde d'especes, alors qu'ils sortent
+      //     du telephone et pas du tiroir. Au 23/10/2026, cela donnait a
+      //     la caisse de Joelle une ouverture de -48 780 F la ou elle
+      //     avait 1 184 594 F, et une cloture de -1 041 274 F pour
+      //     4 201 700 F reellement en caisse. C'est la correction que la
+      //     migration 043 avait apportee a la vue, jamais reportee ici.
+      //
+      //   • retrait_ponctuel manquait a la liste des sorties, ajoute a la
+      //     vue par la 045.
       const { rows: ouvertureRows } = await query(
-        `SELECT COALESCE(SUM(CASE WHEN type IN ('appro', 'encaissement_client') THEN montant ELSE 0 END), 0)
-                - COALESCE(SUM(CASE WHEN type IN ('retrait_client', 'depense', 'retour_excedent') THEN montant ELSE 0 END), 0)
+        `SELECT COALESCE(SUM(CASE
+                  WHEN type IN ('appro', 'encaissement_client') AND mode_paiement = 'especes'
+                  THEN montant ELSE 0 END), 0)
+                - COALESCE(SUM(CASE
+                  WHEN type IN ('retrait_client', 'depense', 'retour_excedent', 'retrait_ponctuel')
+                   AND mode_paiement = 'especes'
+                  THEN montant ELSE 0 END), 0)
                 AS solde
          FROM caisse_operations
          WHERE caissier_id = $1 AND statut = 'validee' AND demandee_le::date < $2::date`,
@@ -1156,7 +1202,13 @@ router.get(
         // Le nom du client est repris sur chaque ligne : sans lui, le
         // brouillard aligne des montants sans dire a qui l'argent a ete
         // remis, et le directeur ne peut rien verifier.
+        // mode_paiement et destination commandent les deux garde-fous du
+        // document (sortMobileMoney, horsCaisse) : sans ces colonnes ils
+        // ne se declenchaient jamais, et chaque retrait Airtel vidait un
+        // tiroir qui n'avait rien verse. Le total Mobile Money du pied de
+        // page restait a 0 pour la meme raison.
         `SELECT o.type, o.montant, o.demandee_le, o.decidee_le, o.motif,
+                o.mode_paiement, o.destination,
                 btrim(c.full_name) AS client, c.client_number
          FROM caisse_operations o
          LEFT JOIN users c ON c.id = o.client_id
@@ -1214,6 +1266,28 @@ router.get(
   async (req, res, next) => {
     try {
       const result = await fetchCoffreParMois(req.params.coffre);
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * GET /coffres/:coffre/mouvements?mois=2026-10 — le détail ligne à
+ * ligne derrière le chiffre : pour les remboursements, qui a payé,
+ * combien, sur quel crédit et quelle échéance.
+ *
+ * `mois` est facultatif ; absent, on remonte toute la période depuis la
+ * dernière clôture du coffre.
+ */
+router.get(
+  '/coffres/:coffre/mouvements',
+  requirePermission('coffres.lire'),
+  validate(z.object({ mois: z.string().regex(/^\d{4}-\d{2}$/).optional() }), 'query'),
+  async (req, res, next) => {
+    try {
+      const result = await fetchCoffreMouvements(req.params.coffre, { mois: req.query.mois });
       res.json(result);
     } catch (error) {
       next(error);

@@ -207,7 +207,13 @@ export default function CaissierView() {
           <div style={{ flex: 1 }}>
             <p style={{ margin: 0, fontSize: 12, fontWeight: 600, color: colors.forest, fontFamily: fonts.body }}>
               Journée clôturée à {new Date(cloture.cloture.cloturee_le).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+              {cloture.cloture.automatique && ' — par le logiciel'}
             </p>
+            {cloture.cloture.automatique && (
+              <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
+                La clôture n'avait pas été faite : le logiciel l'a passée à 15h30.
+              </p>
+            )}
             {cloture.cloture.excedent_renvoye > 0 && (
               <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.forestLight, fontFamily: fonts.body }}>
                 {formatFCFA(cloture.cloture.excedent_renvoye)} F d'excédent renvoyés vers la caisse principale.
@@ -232,10 +238,11 @@ export default function CaissierView() {
             <Lock size={18} color={enRetard ? colors.danger : colors.muted} />
             <div style={{ flex: 1 }}>
               <p style={{ margin: 0, fontSize: 12, fontWeight: 600, color: enRetard ? colors.danger : colors.ink, fontFamily: fonts.body }}>
-                {enRetard ? '⏰ Clôture de la journée en attente' : 'Clôture de la journée (vers 15h30)'}
+                {enRetard ? '⏰ Clôture de la journée en attente' : 'Clôture de la journée (à 15h30)'}
               </p>
               <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
-                Montant de base : {formatFCFA(info?.montantBase ?? cloture?.montantBase ?? 200000)} F. Au-delà, l'excédent repart automatiquement vers la caisse principale.
+                Montant de base : {formatFCFA(info?.montantBase ?? cloture?.montantBase ?? 200000)} F. Au-delà, l'excédent repart
+                vers la caisse principale. À 15h30, le logiciel clôture lui-même les caisses qui ne l'ont pas été.
               </p>
             </div>
             <button

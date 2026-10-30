@@ -1019,6 +1019,17 @@ export async function fetchCoffreParMois(coffre) {
   return apiRequest(`/v1/caisse/coffres/${coffre}/par-mois`);
 }
 
+/** Le détail ligne à ligne derrière le chiffre d'un mois du coffre. */
+export async function fetchCoffreMouvements(coffre, mois) {
+  const qs = mois ? `?mois=${encodeURIComponent(mois)}` : '';
+  return apiRequest(`/v1/caisse/coffres/${coffre}/mouvements${qs}`);
+}
+
+/** Déclenche tout de suite le renvoi des excédents de caisse (directeur). */
+export async function renvoyerExcedentsCaisse() {
+  return apiRequest('/v1/caisse/excedents/renvoyer', { method: 'POST' });
+}
+
 /** Caissière : dépense de fonctionnement (pas un client), soumise à validation. */
 export async function demanderDepenseCaisse(montant, motif, justifie = false, fichier = null) {
   const form = new FormData();
