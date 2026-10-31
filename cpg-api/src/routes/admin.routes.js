@@ -423,6 +423,24 @@ router.post(
         // La nature du produit decide de tout ce qui suit : un credit
         // credite le compte et s'amortit par echeances, un decouvert le
         // debite et se renfloue tout seul.
+        // La date du premier prelevement decidee en seance (migration
+        // 055). On la lit en texte : une colonne DATE revient de pg
+        // comme un Date a minuit local, que la conversion UTC recule
+        // d'un jour.
+        //
+        // Elle n'est retenue que si elle est encore a venir : une date
+        // depassee produirait des echeances immediatement exigibles,
+        // prelevees des le lendemain matin a 6 h.
+        const { rows: seance } = await client.query(
+          `SELECT to_char(premiere_echeance, 'YYYY-MM-DD') AS premiere_echeance
+           FROM commission_sessions WHERE id = $1`,
+          [credit.commission_session_id]
+        );
+        const aujourdhui = new Date().toISOString().slice(0, 10);
+        const premiereEcheance = seance[0]?.premiere_echeance >= aujourdhui
+          ? seance[0].premiere_echeance
+          : null;
+
         const { rows: produit } = await client.query(
           `SELECT p.nature, p.code FROM product_versions pv
            JOIN credit_products p ON p.id = pv.product_id
@@ -524,7 +542,8 @@ router.post(
             new Date(),
             credit.duration_months,
             monthlyPayment,
-            totalDue
+            totalDue,
+            premiereEcheance
           );
 
           for (const inst of installments) {

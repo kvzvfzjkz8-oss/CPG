@@ -185,6 +185,25 @@ export const PERMISSIONS = {
     // en crédit à repasser en commission pour un second dossier.
     'commission.autoriser_exception',
 
+    // La date du premier prélèvement des dossiers d'une séance : même
+    // permission que l'enveloppe, c'est la même décision de trésorerie.
+    // (commission.definir_plafond, déjà présente ci-dessus.)
+
+    // Rachat / remboursement anticipé d'un crédit. Deux permissions
+    // distinctes à dessein, exactement comme côté API :
+    //
+    //   • definir_regle fixe la base du calcul — un choix de politique
+    //     qui engage l'établissement sur des années ;
+    //   • solder exécute l'opération sur un crédit donné, selon la
+    //     règle en vigueur. Le montant n'est jamais saisi, il est calculé.
+    //
+    // Elles manquaient ici alors qu'elles existaient côté serveur : tout
+    // bouton posé dessus serait resté invisible. C'est la troisième fois
+    // que cette divergence coûte un écran — les deux tables doivent dire
+    // la même chose.
+    'credits.definir_regle_remboursement_anticipe',
+    'credits.solder_par_anticipation',
+
     'catalogue.lire',
     'catalogue.lire_public',
     'catalogue.creer',

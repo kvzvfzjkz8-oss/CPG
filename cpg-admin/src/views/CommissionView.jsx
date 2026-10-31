@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   CalendarPlus, ListChecks, Gavel, Inbox, AlertTriangle, Sparkles, Check, X, Wallet, Pencil, Undo2,
+  CalendarClock,
 } from 'lucide-react';
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, Tabs, SectionTitle } from '../components/UI';
@@ -10,7 +11,7 @@ import {
   fetchLevel1Credits, depositCreditToCommission,
   fetchCommissionAgenda, depositDifficultyCase, depositExceptionalRequest,
   holdCommissionSession, searchClientPourDemande, fetchCreditRequests,
-  definirPlafondCommission, ajusterDossierCommission, withdrawCreditFromCommission,
+  definirPlafondCommission, definirPremiereEcheanceCommission, ajusterDossierCommission, withdrawCreditFromCommission,
 } from '../api/adminApi';
 
 const input = {
@@ -51,9 +52,31 @@ function EnveloppePanel({ session, role, onChange }) {
   const [busy, setBusy] = useState(false);
   const [erreur, setErreur] = useState('');
 
+  // La date du premier prélèvement, décidée pour toute la séance. Sans
+  // elle, le logiciel calendrie à l'approbation + 1 mois et il faut
+  // redater chaque dossier à la main après coup.
+  const [editionDate, setEditionDate] = useState(false);
+  const [dateValeur, setDateValeur] = useState('');
+
   const e = session?.enveloppe;
   const plafond = e?.plafond ?? null;
   const depasse = (e?.depassement ?? 0) > 0;
+  const premiereEcheance = session?.premiere_echeance ?? null;
+
+  const enregistrerDate = async (date) => {
+    setBusy(true);
+    setErreur('');
+    try {
+      await definirPremiereEcheanceCommission(session.id, date);
+      setEditionDate(false);
+      setDateValeur('');
+      onChange();
+    } catch (err) {
+      setErreur(err.message ?? "La date n'a pas pu être enregistrée.");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const enregistrer = async (montant) => {
     setBusy(true);
@@ -160,6 +183,67 @@ function EnveloppePanel({ session, role, onChange }) {
           </button>
         </div>
       )}
+      {/* ───── Date du premier prélèvement ───── */}
+      <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${colors.line}` }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          <CalendarClock size={14} color={colors.forestLight} />
+          <p style={{ margin: 0, fontSize: 12, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
+            Premier prélèvement
+          </p>
+          {premiereEcheance === null && <Badge tone="neutral">par défaut</Badge>}
+        </div>
+
+        <p style={{ margin: '0 0 10px', fontSize: 11.5, color: colors.muted, fontFamily: fonts.body }}>
+          {premiereEcheance === null
+            ? 'Non fixée : la première échéance tombera un mois après l’approbation de chaque dossier — '
+              + 'donc à une date différente selon le jour d’approbation.'
+            : `Les dossiers validés en cette séance seront prélevés le ${premiereEcheance}, puis le même jour chaque mois.`}
+        </p>
+
+        {peutDefinir && !editionDate && (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              onClick={() => { setEditionDate(true); setDateValeur(premiereEcheance ?? ''); }}
+              disabled={busy}
+              style={actionBtn(colors.forestPale, colors.forestLight)}
+            >
+              <CalendarClock size={13} /> {premiereEcheance === null ? 'Fixer la date' : 'Modifier'}
+            </button>
+            {premiereEcheance !== null && (
+              <button onClick={() => enregistrerDate(null)} disabled={busy} style={actionBtn('transparent', colors.muted)}>
+                Revenir au défaut
+              </button>
+            )}
+          </div>
+        )}
+
+        {peutDefinir && editionDate && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+            <div style={{ flex: 1, maxWidth: 200 }}>
+              <label style={label}>Date du premier prélèvement</label>
+              <input
+                style={{ ...input, fontFamily: fonts.mono }}
+                type="date"
+                autoFocus
+                min={new Date().toISOString().slice(0, 10)}
+                value={dateValeur}
+                onChange={(ev) => setDateValeur(ev.target.value)}
+              />
+            </div>
+            <button
+              onClick={() => enregistrerDate(dateValeur)}
+              disabled={busy || !dateValeur}
+              style={actionBtn(colors.forest, '#fff')}
+            >
+              Enregistrer
+            </button>
+            <button onClick={() => { setEditionDate(false); setErreur(''); }} disabled={busy} style={actionBtn('transparent', colors.muted)}>
+              Annuler
+            </button>
+          </div>
+        )}
+      </div>
+
     </Card>
   );
 }

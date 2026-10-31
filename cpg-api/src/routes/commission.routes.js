@@ -12,7 +12,7 @@ import {
   depositDifficultyCase, depositExceptionalRequest, withdrawCommissionItem, fetchCommissionItems,
   proposeCommissionItemDeletionRequest, fetchPendingCommissionItemDeletionRequests,
   decideCommissionItemDeletionRequest, cancelCommissionItemDirectly,
-  fetchAllSessions, fetchSessionDetail, definirPlafondSession, fetchEnveloppe,
+  fetchAllSessions, fetchSessionDetail, definirPlafondSession, definirPremiereEcheance, fetchEnveloppe,
   ajusterDossierEnCommission,
 } from '../services/commissionService.js';
 
@@ -61,6 +61,46 @@ router.patch(
         entityType: 'commission_session',
         entityId: req.params.id,
         metadata: { plafond: req.body.plafond },
+      });
+      res.json(resultat);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * PATCH /admin/commission/seance/:id/premiere-echeance — fixe la date
+ * du premier prélèvement pour les dossiers validés en cette séance.
+ *
+ * « Les dossiers qui vont être validés demain seront prélevés le 03 du
+ *   mois de novembre. » Sans cette date, le logiciel calendrie à
+ * l'approbation + 1 mois, et il faut redater chaque dossier à la main
+ * après coup — ce qui a été fait pour les 25 dossiers du 23/10/2026,
+ * quatre jours avant le prélèvement.
+ *
+ * Réservé au directeur, comme l'enveloppe : c'est une décision de
+ * trésorerie. Modifiable jusqu'à la tenue. Envoyer `null` revient au
+ * comportement par défaut.
+ */
+router.patch(
+  '/seance/:id/premiere-echeance',
+  requirePermission('commission.definir_plafond'),
+  validate(z.object({
+    premiereEcheance: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Format attendu : AAAA-MM-JJ').nullable(),
+  })),
+  async (req, res, next) => {
+    try {
+      const resultat = await definirPremiereEcheance({
+        sessionId: req.params.id,
+        premiereEcheance: req.body.premiereEcheance,
+        actorId: req.user.id,
+      });
+      await audit(req, {
+        action: 'commission.premiere_echeance_definie',
+        entityType: 'commission_session',
+        entityId: req.params.id,
+        metadata: { premiereEcheance: req.body.premiereEcheance },
       });
       res.json(resultat);
     } catch (error) {

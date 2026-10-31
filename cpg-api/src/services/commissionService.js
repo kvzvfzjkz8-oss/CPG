@@ -88,6 +88,51 @@ export async function rescheduleSession({ sessionId, scheduledFor }) {
  * Après la tenue, elle est figée — c'est la trace de ce qui a autorisé
  * les octrois de cette séance.
  */
+/**
+ * La date du premier prélèvement pour les dossiers de cette séance.
+ *
+ * « Les dossiers qui vont être validés demain seront prélevés le 03 du
+ *   mois de novembre. » Le logiciel calendriait à l'approbation
+ * + 1 mois : les 25 dossiers du 23/10/2026 ont reçu un 23 novembre, et
+ * il a fallu les redater un par un quatre jours avant le prélèvement.
+ *
+ * La décision porte sur la séance et non sur chaque dossier, comme
+ * l'enveloppe : une date, et tout ce qui est validé ce jour-là s'y
+ * aligne. Passer `null` revient au comportement par défaut.
+ */
+export async function definirPremiereEcheance({ sessionId, premiereEcheance, actorId }) {
+  if (premiereEcheance !== null) {
+    // Une date déjà passée produirait des échéances immédiatement
+    // exigibles, prélevées dès le lendemain matin à 6 h sur des
+    // comptes qui ne s'y attendent pas.
+    const aujourdhui = new Date().toISOString().slice(0, 10);
+    if (premiereEcheance < aujourdhui) {
+      throw new ApiError(
+        422,
+        `Le ${premiereEcheance} est déjà passé : le prélèvement partirait dès le lendemain matin. `
+        + 'Choisissez une date à venir.'
+      );
+    }
+  }
+
+  const { rows } = await query(
+    `UPDATE commission_sessions
+     SET premiere_echeance = $2::date,
+         premiere_echeance_par = CASE WHEN $2::date IS NULL THEN NULL ELSE $3::uuid END,
+         premiere_echeance_le  = CASE WHEN $2::date IS NULL THEN NULL ELSE now() END
+     WHERE id = $1 AND status = 'planifiee'
+     RETURNING id, to_char(premiere_echeance, 'YYYY-MM-DD') AS premiere_echeance`,
+    [sessionId, premiereEcheance, actorId]
+  );
+  if (!rows[0]) {
+    throw new ApiError(
+      409,
+      'Cette séance est déjà tenue ou annulée — la date du premier prélèvement ne peut plus changer.'
+    );
+  }
+  return rows[0];
+}
+
 export async function definirPlafondSession({ sessionId, plafond, actorId }) {
   if (plafond !== null && (!Number.isInteger(plafond) || plafond <= 0)) {
     throw new ApiError(422, 'Le plafond doit être un montant positif, ou vide pour retirer l’enveloppe.');
@@ -142,12 +187,19 @@ export async function fetchEnveloppe(sessionId) {
 /** La séance actuellement programmée, s'il y en a une. */
 export async function fetchPlannedSession() {
   const { rows } = await query(
+    // to_char et pas la colonne DATE brute : pg la renvoie comme un
+    // Date a minuit local, que toISOString() recule d'un jour en UTC+1.
+    // L'ecran afficherait la veille de la date decidee.
     `SELECT s.id, s.scheduled_for, s.status, s.scheduled_by, u.full_name AS scheduled_by_name,
             s.note, s.created_at, s.plafond, s.plafond_le,
-            p.full_name AS plafond_par_name
+            p.full_name AS plafond_par_name,
+            to_char(s.premiere_echeance, 'YYYY-MM-DD') AS premiere_echeance,
+            s.premiere_echeance_le,
+            e.full_name AS premiere_echeance_par_name
      FROM commission_sessions s
      LEFT JOIN users u ON u.id = s.scheduled_by
      LEFT JOIN users p ON p.id = s.plafond_par
+     LEFT JOIN users e ON e.id = s.premiere_echeance_par
      WHERE s.status = 'planifiee' LIMIT 1`
   );
   if (!rows[0]) return null;

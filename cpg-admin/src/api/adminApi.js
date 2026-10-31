@@ -1128,6 +1128,16 @@ export async function definirPlafondCommission(sessionId, plafond) {
   });
 }
 
+/**
+ * Directeur : la date du premier prélèvement pour les dossiers validés
+ * en cette séance. `null` revient au défaut (approbation + 1 mois).
+ */
+export async function definirPremiereEcheanceCommission(seanceId, premiereEcheance) {
+  return apiRequest(`/v1/admin/commission/seance/${seanceId}/premiere-echeance`, {
+    method: 'PATCH', body: { premiereEcheance },
+  });
+}
+
 /** Autorisé, déposé, reste — les trois chiffres de l'enveloppe. */
 export async function fetchEnveloppeCommission(sessionId) {
   return apiRequest(`/v1/admin/commission/seance/${sessionId}/enveloppe`);
