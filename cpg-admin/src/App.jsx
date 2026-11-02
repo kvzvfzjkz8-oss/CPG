@@ -211,6 +211,10 @@ function AuthenticatedApp() {
  * reste affichée, simplement non cliquable.
  */
 const ONGLET_PAR_TACHE = {
+  // Le prelevement manuel des frais de tenue vit dans Operations →
+  // Verification : sans cette entree, la cloche annonce la tache mais
+  // le clic n'ouvre rien.
+  frais_tenue: 'operations',
   seance_a_tenir: 'commission',
   approbation_finale: 'validation',
   corrections_echeances: 'corrections',

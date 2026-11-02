@@ -41,6 +41,70 @@ async function fetchUnreadMessagesCount(actorId) {
   );
 }
 
+
+/**
+ * Les frais de tenue du mois sont-ils encore à prélever, et la paie
+ * est-elle arrivée ?
+ *
+ * « Nous sommes en novembre et les salaires arrivent, alors mets une
+ *   notification chez l'opérateur pour la récupération de tous les
+ *   frais de tenue de compte. »
+ *
+ * La tâche planifiée ne passe que le 25 (décision du 14/10/2026 : au
+ * 1er la plupart des comptes sont vides, prélever avant la paie mettait
+ * des agents à découvert pour un forfait de 6 500 F). Rien ne disait
+ * donc à l'opératrice qu'un prélèvement manuel était attendu plus tôt
+ * quand la paie tombe en avance.
+ *
+ * Le libellé porte l'état de la paie, et c'est le point important : une
+ * notification qui dirait seulement « 196 comptes à prélever » dès le
+ * 1er du mois pousserait exactement à l'erreur que la décision du 14/10
+ * voulait éviter.
+ */
+async function fetchFraisTenueDuMois() {
+  const { rows } = await query(
+    `SELECT
+       (SELECT count(*)::int FROM accounts a
+         JOIN users u ON u.id = a.user_id
+        WHERE u.role = 'client' AND u.status = 'actif'
+          AND NOT EXISTS (
+            SELECT 1 FROM applied_fees af
+            JOIN fee_versions fv ON fv.id = af.fee_version_id
+            JOIN fee_definitions fd ON fd.id = fv.fee_id
+            WHERE af.account_id = a.id AND fd.code = 'FRAIS_TENUE'
+              AND af.period_start = date_trunc('month', now())::date
+          )) AS restants,
+       (SELECT count(*)::int FROM ledger_entries
+        WHERE type = 'salaire' AND created_at >= date_trunc('month', now())) AS salaires`
+  );
+  return { restants: Number(rows[0].restants), salaires: Number(rows[0].salaires) };
+}
+
+/**
+ * Pose la tâche « frais de tenue » si le mois n'est pas encore prélevé.
+ *
+ * Deux libellés pour un même compteur, selon que la paie est arrivée ou
+ * non : l'opératrice doit savoir si c'est à faire maintenant ou s'il
+ * faut attendre les salaires.
+ */
+async function ajouterFraisTenue(taches) {
+  try {
+    const { restants, salaires } = await fetchFraisTenueDuMois();
+    if (restants === 0) return;
+
+    const mois = new Date().toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+    taches.push({
+      cle: 'frais_tenue',
+      libelle: salaires > 0
+        ? `Frais de tenue de compte à prélever — ${mois}`
+        : `Frais de tenue de compte — ${mois}, à prélever après le versement des salaires`,
+      nombre: restants,
+    });
+  } catch {
+    // Best effort, comme les autres files.
+  }
+}
+
 /**
  * Tâches en attente, propres à ce que le rôle a réellement à traiter.
  * Chaque entrée : { cle, libelle, nombre }. Une requête qui échoue
@@ -75,6 +139,13 @@ async function fetchTasksForRole(role) {
       'echeances_en_retard', 'Échéances en retard à relancer',
       `SELECT count(*)::int AS n FROM installments WHERE status = 'en_retard'`
     );
+    await ajouterFraisTenue(taches);
+  }
+
+  if (role === 'directeur') {
+    // Le directeur voit la même tâche : c'est lui qui décide du moment,
+    // l'opératrice exécute.
+    await ajouterFraisTenue(taches);
   }
 
   if (role === 'superviseur' || role === 'directeur') {
