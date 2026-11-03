@@ -242,6 +242,42 @@ async function eteindreDecouvertsRembourses() {
   }
 }
 
+
+/**
+ * Sommes-nous le 30 du mois — ou, dans un mois qui n'a pas de 30, son
+ * dernier jour ?
+ *
+ * « Tous les 30 de chaque mois les frais de tenue doivent être
+ *   prélevés. » (direction, 03/11/2026)
+ *
+ * Une expression cron en `30 * *` saute février entièrement, et donc
+ * 1 287 000 F de frais une année sur une. On programme donc du 28 au 31
+ * et c'est ce garde qui tranche : le 30 quand il existe, le dernier
+ * jour du mois sinon. Février tombe le 28 ou le 29, les mois de 31
+ * jours gardent bien le 30.
+ *
+ * Le fuseau est celui de Libreville, comme la tâche qui l'appelle :
+ * Railway tourne en UTC, et à minuit le serveur n'est pas encore au
+ * même jour que l'agence.
+ */
+function estLeTrenteOuFinDeMois(maintenant = new Date()) {
+  // `fr-CA` rend « AAAA-MM-JJ », et on lit les composantes plutôt que
+  // de reparser une chaîne localisée : `new Date(d.toLocaleString(...))`
+  // dépend du format rendu par l'environnement et casse sans prévenir.
+  const [annee, mois, jour] = new Intl.DateTimeFormat('fr-CA', {
+    timeZone: 'Africa/Libreville', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(maintenant).split('-').map(Number);
+
+  const dernierJour = new Date(Date.UTC(annee, mois, 0)).getUTCDate();
+
+  // `min(30, dernier jour)` et non « le 30 OU le dernier jour » : dans
+  // un mois de 31 jours, le 31 est aussi le dernier jour, et la tâche
+  // repartait donc deux fois. L'index unique de la 056 l'aurait refusée
+  // sans dégât, mais une tâche qui se relance pour rien est une tâche
+  // dont on cesse de lire les journaux.
+  return jour === Math.min(30, dernierJour);
+}
+
 /**
  * Démarre les tâches planifiées. Appelé une fois au lancement du
  * serveur (src/server.js) — jamais pendant les tests, qui utilisent
@@ -258,16 +294,28 @@ export function startScheduler() {
   // du mois », c'est ici qu'il faudra ajuster l'expression cron.
   cron.schedule('0 3 30 * *', collectAgios);
 
-  // Le 25 de chaque mois à 3h — décision de la direction du
-  // 14/10/2026. Le 1er, la plupart des comptes sont vides : les
-  // salaires des entreprises partenaires arrivent en milieu de mois,
-  // et prélever avant la paie mettait des agents à découvert pour un
-  // forfait de 6 500 F. Au 25, les comptes sont approvisionnés.
+  // « Tous les 30 de chaque mois les frais de tenue doivent être
+  // prélevés » — décision de la direction du 03/11/2026, qui remplace
+  // le 25 retenu le 14/10/2026.
   //
-  // Une seule date, une seule fois par mois : le prélèvement
-  // automatique qui suivait chaque paie a été retiré, c'est lui qui
-  // avait fait payer deux fois 189 agents le 14/10.
-  cron.schedule('0 3 25 * *', collectTenueCompte);
+  // À 4 h et non 3 h : les agios passent à 3 h, et le frais de tenue
+  // creuse le négatif. Prélever le frais d'abord l'aurait fait entrer
+  // dans l'assiette des agios du mois — le frais se serait taxé
+  // lui-même, comme l'intérêt du découvert le faisait avant correction.
+  //
+  // La plage 28-31 n'est pas une erreur : c'est le garde
+  // estLeTrenteOuFinDeMois() qui choisit le bon jour. Une expression
+  // `30 * *` sauterait février, et donc 1 287 000 F de frais.
+  //
+  // Une seule fois par mois reste garanti en base, pas par l'horaire :
+  // index unique sur (barème, compte, période), migration 056. C'est ce
+  // qui permet à l'opératrice de prélever à la main plus tôt dans le
+  // mois sans que la tâche du 30 refacture quoi que ce soit.
+  cron.schedule(
+    '0 4 28-31 * *',
+    () => { if (estLeTrenteOuFinDeMois()) return collectTenueCompte(); return undefined; },
+    { timezone: 'Africa/Libreville' }
+  );
 
   // 15h30, heure de Libreville — et le fuseau est explicite, sans
   // quoi node-cron suit celui du serveur : Railway tourne en UTC, la
@@ -301,7 +349,7 @@ export function startScheduler() {
 
   console.log(
     'Tâches planifiées démarrées : échéances (quotidien, 6h) · agios (le 30, 3h) · '
-    + 'frais de tenue (le 25, 3h) · renvoi des excédents de caisse (15h30 et 19h, heure de Libreville) · '
+    + 'frais de tenue (le 30 ou fin de mois, 4h) · renvoi des excédents de caisse (15h30 et 19h) · '
     + 'intérêts de découvert (le 30, 2h) · extinction des découverts remboursés (quotidien, 6h05).'
   );
 }
@@ -311,5 +359,6 @@ export function startScheduler() {
 // place) sans dupliquer la logique de résolution de l'acteur système.
 export {
   collectInstallments, collectAgios, collectTenueCompte, cloturerLesCaisses,
-  preleverInteretsDecouvert, eteindreDecouvertsRembourses, getSystemActor,
+  preleverInteretsDecouvert, eteindreDecouvertsRembourses, estLeTrenteOuFinDeMois,
+  getSystemActor,
 };
