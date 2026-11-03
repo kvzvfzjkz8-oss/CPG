@@ -31,12 +31,24 @@ let directeurToken;
 let operateurToken;
 let produitId;
 
-/** Le 3 du mois prochain, au format AAAA-MM-JJ. */
-function troisDuMoisProchain() {
+/**
+ * Une date du mois prochain dont le JOUR diffère d'aujourd'hui.
+ *
+ * Le cas réel était « le 3 du mois prochain », la décision du
+ * 22/10/2026. Mais le comportement par défaut pose la première échéance
+ * au même jour du mois suivant : un test lancé un 3 voyait donc le
+ * défaut tomber exactement sur la cible, et l'assertion « sans date
+ * fixée, le comportement d'avant est intact » ne distinguait plus rien.
+ * C'est arrivé le 03/11/2026.
+ *
+ * Le jour choisi reste ≤ 28 pour exister dans tous les mois.
+ */
+function cibleDistincteDuDefaut() {
   const n = new Date();
-  return new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth() + 1, 3)).toISOString().slice(0, 10);
+  const jour = n.getUTCDate() === 17 ? 11 : 17;
+  return new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth() + 1, jour)).toISOString().slice(0, 10);
 }
-const CIBLE = troisDuMoisProchain();
+const CIBLE = cibleDistincteDuDefaut();
 
 before(async () => {
   await startTestServer();

@@ -342,11 +342,15 @@ async function collecterUneEcheance(client, echeance, actorId) {
  * Prélève les échéances de crédit arrivées à terme — passage global,
  * déclenché par la tâche planifiée ou relancé à la main.
  *
- * Pour chaque échéance encore « à_venir » dont la date est dépassée :
- * si le compte a la provision suffisante, l'échéance est débitée et
- * marquée payée ; sinon elle passe en retard, sans mouvement d'argent.
- * Un crédit dont la dernière échéance est réglée passe automatiquement
- * au statut « soldé ».
+ * Pour chaque échéance échue et non payée — « à_venir » comme
+ * « en_retard » : si le compte a la provision suffisante, l'échéance
+ * est débitée et marquée payée ; sinon elle passe (ou reste) en retard,
+ * sans mouvement d'argent. Un crédit dont la dernière échéance est
+ * réglée passe automatiquement au statut « soldé ».
+ *
+ * Reprendre les retards à chaque passage est le comportement attendu :
+ * une échéance tombée en retard un 3 novembre faute de salaire doit se
+ * prélever d'elle-même le 6, quand la paie arrive.
  *
  * Le détail de chaque prélèvement est dans collecterUneEcheance, qui
  * sert aussi aux prélèvements ciblés de l'opérateur.
@@ -362,7 +366,20 @@ export async function runInstallmentCollection({ asOf, actorId }) {
             c.reference, c.duration_months, c.user_id
      FROM installments i
      JOIN credit_requests c ON c.id = i.credit_id
-     WHERE i.status = 'a_venir' AND i.due_date <= $1
+     -- Les échéances EN RETARD sont reprises à chaque passage, pas
+     -- seulement celles encore à venir.
+     --
+     -- Avant, le filtre ne retenait que « a_venir » : une échéance qui
+     -- tombait en retard faute de provision n'était plus jamais
+     -- représentée. Le salaire arrivait trois jours plus tard, le
+     -- compte était approvisionné, et l'échéance restait impayée
+     -- jusqu'à ce qu'un opérateur la prélève à la main, une par une.
+     -- Une dette échue reste due : dès qu'il y a de quoi, on prélève.
+     --
+     -- Rien ne risque d'être prélevé deux fois : « payee » n'est pas
+     -- dans la liste, et collecterUneEcheance revérifie la provision
+     -- avant d'écrire.
+     WHERE i.status IN ('a_venir', 'en_retard') AND i.due_date <= $1
        AND c.status = 'approuve'
      ORDER BY i.due_date`,
     [cutoff]

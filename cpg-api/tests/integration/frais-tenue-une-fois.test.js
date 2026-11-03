@@ -167,3 +167,107 @@ describe(
     });
   }
 );
+
+/**
+ * ═══════════════════════════════════════════════════════════════════
+ *  UNE ÉCHÉANCE EN RETARD SE PRÉLÈVE DÈS QUE LA PAIE ARRIVE
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * « Redate au 3 novembre. » — 22 des 25 échéances redatées tombaient
+ * en retard le jour même, faute de salaire versé.
+ *
+ * La collecte ne retenait que les échéances « à_venir » : une fois en
+ * retard, aucune reprise automatique. Le salaire arrivait trois jours
+ * plus tard et l'échéance restait impayée jusqu'à ce qu'un opérateur
+ * la prélève à la main, une par une — vingt-deux fois.
+ */
+describe(
+  'Collecte des échéances — reprise des retards',
+  { skip: !hasTestDatabase() && 'DATABASE_URL ne pointe pas vers une base de test' },
+  () => {
+    test('en retard faute de provision, puis prélevée quand le compte est alimenté', async () => {
+      const { runInstallmentCollection } = await import('../../src/services/operationsService.js');
+      const { rows: [dir] } = await query(`SELECT id FROM users WHERE role = 'directeur' LIMIT 1`);
+
+      // Le dossier est posé directement en base, et pas monté par tout
+      // le circuit de validation : ce qui est testé ici est la boucle de
+      // collecte, qui ne lit que credit_requests et installments.
+      //
+      // Surtout, le test ne dépend d'AUCUNE donnée préexistante. Une
+      // première version cherchait un crédit déjà approuvé et sortait
+      // sans rien vérifier quand elle n'en trouvait pas : elle passait
+      // en 1,8 ms sans rien tester, ce qui est pire que pas de test.
+      const tel = `+24109${String(Math.floor(Math.random() * 900000) + 100000)}`;
+      const { body: client } = await api('/v1/admin/utilisateurs', {
+        method: 'POST', token: await loginStaff('gestionnaire'),
+        body: {
+          nomComplet: `Client Retard ${Date.now()}`, telephone: tel, role: 'client',
+          codePin: '1234', confirmerDoublon: true,
+        },
+      });
+      const { rows: [compte] } = await query(
+        'SELECT id FROM accounts WHERE user_id = $1 ORDER BY created_at LIMIT 1',
+        [client.id]
+      );
+      const { rows: [version] } = await query(
+        `SELECT v.id FROM product_versions v
+         JOIN credit_products p ON p.id = v.product_id
+         WHERE p.code = 'MICRO_STD' AND v.effective_to IS NULL`
+      );
+
+      const reference = `TEST-RETARD-${Date.now()}`;
+      const { rows: [credit] } = await query(
+        `INSERT INTO credit_requests
+           (reference, user_id, amount, duration_months, monthly_rate, monthly_payment,
+            purpose, status, product_version_id, approved_by, approved_at)
+         VALUES ($1, $2, 100000, 1, 0.05, 105000, 'Test reprise des retards',
+                 'approuve', $3, $4, now())
+         RETURNING id`,
+        [reference, client.id, version.id, dir.id]
+      );
+      const { rows: [echeance] } = await query(
+        `INSERT INTO installments (credit_id, sequence, due_date, amount)
+         VALUES ($1, 1, CURRENT_DATE, 105000) RETURNING id`,
+        [credit.id]
+      );
+
+      // Premier passage : le compte est vide, l'échéance tombe en retard.
+      await runInstallmentCollection({ actorId: dir.id });
+      const { rows: [apres] } = await query(
+        `SELECT status::text FROM installments WHERE id = $1`, [echeance.id]
+      );
+      assert.equal(apres.status, 'en_retard', 'sans provision, elle passe en retard');
+
+      // La paie arrive.
+      await query(
+        `INSERT INTO ledger_entries (account_id, type, amount, label, created_by)
+         VALUES ($1, 'salaire', 150000, 'Salaire du test', $2)`,
+        [compte.id, dir.id]
+      );
+
+      const resultat = await runInstallmentCollection({ actorId: dir.id });
+
+      // On juge sur le statut final, pas sur le contenu du compte rendu :
+      // `paid` ne porte que référence, rang et montant, pas l'identifiant
+      // de l'échéance.
+      const { rows: [final] } = await query(
+        `SELECT status::text FROM installments WHERE id = $1`, [echeance.id]
+      );
+      assert.equal(
+        final.status, 'payee',
+        'l’échéance en retard doit être reprise d’elle-même, sans geste de l’opérateur'
+      );
+      assert.ok(
+        resultat.paid.some((p) => p.reference === reference),
+        'et figurer au compte rendu du passage'
+      );
+
+      // Le crédit n'avait qu'une échéance : il doit être soldé.
+      const { rows: [dossier] } = await query(
+        `SELECT status::text FROM credit_requests WHERE id = $1`, [credit.id]
+      );
+      assert.equal(dossier.status, 'solde');
+    });
+
+  }
+);
