@@ -24,16 +24,32 @@
  *     partent au 04/01/2027 — la rentrée scolaire se rembourse à
  *     partir de janvier ;
  *
- *   • et surtout : un crédit dont une échéance a été prélevée dans le
- *     DERNIER MOIS part au 04/12/2026. « Le cas de Brady et Landry ne
- *     fait pas exception : ils ont déjà été coupés, alors ne prélève
- *     plus, tu attendras directement le 04 décembre. »
+ *   • et surtout : UNE MENSUALITÉ PAR MOIS CIVIL. Un crédit part au
+ *     04/12/2026 dans deux cas seulement :
  *
- *     Sans cette exception, les 15 crédits encaissés le 4 novembre à
- *     6 h, et les 34 prélevés le 27 octobre, se verraient réclamer une
- *     seconde mensualité — exactement le mois à deux échéances qui a
- *     mis MIYADIAMBA et NDOBA à découvert, mais appliqué à grande
- *     échelle. Un client paie une mensualité par mois.
+ *       – une échéance a déjà été prélevée en novembre (les 15 du
+ *         4 novembre à 6 h) : son mois est fait ;
+ *
+ *       – DEUX échéances ont été prélevées en octobre. C'est le cas de
+ *         MIYADIAMBA et NDOBA, dont les mois doublés ont déjà couvert
+ *         novembre par avance. « Ils ont déjà été coupés, alors ne
+ *         prélève plus, tu attendras directement le 04 décembre. »
+ *
+ *     Ma première version comparait à un mois glissant — prélevé après
+ *     le 4 octobre, donc décembre. Elle faisait sauter novembre à
+ *     32 crédits prélevés le 6 octobre, soit 4 203 041 F non appelés,
+ *     alors que 29 jours s'étaient écoulés. Un mois civil, pas 30
+ *     jours : c'est ainsi que les salaires tombent.
+ *
+ *     ⚠️ Et « deux mensualités en octobre » n'est TOUJOURS PAS le bon
+ *     critère. La direction a donné le sien le 04/11/2026 : c'est le
+ *     SOLDE DE FIN DE MOIS qui tranche. Deux mensualités payées avec un
+ *     solde final négatif = la seconde a été prise après le salaire,
+ *     donc en avance ; avec un solde à zéro = c'était du rattrapage
+ *     d'arriéré, et le mois suivant reste dû. Mon critère confondait
+ *     les deux et renvoyait sept crédits à décembre à tort.
+ *     Voir appliquer_regle_solde_fin_mois.mjs, qui corrige ce calcul
+ *     et qui est la référence.
  *
  * La date d'origine est conservée (original_due_date) et la décision
  * tracée (adjusted_by, adjusted_at, journal d'audit).
@@ -48,11 +64,9 @@ import pg from 'pg';
 
 const DEPART = '2026-11-04';
 const DEPART_SCOLAIRE = '2027-01-04';
-/**
- * Un mois avant la date de depart. Un credit dont une echeance a ete
- * prelevee apres ce jour a deja paye son mois : il reprend en decembre.
- */
-const SEUIL_UN_MOIS = '2026-10-04';
+/** Les deux mois civils qui servent a compter les mensualites deja payees. */
+const MOIS_COURANT = '2026-11-01';
+const MOIS_PRECEDENT = '2026-10-01';
 const executer = process.argv.includes('--executer');
 
 if (!process.env.DATABASE_PUBLIC_URL) {
@@ -119,21 +133,26 @@ for (const c of credits) {
   );
   if (!ech.length) continue;
 
-  // La derniere echeance REELLEMENT prelevee. On ecarte les paid_at
-  // dans le futur : les credits repris du fichier d'import en portent
-  // (192 echeances au 30/10/2026), et les prendre pour des paiements
-  // recents renverrait a tort le dossier au mois suivant.
-  const { rows: dernier } = await pool.query(
-    `SELECT to_char(max(paid_at), 'YYYY-MM-DD') AS q
+  // Combien d'echeances ce credit a-t-il REELLEMENT payees en octobre,
+  // et en novembre ? On ecarte les paid_at dans le futur : les credits
+  // repris du fichier d'import en portent (192 au 30/10/2026), et les
+  // prendre pour des paiements recents renverrait a tort le dossier au
+  // mois suivant.
+  const { rows: comptage } = await pool.query(
+    `SELECT
+       count(*) FILTER (WHERE paid_at >= $2::date AND paid_at < $3::date)::int AS octobre,
+       count(*) FILTER (WHERE paid_at >= $3::date AND paid_at <= now())::int AS novembre,
+       to_char(max(paid_at) FILTER (WHERE paid_at <= now()), 'YYYY-MM-DD') AS dernier
      FROM installments
-     WHERE credit_id = $1 AND status = 'payee' AND paid_at <= now()`,
-    [c.id]
+     WHERE credit_id = $1 AND status = 'payee'`,
+    [c.id, MOIS_PRECEDENT, MOIS_COURANT]
   );
-  const dernierPaiement = dernier[0]?.q ?? null;
+  const { octobre, novembre, dernier: dernierPaiement } = comptage[0];
 
-  // Deja coupe dans le dernier mois → il attend decembre. Un client
-  // paie une mensualite par mois, pas deux.
-  const dejaCoupe = dernierPaiement !== null && dernierPaiement > SEUIL_UN_MOIS;
+  // Une mensualite par mois civil. Le mois est fait si une echeance a
+  // ete prelevee ce mois-ci, ou si le mois precedent en a pris deux —
+  // un mois double couvre celui qui suit.
+  const dejaCoupe = Number(novembre) > 0 || Number(octobre) >= 2;
 
   const depart = c.produit === 'SCOLAIRE'
     ? DEPART_SCOLAIRE
@@ -144,7 +163,7 @@ for (const c of credits) {
 
   plan.push({
     credit: c, lignes: change, premiere: lignes[0],
-    depart, dejaCoupe, dernierPaiement,
+    depart, dejaCoupe, dernierPaiement, payeesOctobre: Number(octobre), payeesNovembre: Number(novembre),
   });
 }
 
@@ -154,7 +173,7 @@ const scolaires = plan.filter((p) => p.credit.produit === 'SCOLAIRE');
 const dejaPayes = plan.filter((p) => p.credit.produit !== 'SCOLAIRE' && p.dejaCoupe);
 const autres = plan.filter((p) => p.credit.produit !== 'SCOLAIRE' && !p.dejaCoupe);
 console.log(`  ${autres.length} credits ordinaires            → premiere echeance au ${DEPART}`);
-console.log(`  ${dejaPayes.length} deja coupes depuis le ${SEUIL_UN_MOIS} → premiere echeance au ${leQuatre(DEPART, 1)}`);
+console.log(`  ${dejaPayes.length} mois deja fait (novembre, ou octobre double) → premiere echeance au ${leQuatre(DEPART, 1)}`);
 console.log(`  ${scolaires.length} credits SCOLAIRE              → premiere echeance au ${DEPART_SCOLAIRE}\n`);
 
 // Ce que la collecte prendra au prochain passage de 6 h
