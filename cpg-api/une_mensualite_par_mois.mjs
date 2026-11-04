@@ -1,40 +1,45 @@
 /**
  * ═══════════════════════════════════════════════════════════════════
- *  LE SOLDE DE FIN DE MOIS DIT SI LA MENSUALITÉ A ÉTÉ PRISE
+ *  UNE MENSUALITÉ PAR MOIS, POUR TOUT LE MONDE
  * ═══════════════════════════════════════════════════════════════════
  *
- * « Lorsque tu arrives en fin de mois d'octobre et que le solde d'un
- *   client est passé de 0 à moins quelque chose, cela veut dire qu'il y
- *   a eu un prélèvement fait après qu'il ait perçu son salaire. Donc en
- *   début de mois il n'y a plus de prélèvement à faire. Mais pour le cas
- *   de GROA les soldes étaient déjà à 0 en fin de mois, donc il n'y a eu
- *   aucun prélèvement fait après la période des salaires, et le
- *   prélèvement de novembre reste dû. » (direction, 04/11/2026)
+ * « Chaque mois il y a un prélèvement, à moins que le client ait pris
+ *   deux crédits qui se suivent. » (direction, 04/11/2026)
  *
- * C'est le critère juste, et il remplace celui que j'avais retenu —
- * « deux mensualités payées en octobre » — qui confondait deux
- * situations opposées :
+ * C'est la règle, et elle est simple. Un crédit prélevé en octobre doit
+ * l'être en novembre. Le solde de fin de mois n'est PAS un critère pour
+ * sauter un mois : il explique seulement si quelque chose a été pris
+ * après le salaire, ce qui est une autre question.
  *
- *   • solde NÉGATIF au 30/10 : la seconde mensualité a été prise APRÈS
- *     le salaire, en découvert. Le client a payé d'avance, son novembre
- *     est couvert → 4 décembre.
+ * Je m'y suis trompé deux fois, et ce fichier remplace les deux
+ * tentatives :
  *
- *   • solde À ZÉRO ou positif au 30/10 : le salaire a tout absorbé mais
- *     rien n'a été pris au-delà. C'était du rattrapage d'arriéré, pas
- *     une avance → novembre reste dû.
+ *   1. « prélevé dans le dernier mois glissant → mois suivant » :
+ *      32 crédits prélevés le 6 octobre sautaient novembre,
+ *      4 203 041 F non appelés ;
  *
- * Mon critère envoyait sept crédits à décembre à tort, dont trois qui
- * pouvaient payer immédiatement.
+ *   2. « solde négatif au 30/10 → a payé d'avance → mois suivant » :
+ *      10 crédits de plus sautaient novembre, 1 418 551 F. MATEYA en
+ *      était l'exemple : solde à -169 553 F au 30 octobre, mais il
+ *      n'avait rien payé d'avance — il avait réglé septembre en retard
+ *      le 5 octobre, puis octobre le 27. Sa mensualité de novembre,
+ *      due le 26 à l'origine, s'est retrouvée au 4 décembre.
  *
- *   railway run --service Postgres -- node cpg-api/appliquer_regle_solde_fin_mois.mjs
- *   railway run --service Postgres -- node cpg-api/appliquer_regle_solde_fin_mois.mjs --executer
+ * La règle retenue ne regarde donc qu'une chose : CE MOIS-CI a-t-il
+ * déjà eu son prélèvement ? Si non, la prochaine échéance revient au 4
+ * du mois courant, et tout l'échéancier suit.
+ *
+ * Deux exceptions :
+ *   • les crédits SCOLAIRE, qui démarrent en janvier ;
+ *   • les comptes de test, qu'on ne touche pas.
+ *
+ *   railway run --service Postgres -- node cpg-api/une_mensualite_par_mois.mjs
+ *   railway run --service Postgres -- node cpg-api/une_mensualite_par_mois.mjs --executer
  */
 import pg from 'pg';
 
-const FIN_DE_MOIS = '2026-10-31';   // solde arrêté la veille de cette date
 const CIBLE = '2026-11-04';
-const DEPUIS = '2026-12-04';
-/** Comptes de test : on ne redate pas leurs échéances, ils seront fermés. */
+const MOIS_COURANT = '2026-11-01';
 const EXCLUS = ['koumba', 'Jean-Paul Ndong'];
 const executer = process.argv.includes('--executer');
 
@@ -57,37 +62,35 @@ const { rows: directeur } = await pool.query(
   `SELECT id FROM users WHERE role = 'directeur' ORDER BY created_at LIMIT 1`
 );
 
-// Tous les crédits renvoyés au 4 décembre sans avoir rien payé en
-// novembre, avec leur solde arrêté à la fin d'octobre.
+// Tout crédit actif qui n'a RIEN été prélevé ce mois-ci et dont la
+// prochaine échéance tombe après le 4 du mois courant.
 const { rows: candidats } = await pool.query(
   `SELECT c.id, c.reference, btrim(u.full_name) AS nom,
           btrim(COALESCE(u.employer,'—')) AS employeur,
-          COALESCE((SELECT SUM(le.amount) FROM ledger_entries le
-                    WHERE le.account_id = a.id AND le.created_at < $1::date), 0) AS solde_fin_mois,
-          COALESCE(b.balance, 0) AS solde_actuel
+          COALESCE(p.code, '(sans produit)') AS produit,
+          COALESCE(b.balance, 0) AS solde
    FROM credit_requests c
    JOIN users u ON u.id = c.user_id
-   JOIN accounts a ON a.user_id = u.id
+   LEFT JOIN product_versions pv ON pv.id = c.product_version_id
+   LEFT JOIN credit_products p ON p.id = pv.product_id
+   JOIN accounts a ON a.user_id = c.user_id
    LEFT JOIN account_balances b ON b.account_id = a.id
    WHERE c.status = 'approuve'
+     AND COALESCE(p.code, '') <> 'SCOLAIRE'
      AND (SELECT min(i.due_date) FROM installments i
-          WHERE i.credit_id = c.id AND i.status <> 'payee') = $2::date
+          WHERE i.credit_id = c.id AND i.status <> 'payee') > $1::date
      AND NOT EXISTS (SELECT 1 FROM installments x WHERE x.credit_id = c.id
-                     AND x.status = 'payee' AND x.paid_at >= date_trunc('month', now())
-                     AND x.paid_at <= now())
+                     AND x.status = 'payee' AND x.paid_at >= $2::date AND x.paid_at <= now())
    ORDER BY u.full_name`,
-  [FIN_DE_MOIS, DEPUIS]
+  [CIBLE, MOIS_COURANT]
 );
 
 const plan = [];
-console.log('agent                          employeur   solde fin oct   verdict');
 for (const c of candidats) {
-  const du = Number(c.solde_fin_mois) >= 0;
-  const exclu = EXCLUS.some((e) => c.nom.toLowerCase().includes(e.toLowerCase()));
-  console.log(`${c.nom.slice(0,30).padEnd(31)} ${c.employeur.slice(0,10).padEnd(11)} ${f(c.solde_fin_mois).padStart(13)}   `
-    + (exclu ? 'compte de test — laisse tel quel' : du ? 'NOVEMBRE DU' : 'decembre, correct'));
-  if (!du || exclu) continue;
-
+  if (EXCLUS.some((e) => c.nom.toLowerCase().includes(e.toLowerCase()))) {
+    console.log(`${c.nom} (${c.reference}) : compte de test, laisse tel quel`);
+    continue;
+  }
   const { rows: ech } = await pool.query(
     `SELECT id, sequence, to_char(due_date,'YYYY-MM-DD') AS due, amount
      FROM installments WHERE credit_id = $1 AND status <> 'payee' ORDER BY sequence`,
@@ -98,14 +101,15 @@ for (const c of candidats) {
 }
 
 console.log(`\n${plan.length} credit(s) a ramener au ${CIBLE} :\n`);
-let total = 0;
+console.log('client                     employeur   mensualite     solde   peut payer');
+let total = 0, peuvent = 0, montantPeuvent = 0;
 for (const p of plan) {
   total += Number(p.premiere.amount);
-  const peut = Number(p.credit.solde_actuel) >= Number(p.premiere.amount);
-  console.log(`  ${p.credit.reference.padEnd(11)} ${p.credit.nom.slice(0,28).padEnd(29)} ${f(p.premiere.amount).padStart(9)} F · `
-    + `solde ${f(p.credit.solde_actuel).padStart(9)} F · ${peut ? 'peut payer' : 'passera en retard'}`);
+  const ok = Number(p.credit.solde) >= Number(p.premiere.amount);
+  if (ok) { peuvent += 1; montantPeuvent += Number(p.premiere.amount); }
+  console.log(`${p.credit.nom.slice(0,25).padEnd(26)} ${p.credit.employeur.slice(0,10).padEnd(11)} ${f(p.premiere.amount).padStart(10)} ${f(p.credit.solde).padStart(9)}   ${ok ? 'OUI' : 'non'}`);
 }
-console.log(`\nDevient exigible le ${CIBLE} : ${f(total)} F`);
+console.log(`\n${f(total)} F deviennent exigibles · ${peuvent} peuvent payer tout de suite pour ${f(montantPeuvent)} F`);
 
 if (!executer) {
   console.log('\n(simulation — relancez avec --executer pour appliquer)');
@@ -133,7 +137,7 @@ try {
     `INSERT INTO audit_log (actor_id, actor_role, action, entity_type, entity_id, metadata, ip_address)
      VALUES ($1, 'directeur', 'operations.echeances_redatees', 'periode', $2, $3, NULL)`,
     [directeur[0].id, CIBLE, {
-      motif: 'Regle du solde de fin de mois : solde a zero au 30/10 = aucun prelevement apres le salaire, novembre reste du',
+      motif: 'Une mensualite par mois : tout credit sans prelevement ce mois-ci revient au 4 du mois courant',
       credits: plan.map((p) => `${p.credit.reference} ${p.credit.nom}`),
       echeances: n,
     }]

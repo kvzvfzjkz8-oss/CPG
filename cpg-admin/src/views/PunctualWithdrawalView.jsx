@@ -25,13 +25,14 @@
  */
 import React, { useState, useEffect } from 'react';
 import {
+  PiggyBank,
   Search, AlertTriangle, Check, Building2, HandCoins, Receipt, Percent, Banknote,
 } from 'lucide-react';
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, SectionTitle } from '../components/UI';
 import {
   rechercherClientsPaie, fetchCaissieresPourRetrait, demanderRetraitPonctuel,
-  apercuFraisPonctuel, demanderFraisPonctuel,
+  apercuFraisPonctuel, demanderFraisPonctuel, demanderVersementPonctuel,
 } from '../api/adminApi';
 
 const input = {
@@ -49,6 +50,14 @@ const OPERATIONS = [
   {
     k: 'retrait', t: 'Retrait sur le solde', i: Banknote,
     d: 'Débiter un compte : trop-perçu, décision de la direction, ou remise au guichet.',
+  },
+  {
+    // L'écran ne proposait que des débits, et le bouton « soumettre au
+    // directeur » restait donc gris quoi qu'on fasse quand il s'agissait
+    // de créditer. Le versement est le symétrique du retrait : même
+    // circuit, même validation du directeur, sens inverse.
+    k: 'versement', t: 'Versement sur le solde', i: PiggyBank,
+    d: 'Créditer un compte. Le client pourra ensuite retirer au guichet.',
   },
   {
     k: 'frais_tenue', t: 'Frais de tenue', i: Receipt,
@@ -114,11 +123,17 @@ export default function PunctualWithdrawalView() {
     return () => { annule = true; };
   }, [estFrais, operation, client, periode]);
 
+  // Un versement n'a ni destination ni caissière à désigner : l'argent
+  // va sur le compte, et le client le retirera plus tard s'il le veut.
+  const estVersement = operation === 'versement';
+
   const valide = estFrais
     ? Boolean(client) && Boolean(apercu) && apercu.montant > 0
       && !apercu.dejaPreleve && motif.trim().length >= 5
-    : Boolean(client) && Number(montant) >= 500 && motif.trim().length >= 5
-      && (destination === 'cpg' || caissierId);
+    : estVersement
+      ? Boolean(client) && Number(montant) >= 500 && motif.trim().length >= 5
+      : Boolean(client) && Number(montant) >= 500 && motif.trim().length >= 5
+        && (destination === 'cpg' || caissierId);
 
   const envoyer = async () => {
     setBusy(true);
@@ -128,6 +143,10 @@ export default function PunctualWithdrawalView() {
         ? await demanderFraisPonctuel({
           clientId: client.id, nature: operation, periode, motif: motif.trim(),
         })
+        : estVersement
+        ? await demanderVersementPonctuel({
+          clientId: client.id, montant: Number(montant), motif: motif.trim(),
+        })
         : await demanderRetraitPonctuel({
           clientId: client.id,
           montant: Number(montant),
@@ -135,7 +154,7 @@ export default function PunctualWithdrawalView() {
           destination,
           caissierId: destination === 'client' ? caissierId : undefined,
         });
-      setConfirme({ ...r, estFrais, nature: operation, periode });
+      setConfirme({ ...r, estFrais, estVersement, nature: operation, periode });
     } catch (e) {
       setErreur(e.message ?? "La demande n'a pas pu être enregistrée.");
     } finally {
@@ -385,6 +404,11 @@ export default function PunctualWithdrawalView() {
               />
             </div>
 
+            {/* Destination et caissière n'ont de sens que pour un DÉBIT :
+                un versement va sur le compte, et le client le retirera
+                plus tard par un retrait ordinaire s'il le souhaite. */}
+            {!estVersement && (
+              <>
             <div style={{ marginBottom: 16 }}>
               <label style={label}>Destination de la somme</label>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
@@ -430,6 +454,8 @@ export default function PunctualWithdrawalView() {
                   {caissieres.map((c) => <option key={c.id} value={c.id}>{c.nom}</option>)}
                 </select>
               </div>
+            )}
+              </>
             )}
           </>
         )}

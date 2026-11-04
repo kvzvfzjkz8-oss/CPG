@@ -89,6 +89,10 @@ export const PERMISSIONS = {
 
     // Retrait ponctuel sur le compte d'un client, soumis au directeur.
     'operations.demander_retrait_ponctuel',
+
+    // Versement ponctuel : créditer le compte d'un client. Symétrique
+    // du retrait, soumis à la même validation du directeur.
+    'operations.demander_versement_ponctuel',
   ],
   [ROLES.SUPERVISEUR]: [
     'messagerie_interne.acceder',

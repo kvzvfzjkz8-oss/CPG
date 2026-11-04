@@ -557,6 +557,17 @@ export async function demanderRetraitPonctuel({ clientId, montant, motif, destin
 }
 
 /**
+ * Opératrice : demande un VERSEMENT ponctuel sur le compte d'un client.
+ * Symétrique du retrait — rien n'est crédité avant la validation du
+ * directeur.
+ */
+export async function demanderVersementPonctuel({ clientId, montant, motif }) {
+  return apiRequest('/v1/admin/operations/versements-ponctuels', {
+    method: 'POST', body: { clientId, montant, motif },
+  });
+}
+
+/**
  * Rattrapage d'un frais de tenue ou d'agios oublié par le prélèvement
  * automatique du 25, sur un client et un mois précis.
  *

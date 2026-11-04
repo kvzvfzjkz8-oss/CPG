@@ -158,6 +158,82 @@ router.post(
  * directeur — même règle que pour un retrait de caisse, et c'est lui
  * qui vérifie à ce moment-là que le solde du client y suffit.
  */
+/**
+ * POST /admin/operations/versements-ponctuels
+ *
+ * « Nous souhaitons créditer de manière ponctuelle MATEYA un montant de
+ *   169 553 F. Normalement cet argent va directement sur le compte du
+ *   client avant qu'il ne retire son argent dans une caisse. »
+ *
+ * Le symétrique exact du retrait ponctuel. L'opératrice demande, le
+ * directeur valide, et le compte est crédité à la validation — jamais
+ * avant. Le garde-fou du 22/10/2026 vaut dans les deux sens : « le
+ * directeur doit valider toutes les opérations de prélèvement ponctuel
+ * ou versement ponctuel à un client venant de l'opérateur ».
+ *
+ * Aucune caissière à désigner, et aucun mouvement de caisse : à ce
+ * stade l'argent n'a pas bougé physiquement, le client a seulement un
+ * solde plus élevé. Il ne quittera CPG que lorsqu'il passera au guichet
+ * retirer, par un retrait client ordinaire.
+ *
+ * Le motif est obligatoire. Créditer un compte sans dire pourquoi,
+ * c'est ce qui a produit les écritures « fonds non justifiés » de
+ * septembre et les jours d'enquête qui ont suivi.
+ */
+const versementPonctuelSchema = z.object({
+  clientId: z.string().uuid(),
+  montant: z.coerce.number().int().min(500).max(5000000),
+  motif: z.string().trim().min(5).max(500),
+});
+
+router.post(
+  '/versements-ponctuels',
+  requirePermission('operations.demander_versement_ponctuel'),
+  validate(versementPonctuelSchema),
+  async (req, res, next) => {
+    try {
+      const { rows: client } = await query(
+        `SELECT u.id, btrim(u.full_name) AS nom, COALESCE(b.balance, 0) AS solde
+         FROM users u
+         JOIN accounts a ON a.user_id = u.id
+         LEFT JOIN account_balances b ON b.account_id = a.id
+         WHERE u.id = $1 AND u.role = 'client' AND u.status <> 'supprime'`,
+        [req.body.clientId]
+      );
+      if (!client[0]) throw new ApiError(404, 'Client introuvable.');
+
+      // Aucun controle de solde : on credite, le solde ne peut que
+      // monter. C'est tout l'interet d'un versement.
+      const { rows } = await query(
+        `INSERT INTO caisse_operations
+           (demandeur_id, type, montant, client_id, motif)
+         VALUES ($1, 'versement_ponctuel', $2, $3, $4)
+         RETURNING id, montant, statut, demandee_le, motif`,
+        [req.user.id, req.body.montant, req.body.clientId, req.body.motif]
+      );
+
+      await audit(req, {
+        action: 'operations.versement_ponctuel_demande',
+        entityType: 'caisse_operation',
+        entityId: rows[0].id,
+        metadata: {
+          clientId: req.body.clientId, client: client[0].nom,
+          montant: req.body.montant, soldeAvant: Number(client[0].solde),
+          motif: req.body.motif,
+        },
+      });
+
+      res.status(201).json({
+        ...rows[0],
+        client: client[0].nom,
+        message: 'Versement soumis au directeur. Le compte sera crédité à sa validation.',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
 const retraitPonctuelSchema = z
   .object({
     clientId: z.string().uuid(),

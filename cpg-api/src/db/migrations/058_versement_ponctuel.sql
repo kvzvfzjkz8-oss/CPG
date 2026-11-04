@@ -1,0 +1,32 @@
+-- ═══════════════════════════════════════════════════════════════════
+--  VERSEMENT PONCTUEL SUR LE COMPTE D'UN CLIENT
+-- ═══════════════════════════════════════════════════════════════════
+--
+-- « Nous souhaitons créditer de manière ponctuelle MATEYA un montant de
+--   169 553 F, sauf qu'elle n'y arrive pas. L'opérateur se plaint que le
+--   bouton soumettre au directeur est gris et non vert. Normalement cet
+--   argent va directement sur le compte du client avant qu'il ne retire
+--   son argent dans une caisse. » (direction, 04/11/2026)
+--
+-- Le bouton était gris parce que l'opération n'existait pas. L'écran des
+-- opérations ponctuelles ne proposait que des DÉBITS — retrait sur le
+-- solde, frais de tenue, agios. Aucun moyen de créditer un compte.
+--
+-- Le versement ponctuel est le symétrique exact du retrait ponctuel
+-- (migration 045) : l'opératrice le demande, le directeur le valide,
+-- et c'est seulement à la validation que le compte du client est
+-- crédité. Le garde-fou posé le 22/10/2026 reste entier — « le
+-- directeur doit valider toutes les opérations de prélèvement ponctuel
+-- ou versement ponctuel à un client venant de l'opérateur ».
+--
+-- ⚠️ Ce que j'avais écrit ici — « aucun mouvement de caisse n'est
+-- écrit » — était faux, et la direction l'a corrigé le même jour : « il
+-- est pris sur la caisse principale ». Voir les migrations 059 et 060,
+-- qui ajoutent le mouvement `versement_client` et le font diminuer le
+-- solde de la caisse principale.
+--
+-- `versement_ponctuel` n'entre en revanche dans AUCUNE vue de solde de
+-- CAISSIÈRE : elles énumèrent les types qui remplissent ou vident un
+-- tiroir, et celui-ci n'en touche aucun. L'argent ne passe par un
+-- guichet que si le client vient retirer, par un retrait ordinaire.
+ALTER TYPE caisse_operation_type ADD VALUE IF NOT EXISTS 'versement_ponctuel';

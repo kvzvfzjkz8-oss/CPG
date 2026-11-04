@@ -134,3 +134,38 @@ export function computeTotalCost(amount, durationMonths, monthlyRate, feeScale =
 export function generateReference(prefix = 'CPG') {
   return `${prefix}-${Math.floor(1000 + Math.random() * 9000)}`;
 }
+
+/**
+ * Une référence de dossier qui n'existe pas déjà.
+ *
+ * `generateReference()` tire au hasard parmi 9 000 valeurs — CPG-1000 à
+ * CPG-9999. Avec 253 dossiers en production au 04/11/2026, 2,8 % des
+ * demandes tombaient sur une référence déjà prise et échouaient sur la
+ * contrainte d'unicité, avec un message incompréhensible pour le
+ * gestionnaire : « Cette entrée existe déjà. » La proportion monte à
+ * chaque dossier accordé.
+ *
+ * On vérifie donc avant d'insérer, et on élargit à six chiffres après
+ * quelques essais : 900 000 valeurs au lieu de 9 000. Le format court
+ * reste privilégié pour que les références déjà imprimées sur les
+ * contrats gardent la même allure.
+ *
+ * Reste une course possible entre deux demandes simultanées ; la
+ * contrainte d'unicité en base demeure le dernier mot, et c'est bien
+ * ainsi — mais elle ne sera plus atteinte qu'exceptionnellement.
+ */
+export async function genererReferenceUnique(run, prefix = 'CPG') {
+  for (let essai = 0; essai < 12; essai += 1) {
+    const reference = essai < 8
+      ? generateReference(prefix)
+      : `${prefix}-${Math.floor(100000 + Math.random() * 900000)}`;
+    const { rows } = await run(
+      'SELECT 1 FROM credit_requests WHERE reference = $1',
+      [reference]
+    );
+    if (!rows[0]) return reference;
+  }
+  // Douze tirages infructueux : on ne boucle pas indéfiniment, et un
+  // suffixe horodaté est unique par construction.
+  return `${prefix}-${Date.now().toString().slice(-7)}`;
+}

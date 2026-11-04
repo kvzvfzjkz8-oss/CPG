@@ -6,7 +6,7 @@ import { validate } from '../middleware/validate.js';
 import { ApiError } from '../middleware/errorHandler.js';
 import {
   computeSchedule, computeTotalCost, computeFileFee,
-  generateReference, DEFAULT_MONTHLY_RATE,
+  genererReferenceUnique, DEFAULT_MONTHLY_RATE,
 } from '../services/creditService.js';
 import { listActiveProducts, getActiveScale } from '../services/productService.js';
 import { validateAgainstScale } from '../utils/rateVersioning.js';
@@ -218,7 +218,7 @@ router.post(
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING id, reference, amount, duration_months, status, file_fee, created_at`,
         [
-          generateReference(), req.user.id, montant, duree, rate, motif ?? null,
+          await genererReferenceUnique(query), req.user.id, montant, duree, rate, motif ?? null,
           scale?.version_id ?? null, fileFee,
         ]
       );

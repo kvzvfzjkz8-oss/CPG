@@ -310,7 +310,54 @@ export async function creditAgentSalariesFromCsv({ csvText, employeur, periode, 
  * Renvoie { ok: true, … }, avec `decouvert` à vrai quand l'opération
  * a mis le compte au négatif.
  */
-async function collecterUneEcheance(client, echeance, actorId) {
+async function collecterUneEcheance(client, echeance, actorId, { uneParMois = false } = {}) {
+  // ─────────────────────────────────────────────────────────────────
+  //  UNE SEULE MENSUALITÉ PAR MOIS ET PAR CRÉDIT
+  // ─────────────────────────────────────────────────────────────────
+  //
+  // « Un client qui prend un crédit se voit débité chaque mois une
+  //   seule fois de ce crédit, jusqu'à épuisement. Cela doit être une
+  //   règle de base. » (direction, 04/11/2026)
+  //
+  // Sans ce garde-fou, un échéancier qui porte deux échéances dues dans
+  // le même mois — ce qui arrive après tout réalignement de dates — se
+  // fait prélever deux fois en quelques jours. C'est ce qui a mis
+  // MIYADIAMBA et NDOBA à découvert le 27 octobre 2026 : ils avaient
+  // payé une mensualité le 5, retiré leur salaire au guichet, et la
+  // seconde est tombée six jours plus tard sur un compte vide.
+  //
+  // Le contrôle porte sur le MOIS CIVIL, pas sur trente jours : c'est
+  // ainsi que les salaires tombent, et c'est le raisonnement de la
+  // direction.
+  //
+  // Il ne s'applique qu'au PASSAGE AUTOMATIQUE. Le prélèvement ciblé de
+  // l'opératrice reste libre, et c'est volontaire : un client trois
+  // mois en retard qui touche enfin son salaire doit pouvoir être
+  // rattrapé, et c'est un geste humain, décidé et visible — pas une
+  // tâche de nuit qui vide un compte sans que personne ne regarde.
+  // Le dégât du 27 octobre venait du passage automatique, qui avait
+  // pris deux mensualités à six jours d'intervalle.
+  const { rows: dejaCeMois } = uneParMois ? await client.query(
+    `SELECT sequence, to_char(paid_at, 'YYYY-MM-DD') AS paye_le
+     FROM installments
+     WHERE credit_id = $1 AND status = 'payee'
+       AND paid_at >= date_trunc('month', now()) AND paid_at <= now()
+     ORDER BY paid_at DESC LIMIT 1`,
+    [echeance.credit_id]
+  ) : { rows: [] };
+  if (dejaCeMois[0]) {
+    return {
+      ok: false,
+      id: echeance.id,
+      reference: echeance.reference,
+      sequence: echeance.sequence,
+      amount: echeance.amount,
+      soldeDisponible: null,
+      motif: `mensualité du mois déjà prélevée (échéance ${dejaCeMois[0].sequence} `
+        + `le ${dejaCeMois[0].paye_le})`,
+    };
+  }
+
   // FOR UPDATE sur le compte : si l'opérateur relance la collecte
   // pendant qu'une transaction Mobile Money est en cours sur le
   // même compte, on attend plutôt que de lire un solde obsolète.
@@ -466,7 +513,7 @@ export async function runInstallmentCollection({ asOf, actorId }) {
 
   for (const installment of due) {
     await withTransaction(async (client) => {
-      const issue = await collecterUneEcheance(client, installment, actorId);
+      const issue = await collecterUneEcheance(client, installment, actorId, { uneParMois: true });
       if (issue.ok) {
         paid.push({
           reference: issue.reference, sequence: issue.sequence, amount: issue.amount,

@@ -1,0 +1,22 @@
+-- ═══════════════════════════════════════════════════════════════════
+--  LE VERSEMENT PONCTUEL SORT DE LA CAISSE PRINCIPALE
+-- ═══════════════════════════════════════════════════════════════════
+--
+-- « C'est un créditage ponctuel, il est soumis aussi à la validation du
+--   directeur et est pris sur la caisse principale. » (direction,
+--   04/11/2026)
+--
+-- J'avais écrit l'inverse dans la migration 058 : qu'aucun mouvement de
+-- caisse n'était fait, par analogie avec le déblocage d'un crédit. La
+-- direction tranche autrement, et elle a raison — un versement ponctuel
+-- n'est pas un prêt, c'est une somme que CPG sort de ses fonds pour la
+-- porter au compte d'un client. Elle doit donc diminuer la caisse
+-- principale au moment de la validation.
+--
+-- `recuperation_client` existait déjà pour le sens inverse, celui du
+-- retrait ponctuel qui ramène de l'argent du client vers CPG. Voici son
+-- symétrique.
+--
+-- ALTER TYPE ne peut pas servir dans la même transaction que la valeur
+-- ajoutée : la 060 s'en sert pour la vue de solde.
+ALTER TYPE caisse_principale_mouvement_type ADD VALUE IF NOT EXISTS 'versement_client';

@@ -60,6 +60,12 @@ export const PERMISSIONS = {
     // la validation du directeur, comme pour un retrait de caisse.
     'operations.demander_retrait_ponctuel',
 
+    // Versement ponctuel : crediter le compte d'un client sur decision
+    // de la direction. Symetrique du retrait ponctuel, et soumis a la
+    // meme validation — le garde-fou du 22/10/2026 vaut dans les deux
+    // sens, « prelevement ponctuel OU versement ponctuel ».
+    'operations.demander_versement_ponctuel',
+
     // Rattrapage d'un frais de tenue ou d'agios que le prelevement
     // automatique du 25 a manque — un agent credite apres cette date,
     // ou cree entre deux passages. Distincte de frais.appliquer, qui

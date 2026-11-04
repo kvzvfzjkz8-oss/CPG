@@ -968,6 +968,77 @@ async function validerUneOperation({ operationId, userId }) {
     }
 
     // ─────────────────────────────────────────────────────────────
+    // Versement ponctuel : le symetrique du retrait ponctuel.
+    //
+    // « Normalement cet argent va directement sur le compte du client
+    //   avant qu'il ne retire son argent dans une caisse. » C'est donc
+    //   ici, et nulle part ailleurs, que le compte est credite.
+    //
+    // Type `ajustement` et non `depot` : le client n'a rien apporte,
+    // c'est CPG qui porte la somme a son compte sur decision de la
+    // direction. Un `depot` ferait croire a un versement d'especes au
+    // guichet, et le brouillard de caisse chercherait une entree qui
+    // n'existe pas.
+    //
+    // « Il est pris sur la caisse principale » (direction, 04/11/2026).
+    // La somme en sort donc ici, par un mouvement `versement_client` —
+    // le symetrique de la `recuperation_client` du retrait ponctuel.
+    // Sans cette ecriture, de l'argent serait porte au compte d'un
+    // client sans jamais quitter les fonds de l'entreprise, et le
+    // directeur verrait un solde de caisse principale qu'il n'a plus.
+    //
+    // Aucune caisse de CAISSIERE n'est touchee : l'argent ne passe par
+    // un guichet que si le client vient retirer, par un retrait
+    // ordinaire — jamais les deux a la fois.
+    if (operation.type === 'versement_ponctuel') {
+      const { rows: compte } = await client.query(
+        `SELECT a.id AS account_id FROM accounts a
+         WHERE a.user_id = $1 ORDER BY a.created_at LIMIT 1`,
+        [operation.client_id]
+      );
+      if (!compte[0]) throw new ApiError(404, 'Compte du client introuvable.');
+
+      // Meme controle que pour un transfert vers une caissiere : on ne
+      // promet pas une somme que la caisse principale n'a pas.
+      const { rows: principale } = await client.query(
+        'SELECT COALESCE(solde, 0) AS solde FROM caisse_principale_solde'
+      );
+      const disponible = Number(principale[0]?.solde ?? 0);
+      if (disponible < Number(operation.montant)) {
+        throw new ApiError(
+          422,
+          `La caisse principale ne contient que ${disponible} FCFA — insuffisant pour `
+          + `verser ${operation.montant} FCFA. Alimentez-la d'abord, ou rejetez la demande.`
+        );
+      }
+
+      const { rows: entry } = await client.query(
+        `INSERT INTO ledger_entries (account_id, type, amount, label, reference, created_by)
+         VALUES ($1, 'ajustement', $2, $3, $4, $5)
+         RETURNING id`,
+        [
+          compte[0].account_id, operation.montant,
+          `Versement ponctuel — ${operation.motif}`,
+          `VERSEMENT-PONCTUEL-${operation.id.slice(0, 8)}`,
+          userId,
+        ]
+      );
+      ledgerEntryId = entry[0].id;
+
+      // Le client n'est pas une colonne de cette table : c'est
+      // `operation_id` qui porte le lien, exactement comme pour la
+      // recuperation_client du retrait ponctuel.
+      await client.query(
+        `INSERT INTO caisse_principale_mouvements (type, montant, operation_id, motif, cree_par)
+         VALUES ('versement_client', $1, $2, $3, $4)`,
+        [
+          operation.montant, operation.id,
+          `Versement ponctuel — ${operation.motif}`, userId,
+        ]
+      );
+    }
+
+    // ─────────────────────────────────────────────────────────────
     // Rattrapage d'un frais de tenue ou d'agios oublié par le
     // prélèvement automatique du 25.
     //
