@@ -90,19 +90,22 @@ async function resolveSalaryLines(run, { entries, employeur, periode }) {
   for (const entry of entries) {
     const { identifiant, montant } = entry;
 
+    // Le montant accompagne chaque rejet : sans lui, on sait qu'un agent
+    // n'a pas ete paye mais pas de combien, et la comparaison avec le
+    // fichier de l'employeur reste impossible.
     if (!Number.isInteger(montant) || montant <= 0) {
-      notFound.push({ identifiant, motif: 'montant_invalide' });
+      notFound.push({ identifiant, montant: null, motif: 'montant_invalide' });
       continue;
     }
 
     const { match, ambiguous } = await findClientByIdentifier(run, identifiant);
 
     if (ambiguous) {
-      notFound.push({ identifiant, motif: 'nom_ambigu' });
+      notFound.push({ identifiant, montant, motif: 'nom_ambigu' });
       continue;
     }
     if (!match) {
-      notFound.push({ identifiant, motif: 'client_introuvable' });
+      notFound.push({ identifiant, montant, motif: 'client_introuvable' });
       continue;
     }
 
@@ -116,7 +119,7 @@ async function resolveSalaryLines(run, { entries, employeur, periode }) {
       [match.account_id, reference]
     );
     if (existing[0]) {
-      notFound.push({ identifiant, motif: 'deja_credite_ce_mois' });
+      notFound.push({ identifiant, montant, motif: 'deja_credite_ce_mois' });
       continue;
     }
 
@@ -190,6 +193,22 @@ export async function creditAgentSalaries({ entries, employeur, periode, actorId
       credited.push({ identifiant: line.identifiant, nom: line.nom, montant: line.montant });
     }
 
+    // Les lignes ecartees sont CONSERVEES (migration 057). Une ligne
+    // rejetee est un agent qui n'a pas ete paye : jusqu'ici elle
+    // s'affichait a l'ecran et disparaissait, et l'on ne pouvait plus
+    // dire pourquoi QSR avait paye 39 agents sur 44 le 03/11/2026.
+    //
+    // Dans la meme transaction que les credits : si l'import echoue,
+    // ses rejets ne doivent pas survivre a un lot qui n'a pas eu lieu.
+    for (const rejet of notFound) {
+      await run(
+        `INSERT INTO payroll_import_rejects
+           (reference, employeur, periode, identifiant, montant, motif, importe_par)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [reference, employeur, periode, rejet.identifiant, rejet.montant ?? null, rejet.motif, actorId]
+      );
+    }
+
     return {
       reference,
       credited,
@@ -197,6 +216,39 @@ export async function creditAgentSalaries({ entries, employeur, periode, actorId
       total: credited.reduce((sum, c) => sum + c.montant, 0),
     };
   });
+}
+
+/**
+ * Les lignes ecartees d'un import de paie, du plus recent au plus
+ * ancien. Sans periode ni employeur, renvoie les derniers rejets tous
+ * lots confondus — ce que l'operatrice veut voir en ouvrant l'ecran.
+ */
+export async function fetchPayrollRejects({ periode, employeur, limite = 200 } = {}) {
+  const { rows } = await query(
+    `SELECT r.id, r.reference, r.employeur, r.periode, r.identifiant,
+            r.montant, r.motif, r.created_at,
+            btrim(u.full_name) AS importe_par_nom
+     FROM payroll_import_rejects r
+     LEFT JOIN users u ON u.id = r.importe_par
+     WHERE ($1::text IS NULL OR r.periode = $1)
+       AND ($2::text IS NULL OR r.employeur = $2)
+     ORDER BY r.created_at DESC, r.identifiant
+     LIMIT $3`,
+    [periode ?? null, employeur ?? null, limite]
+  );
+
+  // Un meme agent peut etre rejete a chaque tentative d'import : on
+  // compte les lots distincts pour que l'ecran ne presente pas trois
+  // fois la meme ligne comme trois problemes differents.
+  const parMotif = {};
+  for (const r of rows) parMotif[r.motif] = (parMotif[r.motif] ?? 0) + 1;
+
+  return {
+    rejets: rows,
+    total: rows.length,
+    parMotif,
+    lots: [...new Set(rows.map((r) => r.reference))].length,
+  };
 }
 
 /**
@@ -215,6 +267,27 @@ export async function creditAgentSalariesFromCsv({ csvText, employeur, periode, 
   }
 
   const result = await creditAgentSalaries({ entries, employeur, periode, actorId });
+
+  // Les lignes que le PARSEUR a refusées sont conservées elles aussi :
+  // une ligne mal formée est un agent qui n'a pas été payé, exactement
+  // comme un nom introuvable. Elles n'atteignent jamais
+  // resolveSalaryLines, donc ce rattachement se fait ici.
+  //
+  // On garde le contenu brut de la ligne : c'est le seul moyen de
+  // retrouver de qui il s'agissait quand même l'identifiant manque.
+  for (const e of erreurs) {
+    await query(
+      `INSERT INTO payroll_import_rejects
+         (reference, employeur, periode, identifiant, montant, motif, importe_par)
+       VALUES ($1, $2, $3, $4, NULL, $5, $6)`,
+      [
+        result.reference, employeur, periode,
+        `ligne ${e.ligne} : ${String(e.contenu ?? '').slice(0, 200)}`,
+        e.motif, actorId,
+      ]
+    );
+  }
+
   return { ...result, lignesInvalides: erreurs };
 }
 

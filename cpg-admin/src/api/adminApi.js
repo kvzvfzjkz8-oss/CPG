@@ -1025,6 +1025,18 @@ export async function fetchCoffreMouvements(coffre, mois) {
   return apiRequest(`/v1/caisse/coffres/${coffre}/mouvements${qs}`);
 }
 
+/**
+ * Les lignes de paie écartées à l'import, avec leur motif. Sans
+ * paramètre, les derniers rejets tous lots confondus.
+ */
+export async function fetchRejetsPaie({ periode, employeur } = {}) {
+  const p = new URLSearchParams();
+  if (periode) p.set('periode', periode);
+  if (employeur) p.set('employeur', employeur);
+  const qs = p.toString();
+  return apiRequest(`/v1/admin/operations/paie/rejets${qs ? `?${qs}` : ''}`);
+}
+
 /** Les découverts autorisés en cours — ils n'ont pas d'échéancier. */
 export async function fetchDecouverts() {
   return apiRequest('/v1/admin/operations/decouverts');

@@ -15,7 +15,7 @@ import {
   fetchInstallmentsByCreditReference, proposeInstallmentAdjustment,
   fetchPendingInstallmentAdjustments, decideInstallmentAdjustment, fetchSchedulerStatus,
   fetchOverdueInstallments, fetchAccountBalances, zeroOutAccountBalances,
-  fetchMonthInstallments, collectInstallments, fetchClientsDouteux,
+  fetchMonthInstallments, collectInstallments, fetchClientsDouteux, fetchPayrollRejects,
 } from '../services/operationsService.js';
 import { previewFraisPonctuel } from '../services/feeService.js';
 import { fetchDecouvertsEnCours, runInteretsDecouvert } from '../services/decouvertService.js';
@@ -682,6 +682,37 @@ router.post(
 /* ═══════════════════════════════════════════════════════════════════
    PRÉLÈVEMENT DES ÉCHÉANCES DE CRÉDIT
    ═══════════════════════════════════════════════════════════════════ */
+
+/**
+ * GET /admin/operations/paie/rejets — les lignes de paie écartées, avec
+ * leur motif.
+ *
+ * « Corrige les lignes rejetées à l'import de paie. » Le 03/11/2026,
+ * QSR a payé 39 agents sur 44 et rien ne permettait de dire pourquoi
+ * les 5 autres ne l'avaient pas été : l'import affichait ses rejets à
+ * l'écran puis les oubliait.
+ *
+ * `periode` (AAAA-MM) et `employeur` restreignent la lecture ; sans
+ * eux, les derniers rejets tous lots confondus.
+ */
+router.get(
+  '/paie/rejets',
+  requirePermission('operations.lire'),
+  validate(z.object({
+    periode: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+    employeur: z.string().min(1).max(120).optional(),
+  }), 'query'),
+  async (req, res, next) => {
+    try {
+      res.json(await fetchPayrollRejects({
+        periode: req.query.periode,
+        employeur: req.query.employeur,
+      }));
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 /**
  * GET /admin/operations/decouverts — les découverts autorisés en cours.

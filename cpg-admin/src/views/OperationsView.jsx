@@ -11,7 +11,7 @@ import {
   reverseLedgerTransaction, fetchInstallmentsByReference, proposeInstallmentAdjustment,
   fetchSchedulerStatus, runAgiosBatch, fetchCompteAgios, runTenueCompteBatch, fetchCompteTenue,
   fetchCreditRequests, supprimerCreditActif,
-  fetchDecouverts, preleverInteretsDecouvert,
+  fetchDecouverts, preleverInteretsDecouvert, fetchRejetsPaie,
 } from '../api/adminApi';
 import { useAuth } from '../auth/AuthContext';
 
@@ -61,7 +61,12 @@ export default function OperationsView() {
           { key: 'decouverts', label: 'Découverts', icon: TrendingDown },
         ]}
       />
-      {tab === 'paie' && <PayrollImport />}
+      {tab === 'paie' && (
+        <>
+          <PayrollImport />
+          <RejetsPaiePanel />
+        </>
+      )}
       {tab === 'verification' && <Verification />}
       {tab === 'echeances' && <InstallmentCorrection />}
       {tab === 'decouverts' && <DecouvertsPanel />}
@@ -288,6 +293,118 @@ function DecouvertsPanel() {
               </div>
             ))
           )}
+        </>
+      )}
+    </Card>
+  );
+}
+
+
+/** Libellés des motifs de rejet, tels que le service les écrit. */
+const MOTIFS_REJET = {
+  montant_invalide: 'Montant absent ou invalide',
+  nom_ambigu: 'Plusieurs clients portent ce nom',
+  client_introuvable: 'Aucun client ne correspond',
+  deja_credite_ce_mois: 'Déjà crédité pour cette période',
+  colonnes_manquantes: 'Ligne mal formée dans le fichier',
+  identifiant_manquant: 'Identifiant absent de la ligne',
+};
+
+/**
+ * Les lignes de paie écartées, avec leur motif.
+ *
+ * Elles n'étaient pas conservées : l'import les affichait puis les
+ * oubliait. Le 3 novembre 2026, QSR a payé 39 agents sur 44 et plus
+ * rien ne permettait de dire pourquoi les 5 autres étaient restés de
+ * côté. Une ligne écartée est un agent qui n'a pas été payé.
+ */
+function RejetsPaiePanel() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [erreur, setErreur] = useState('');
+
+  const load = () => {
+    setLoading(true);
+    setErreur('');
+    fetchRejetsPaie()
+      .then(setData)
+      .catch((e) => setErreur(e.message || 'Chargement impossible.'))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  return (
+    <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 16 }}>
+      <SectionTitle>Lignes de paie écartées</SectionTitle>
+
+      <p style={{ margin: 0, padding: '10px 20px', fontSize: 11, color: colors.muted, fontFamily: fonts.body, borderBottom: `1px solid ${colors.line}` }}>
+        Chaque ligne du fichier que l'import n'a pas pu créditer, avec son motif. Un agent
+        qui n'apparaît pas ici et qui n'a pas été payé n'était pas sur le fichier de
+        l'employeur.
+      </p>
+
+      {erreur && (
+        <div style={{ padding: '12px 20px', borderBottom: `1px solid ${colors.line}` }}>
+          <p style={{ margin: 0, fontSize: 12, color: colors.danger, fontFamily: fonts.body }}>{erreur}</p>
+          <button
+            onClick={load}
+            style={{ marginTop: 6, border: 'none', background: 'transparent', cursor: 'pointer', color: colors.forest, fontSize: 12, fontWeight: 600, fontFamily: fonts.body, textDecoration: 'underline', padding: 0 }}
+          >
+            Réessayer
+          </button>
+        </div>
+      )}
+
+      {loading && (
+        <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
+          Chargement…
+        </p>
+      )}
+
+      {!loading && !erreur && data && data.total === 0 && (
+        <p style={{ padding: 28, textAlign: 'center', color: colors.muted, fontSize: 13, fontFamily: fonts.body }}>
+          Aucune ligne écartée enregistrée. Les imports antérieurs au 4 novembre 2026 ne
+          conservaient pas leurs rejets.
+        </p>
+      )}
+
+      {!loading && !erreur && data && data.total > 0 && (
+        <>
+          <div style={{ display: 'flex', gap: 24, padding: '14px 20px', borderBottom: `1px solid ${colors.line}`, flexWrap: 'wrap' }}>
+            {Object.entries(data.parMotif).map(([motif, n]) => (
+              <div key={motif}>
+                <p style={{ margin: 0, fontSize: 10, color: colors.muted, fontFamily: fonts.body, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                  {MOTIFS_REJET[motif] ?? motif}
+                </p>
+                <p style={{ margin: '3px 0 0', fontSize: 15, fontWeight: 700, color: colors.danger, fontFamily: fonts.mono }}>{n}</p>
+              </div>
+            ))}
+          </div>
+
+          {data.rejets.map((r) => (
+            <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, padding: '10px 20px', borderBottom: `1px solid ${colors.line}` }}>
+              <div style={{ minWidth: 0 }}>
+                <p style={{ margin: 0, fontSize: 12, color: colors.ink, fontFamily: fonts.body, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {r.identifiant}
+                </p>
+                <p style={{ margin: '2px 0 0', fontSize: 10, color: colors.muted, fontFamily: fonts.body }}>
+                  {r.employeur} · {r.periode} · {new Date(r.created_at).toLocaleDateString('fr-FR')}
+                  {r.importe_par_nom && ` · importé par ${r.importe_par_nom}`}
+                </p>
+              </div>
+              <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                <p style={{ margin: 0, fontSize: 11, fontWeight: 600, color: colors.danger, fontFamily: fonts.body }}>
+                  {MOTIFS_REJET[r.motif] ?? r.motif}
+                </p>
+                {r.montant != null && (
+                  <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.mono }}>
+                    {formatFCFA(r.montant)} F demandés
+                  </p>
+                )}
+              </div>
+            </div>
+          ))}
         </>
       )}
     </Card>
