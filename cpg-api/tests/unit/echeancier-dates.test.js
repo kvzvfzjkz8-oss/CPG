@@ -24,10 +24,27 @@ import { buildInstallments, computeSchedule } from '../../src/services/creditSer
 const jour = (d) => d.toISOString().slice(0, 10);
 
 describe('Échéancier — les dates', () => {
-  test('sans date de séance, la première échéance reste à l’approbation + 1 mois', () => {
+  test('sans date de séance, l’échéancier tombe le 4 du mois suivant', () => {
+    // « Tu centralises tout au 04 » (direction, 04/11/2026). Le défaut
+    // était « approbation + 1 mois », qui donnait ici un 23 novembre :
+    // il éparpillait les prélèvements sur tous les jours du calendrier,
+    // et il a fallu redater à la main les 25 dossiers du 23/10, puis
+    // les 381 échéances du 4 novembre.
     const { monthlyPayment, totalDue } = computeSchedule(300000, 3, 0.05);
     const ech = buildInstallments(new Date('2026-10-23T14:00:00Z'), 3, monthlyPayment, totalDue);
-    assert.deepEqual(ech.map((e) => jour(e.dueDate)), ['2026-11-23', '2026-12-23', '2027-01-23']);
+    assert.deepEqual(ech.map((e) => jour(e.dueDate)), ['2026-11-04', '2026-12-04', '2027-01-04']);
+  });
+
+  test('le 4 par défaut tient aussi quand l’approbation tombe en fin d’année', () => {
+    const { monthlyPayment, totalDue } = computeSchedule(200000, 2, 0.05);
+    const ech = buildInstallments('2026-12-28', 2, monthlyPayment, totalDue);
+    assert.deepEqual(ech.map((e) => jour(e.dueDate)), ['2027-01-04', '2027-02-04']);
+  });
+
+  test('une date de séance l’emporte toujours sur le 4 par défaut', () => {
+    const { monthlyPayment, totalDue } = computeSchedule(200000, 2, 0.05);
+    const ech = buildInstallments('2026-10-23', 2, monthlyPayment, totalDue, '2026-11-15');
+    assert.deepEqual(ech.map((e) => jour(e.dueDate)), ['2026-11-15', '2026-12-15']);
   });
 
   test('avec une date de séance, tout l’échéancier s’y aligne', () => {

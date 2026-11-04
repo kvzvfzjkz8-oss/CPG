@@ -26,6 +26,13 @@ export function computeSchedule(amount, durationMonths, monthlyRate = DEFAULT_MO
   };
 }
 
+/**
+ * Jour du mois où tombent tous les prélèvements. Posé par la direction
+ * le 04/11/2026 : une seule date pour tout le monde, pour ne plus avoir
+ * à réaligner les échéanciers chaque mois.
+ */
+const JOUR_DE_PRELEVEMENT = 4;
+
 /** Génère les dates d'échéance, une par mois à compter du déblocage. */
 /**
  * `n` mois après une date, renvoyé à midi UTC.
@@ -69,6 +76,19 @@ function moisApres(depuis, n) {
   return new Date(Date.UTC(annee, mois + n, Math.min(jour, dernierJour), 12));
 }
 
+/**
+ * Le 4 du mois suivant une date donnée. C'est le jour de prélèvement de
+ * la maison : les salaires des entreprises partenaires tombent en fin
+ * de mois, et le 4 laisse le temps au virement d'arriver sans courir
+ * jusqu'au milieu du mois.
+ */
+function leQuatreApres(depuis) {
+  const d = typeof depuis === 'string'
+    ? (() => { const [a, m, j] = depuis.split('-').map(Number); return new Date(Date.UTC(a, m - 1, j, 12)); })()
+    : new Date(depuis);
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, JOUR_DE_PRELEVEMENT, 12));
+}
+
 export function buildInstallments(
   startDate, durationMonths, monthlyPayment, totalDue, premiereEcheance = null
 ) {
@@ -78,13 +98,18 @@ export function buildInstallments(
   for (let i = 1; i <= durationMonths; i += 1) {
     // `premiereEcheance` vient de la séance de commission : le
     // directeur fixe la date du premier prélèvement pour tout ce qui y
-    // est validé. Sans elle, l'échéancier part de la date
-    // d'approbation + 1 mois — ce qui a obligé à redater à la main les
-    // 25 dossiers du 23/10/2026, leur première échéance tombant au 23
-    // novembre alors que la direction voulait le 3.
+    // est validé, et elle l'emporte toujours.
+    //
+    // Sans elle, l'échéancier tombe le 4 du mois suivant. Le défaut
+    // était « date d'approbation + 1 mois », et il éparpillait les
+    // prélèvements sur tous les jours du calendrier : il a fallu
+    // redater à la main les 25 dossiers du 23/10/2026, puis les 381
+    // échéances du 4 novembre. « Tu centralises tout au 04 »
+    // (direction, 04/11/2026) — c'est désormais le défaut, pas une
+    // reprise mensuelle.
     const due = premiereEcheance
       ? moisApres(premiereEcheance, i - 1)
-      : moisApres(startDate, i);
+      : moisApres(leQuatreApres(startDate), i - 1);
 
     // La dernière échéance absorbe l'arrondi, pour que la somme des
     // mensualités soit exactement égale au total dû. Sans cela, le

@@ -310,52 +310,114 @@ export async function creditAgentSalariesFromCsv({ csvText, employeur, periode, 
  * Renvoie { ok: true, … }, avec `decouvert` à vrai quand l'opération
  * a mis le compte au négatif.
  */
-async function collecterUneEcheance(client, echeance, actorId, { uneParMois = false } = {}) {
+async function collecterUneEcheance(client, echeance, actorId, { forcer = false, ignorerDepuis = null } = {}) {
   // ─────────────────────────────────────────────────────────────────
-  //  UNE SEULE MENSUALITÉ PAR MOIS ET PAR CRÉDIT
+  //  UNE MENSUALITÉ PAR SALAIRE, ET PAR CRÉDIT
   // ─────────────────────────────────────────────────────────────────
   //
-  // « Un client qui prend un crédit se voit débité chaque mois une
-  //   seule fois de ce crédit, jusqu'à épuisement. Cela doit être une
-  //   règle de base. » (direction, 04/11/2026)
+  // « Le salaire du mois d'octobre prélève l'échéance prévue fin
+  //   septembre ou début octobre. L'agent récupère tout son argent,
+  //   c'est ce qu'on fait dans notre microfinance : le solde doit être
+  //   avoisinant zéro après la récupération des salaires. Donc si un
+  //   prélèvement est passé entre la période des salaires et celui du
+  //   27 ou du 30, le solde a dû passer en négatif. »
+  //   (direction, 04/11/2026)
   //
-  // Sans ce garde-fou, un échéancier qui porte deux échéances dues dans
-  // le même mois — ce qui arrive après tout réalignement de dates — se
-  // fait prélever deux fois en quelques jours. C'est ce qui a mis
-  // MIYADIAMBA et NDOBA à découvert le 27 octobre 2026 : ils avaient
-  // payé une mensualité le 5, retiré leur salaire au guichet, et la
-  // seconde est tombée six jours plus tard sur un compte vide.
+  // C'est le modèle réel de la maison, et il dit tout : chaque salaire
+  // paie UNE mensualité. D'où le critère, en deux temps :
   //
-  // Le contrôle porte sur le MOIS CIVIL, pas sur trente jours : c'est
-  // ainsi que les salaires tombent, et c'est le raisonnement de la
-  // direction.
+  //   • pas de nouveau prélèvement tant qu'aucun SALAIRE n'est arrivé
+  //     depuis le dernier. C'est ce qui a manqué le 27 octobre 2026,
+  //     où MIYADIAMBA et NDOBA, déjà prélevés le 5, l'ont été de
+  //     nouveau vingt-deux jours plus tard sans salaire entre les
+  //     deux ;
   //
-  // Il ne s'applique qu'au PASSAGE AUTOMATIQUE. Le prélèvement ciblé de
-  // l'opératrice reste libre, et c'est volontaire : un client trois
-  // mois en retard qui touche enfin son salaire doit pouvoir être
-  // rattrapé, et c'est un geste humain, décidé et visible — pas une
-  // tâche de nuit qui vide un compte sans que personne ne regarde.
-  // Le dégât du 27 octobre venait du passage automatique, qui avait
-  // pris deux mensualités à six jours d'intervalle.
-  const { rows: dejaCeMois } = uneParMois ? await client.query(
-    `SELECT sequence, to_char(paid_at, 'YYYY-MM-DD') AS paye_le
-     FROM installments
-     WHERE credit_id = $1 AND status = 'payee'
-       AND paid_at >= date_trunc('month', now()) AND paid_at <= now()
-     ORDER BY paid_at DESC LIMIT 1`,
-    [echeance.credit_id]
-  ) : { rows: [] };
-  if (dejaCeMois[0]) {
-    return {
-      ok: false,
-      id: echeance.id,
-      reference: echeance.reference,
-      sequence: echeance.sequence,
-      amount: echeance.amount,
-      soldeDisponible: null,
-      motif: `mensualité du mois déjà prélevée (échéance ${dejaCeMois[0].sequence} `
-        + `le ${dejaCeMois[0].paye_le})`,
-    };
+  //   • et si le dernier prélèvement a laissé le compte NÉGATIF, c'est
+  //     qu'il a été pris après que le salaire soit reparti au guichet :
+  //     ce n'est pas ce salaire-là qui l'a payé, mais le suivant. Il
+  //     consomme donc le cycle d'après, et il faut deux salaires avant
+  //     la mensualité suivante.
+  //
+  // Deux tentatives antérieures, toutes deux fausses, sont remplacées
+  // par celle-ci :
+  //   1. « une par mois civil » : 27 octobre et 4 novembre tombent dans
+  //      deux mois différents, le contrôle ne voyait rien ;
+  //   2. « au moins vingt-cinq jours d'écart » : elle bloquait
+  //      27/10 → 04/11 même quand le prélèvement du 27 avait bien été
+  //      couvert par le salaire d'octobre, et renvoyait à tort des
+  //      mensualités dues au mois suivant.
+  //
+  // Le critère ci-dessous traite correctement les deux situations,
+  // parce qu'il ne regarde ni le calendrier ni les jours, mais ce qui a
+  // réellement payé : le salaire.
+  //
+  // Il s'applique à TOUS les chemins — passage automatique comme
+  // prélèvement ciblé. `forcer` reste la sortie de secours d'un
+  // rattrapage assumé ; aucun appel du logiciel ne la pose.
+  //
+  // `ignorerDepuis` borne le regard en arrière : les mensualités
+  // réglées depuis cet instant ne comptent pas. C'est ce qui permet à
+  // l'opérateur de solder plusieurs arriérés d'un même crédit en un
+  // seul lot — un geste unique, où il a choisi les échéances une par
+  // une.
+  const { rows: cycle } = forcer ? { rows: [] } : await client.query(
+    `WITH dernier AS (
+       SELECT i.sequence, i.paid_at, le.id AS entry_id, le.created_at, le.account_id
+       FROM installments i
+       JOIN ledger_entries le ON le.id = i.ledger_entry_id
+       WHERE i.credit_id = $1 AND i.status = 'payee' AND i.paid_at <= now()
+         AND ($2::timestamptz IS NULL OR i.paid_at < $2)
+         AND NOT EXISTS (SELECT 1 FROM ledger_entries x
+                          WHERE x.reversed_entry_id = le.id)
+       ORDER BY le.created_at DESC, le.id DESC
+       LIMIT 1
+     )
+     SELECT d.sequence,
+            to_char(d.paid_at, 'YYYY-MM-DD') AS paye_le,
+            (now()::date - d.paid_at::date) AS il_y_a,
+            -- Solde réel juste après ce prélèvement : toutes les
+            -- écritures du compte jusqu'à celle-là incluse. Sans
+            -- exclusion — une annulation compense déjà son original,
+            -- et écarter l'un en gardant l'autre compterait le montant
+            -- deux fois.
+            (SELECT COALESCE(SUM(le2.amount), 0) FROM ledger_entries le2
+              WHERE le2.account_id = d.account_id
+                AND (le2.created_at, le2.id) <= (d.created_at, d.entry_id)
+            ) AS solde_apres,
+            (SELECT count(*) FROM ledger_entries le3
+              WHERE le3.account_id = d.account_id
+                AND le3.type = 'salaire'
+                AND (le3.created_at, le3.id) > (d.created_at, d.entry_id)
+                AND NOT EXISTS (SELECT 1 FROM ledger_entries x
+                                 WHERE x.reversed_entry_id = le3.id)
+            )::int AS salaires_depuis
+     FROM dernier d`,
+    [echeance.credit_id, ignorerDepuis]
+  );
+
+  if (cycle[0]) {
+    const { sequence, paye_le: payeLe, il_y_a: ilYA } = cycle[0];
+    const soldeApres = Number(cycle[0].solde_apres);
+    const salaires = cycle[0].salaires_depuis;
+    const enDecouvert = soldeApres < 0;
+    const requis = enDecouvert ? 2 : 1;
+
+    if (salaires < requis) {
+      return {
+        ok: false,
+        id: echeance.id,
+        reference: echeance.reference,
+        sequence: echeance.sequence,
+        amount: echeance.amount,
+        soldeDisponible: null,
+        motif: enDecouvert
+          ? `mensualité ${sequence} prélevée le ${payeLe} (il y a ${ilYA} j) à découvert `
+            + `(solde ${Math.round(soldeApres)} F) : c’est le salaire suivant qui l’a payée, `
+            + `la prochaine mensualité attend le salaire d’après`
+          : `mensualité ${sequence} déjà prélevée le ${payeLe} (il y a ${ilYA} j) et `
+            + `aucun salaire reçu depuis — un salaire paie une seule mensualité`,
+      };
+    }
   }
 
   // FOR UPDATE sur le compte : si l'opérateur relance la collecte
@@ -513,7 +575,7 @@ export async function runInstallmentCollection({ asOf, actorId }) {
 
   for (const installment of due) {
     await withTransaction(async (client) => {
-      const issue = await collecterUneEcheance(client, installment, actorId, { uneParMois: true });
+      const issue = await collecterUneEcheance(client, installment, actorId);
       if (issue.ok) {
         paid.push({
           reference: issue.reference, sequence: issue.sequence, amount: issue.amount,
@@ -688,6 +750,15 @@ export async function collectInstallments({ echeanceIds, actorId }) {
     [echeanceIds]
   );
 
+  // Un lot vaut un geste de l'opérateur : il a choisi ces échéances une
+  // par une, en sachant ce qu'il faisait. Les mensualités réglées à
+  // partir de cet instant ne bloquent donc pas les suivantes DU MÊME
+  // LOT — c'est ainsi qu'on solde trois arriérés d'un coup, et c'est le
+  // rattrapage que la direction veut garder possible. Ce qui a été
+  // prélevé AVANT le lot, lui, compte et bloque : le doublon du 27/10
+  // puis du 04/11 était deux passes séparées, pas un lot.
+  const debutDuLot = new Date();
+
   const introuvables = echeanceIds.filter((id) => !echeances.some((e) => e.id === id));
   const preleves = [];
   const echecs = introuvables.map((id) => ({ id, motif: 'échéance introuvable' }));
@@ -710,7 +781,9 @@ export async function collectInstallments({ echeanceIds, actorId }) {
       continue;
     }
 
-    const issue = await withTransaction((client) => collecterUneEcheance(client, echeance, actorId));
+    const issue = await withTransaction((client) => collecterUneEcheance(
+      client, echeance, actorId, { ignorerDepuis: debutDuLot }
+    ));
     if (issue.ok) {
       preleves.push({ ...issue, client: echeance.client });
     } else {
@@ -814,16 +887,24 @@ export async function fetchClientsDouteux({ jours = JOURS_AVANT_DOUTEUX } = {}) 
  */
 export async function fetchMonthlyReport({ periodStart, periodEnd }) {
   const [salaires, echeancesPrelevees, echeancesEnRetard, agios] = await Promise.all([
+    // Les écritures extournées sortent des deux compteurs : une
+    // mensualité annulée n'a pas été encaissée, une paie annulée n'a
+    // pas été versée. Sans ce filtre, le relevé du 4 novembre 2026
+    // aurait porté 2 044 736 F de prélèvements rendus le jour même.
     query(
-      `SELECT count(*) AS nombre, COALESCE(sum(amount), 0) AS total
-       FROM ledger_entries
-       WHERE type = 'salaire' AND created_at::date BETWEEN $1 AND $2`,
+      `SELECT count(*) AS nombre, COALESCE(sum(le.amount), 0) AS total
+       FROM ledger_entries le
+       WHERE le.type = 'salaire' AND le.created_at::date BETWEEN $1 AND $2
+         AND NOT EXISTS (SELECT 1 FROM ledger_entries ext
+                          WHERE ext.reversed_entry_id = le.id)`,
       [periodStart, periodEnd]
     ),
     query(
-      `SELECT count(*) AS nombre, COALESCE(sum(-amount), 0) AS total
-       FROM ledger_entries
-       WHERE type = 'paiement_credit' AND created_at::date BETWEEN $1 AND $2`,
+      `SELECT count(*) AS nombre, COALESCE(sum(-le.amount), 0) AS total
+       FROM ledger_entries le
+       WHERE le.type = 'paiement_credit' AND le.created_at::date BETWEEN $1 AND $2
+         AND NOT EXISTS (SELECT 1 FROM ledger_entries ext
+                          WHERE ext.reversed_entry_id = le.id)`,
       [periodStart, periodEnd]
     ),
     query(

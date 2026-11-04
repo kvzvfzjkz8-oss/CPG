@@ -24,6 +24,25 @@ import { ApiError } from '../middleware/errorHandler.js';
  * reste consultable via fetchCoffreClotures().
  */
 
+/**
+ * Un paiement d'échéance annulé ne doit plus compter nulle part. La
+ * convention du projet est l'ajout seul : on n'efface pas l'écriture,
+ * on lui adjoint une `annulation` qui la désigne par
+ * `reversed_entry_id`. Le solde du client s'en trouve corrigé
+ * automatiquement — c'est une écriture de plus dans sa somme — mais
+ * les écrans qui filtrent sur `type = 'paiement_credit'` ne voient pas
+ * l'annulation et continuaient d'afficher l'argent comme encaissé.
+ *
+ * Le 4 novembre 2026, quatorze mensualités prélevées deux fois en huit
+ * jours ont été rendues par extourne : sans ce filtre, le coffre des
+ * remboursements aurait gardé 2 044 736 F qui ne sont plus là.
+ *
+ * `$alias` est le nom de la table dans la requête appelante.
+ */
+const nonExtournee = (alias) => `NOT EXISTS (
+         SELECT 1 FROM ledger_entries ext
+          WHERE ext.reversed_entry_id = ${alias}.id)`;
+
 const TYPES_VALIDES = ['frais_agios', 'remboursements', 'frais_dossier'];
 const CODES_FRAIS_AGIOS = ['AGIOS_DECOUVERT', 'FRAIS_TENUE'];
 const CODE_FRAIS_DOSSIER = 'COMM_CREDIT';
@@ -45,8 +64,10 @@ async function totalCollecte(run, coffre, depuis) {
     // -SUM(amount), sans quoi le coffre affichait un solde négatif
     // alors que de l'argent a bien été encaissé.
     const { rows } = await run(
-      `SELECT COALESCE(SUM(-amount), 0) AS total FROM ledger_entries
-       WHERE type = 'paiement_credit' AND ($1::timestamptz IS NULL OR created_at > $1)`,
+      `SELECT COALESCE(SUM(-le.amount), 0) AS total FROM ledger_entries le
+       WHERE le.type = 'paiement_credit'
+         AND ($1::timestamptz IS NULL OR le.created_at > $1)
+         AND ${nonExtournee('le')}`,
       [depuis]
     );
     return Number(rows[0].total);
@@ -208,11 +229,13 @@ export async function fetchCoffreParMois(coffre) {
   let rows;
   if (coffre === 'remboursements') {
     ({ rows } = await query(
-      `SELECT to_char(created_at, 'YYYY-MM') AS mois,
-              COALESCE(SUM(-amount), 0) AS total,
+      `SELECT to_char(le.created_at, 'YYYY-MM') AS mois,
+              COALESCE(SUM(-le.amount), 0) AS total,
               count(*) AS nombre
-       FROM ledger_entries
-       WHERE type = 'paiement_credit' AND ($1::timestamptz IS NULL OR created_at > $1)
+       FROM ledger_entries le
+       WHERE le.type = 'paiement_credit'
+         AND ($1::timestamptz IS NULL OR le.created_at > $1)
+         AND ${nonExtournee('le')}
        GROUP BY 1
        ORDER BY 1 DESC
        LIMIT 12`,
@@ -303,6 +326,7 @@ export async function fetchCoffreMouvements(coffre, { mois, limite = 300 } = {})
        WHERE le.type = 'paiement_credit'
          AND ($1::timestamptz IS NULL OR le.created_at > $1)
          AND ($2::text IS NULL OR to_char(le.created_at, 'YYYY-MM') = $2)
+         AND ${nonExtournee('le')}
        ORDER BY le.created_at DESC
        LIMIT $3`,
       [depuis, mois ?? null, limite]
@@ -333,11 +357,12 @@ export async function fetchCoffreMouvements(coffre, { mois, limite = 300 } = {})
   // somme affichee reste la vraie. L'ecran le dit a l'utilisateur.
   const { rows: somme } = coffre === 'remboursements'
     ? await query(
-      `SELECT COALESCE(SUM(-amount), 0) AS total, count(*)::int AS nombre
-       FROM ledger_entries
-       WHERE type = 'paiement_credit'
-         AND ($1::timestamptz IS NULL OR created_at > $1)
-         AND ($2::text IS NULL OR to_char(created_at, 'YYYY-MM') = $2)`,
+      `SELECT COALESCE(SUM(-le.amount), 0) AS total, count(*)::int AS nombre
+       FROM ledger_entries le
+       WHERE le.type = 'paiement_credit'
+         AND ($1::timestamptz IS NULL OR le.created_at > $1)
+         AND ($2::text IS NULL OR to_char(le.created_at, 'YYYY-MM') = $2)
+         AND ${nonExtournee('le')}`,
       [depuis, mois ?? null]
     )
     : await query(

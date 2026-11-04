@@ -8,3 +8,6 @@ cpg-mobile.zip
 
 # Donnees clients reelles — ne jamais versionner
 cpg-api/scripts/legacy_import_data.json
+
+# Reglages locaux de Claude Code (permissions de la machine, pas du projet)
+.claude/settings.local.json
