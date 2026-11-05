@@ -50,6 +50,18 @@ function cibleDistincteDuDefaut() {
 }
 const CIBLE = cibleDistincteDuDefaut();
 
+/**
+ * Le 4 du mois suivant la séance. `seanceNeuve()` programme la séance
+ * pour demain : le calcul part donc de demain, et non d'aujourd'hui —
+ * un test lancé le dernier jour du mois verrait sinon deux mois
+ * différents.
+ */
+function leQuatreApresLaSeance() {
+  const demain = new Date(Date.now() + 86400000);
+  return new Date(Date.UTC(demain.getUTCFullYear(), demain.getUTCMonth() + 1, 4))
+    .toISOString().slice(0, 10);
+}
+
 before(async () => {
   await startTestServer();
   if (!hasTestDatabase()) return;
@@ -184,26 +196,39 @@ describe(
       }
     });
 
-    test('sans date fixée, le comportement d’avant est intact', async () => {
+    test('une séance neuve porte d’office le 4 du mois à venir', async () => {
+      // « La date de première échéance en séance, tu peux valider ça au
+      // 04 du mois à venir » (direction, 05/11/2026). La séance n'a plus
+      // à y penser : tout ce qu'elle valide tombe au 4, et c'est l'oubli
+      // de ce champ qui avait envoyé les 25 dossiers du 23/10/2026 au 23
+      // novembre.
       const seanceId = await seanceNeuve();
+      const { body } = await api('/v1/admin/commission/seance', { token: directeurToken });
+      assert.equal(body.seance.id, seanceId);
+      assert.equal(
+        body.seance.premiere_echeance, leQuatreApresLaSeance(),
+        'la date doit être posée dès la programmation'
+      );
+
       // Durée 3 et pas 2 : le barème MICRO_STD impose un minimum de 3
       // mois, et un dossier hors barème est refusé à la création.
-      const creditId = await dossierDepose(`Sans ${Date.now()}`, 3);
+      const creditId = await dossierDepose(`Defaut ${Date.now()}`, 3);
       const [premiere] = await approuver(seanceId, creditId);
-
-      // Le mois suivant, calculé par les composantes et non avec
-      // setMonth(+1) : approuvé un 31, setMonth() déborde sur le mois
-      // d'après (31 octobre + 1 mois = 1er décembre). C'est le défaut
-      // que le code corrige, l'attente du test ne doit pas le
-      // reproduire.
-      const n = new Date();
-      const moisSuivant = new Date(Date.UTC(n.getFullYear(), n.getMonth() + 1, 1))
-        .toISOString().slice(0, 7);
-      assert.equal(
-        premiere.slice(0, 7), moisSuivant,
-        'un mois après l’approbation, comme avant'
-      );
+      assert.equal(premiere, leQuatreApresLaSeance(), 'et commander l’échéancier');
       assert.notEqual(premiere, CIBLE);
+    });
+
+    test('même en effaçant la date de la séance, l’échéancier tombe le 4', async () => {
+      // Deux filets au même endroit : la séance pose le 4, et
+      // `buildInstallments` le repose si la séance ne porte rien. Un
+      // dossier ne peut donc pas ressortir sur un autre jour par
+      // omission.
+      const seanceId = await seanceNeuve();
+      assert.equal((await fixerDate(seanceId, null)).status, 200);
+
+      const creditId = await dossierDepose(`Effacee ${Date.now()}`, 3);
+      const [premiere] = await approuver(seanceId, creditId);
+      assert.equal(premiere.slice(-2), '04', `tombé le ${premiere}`);
     });
 
     test('une date déjà passée est refusée', async () => {

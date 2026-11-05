@@ -36,10 +36,24 @@ export async function scheduleSession({ scheduledFor, actorId, plafond = null })
       // Le plafond peut être posé dès la programmation quand c'est le
       // directeur qui programme ; sinon il le fixera après, et la
       // séance reste sans enveloppe en attendant.
-      `INSERT INTO commission_sessions (scheduled_for, scheduled_by, plafond, plafond_par, plafond_le)
+      //
+      // La date du premier prélèvement, elle, est posée d'office au 4 du
+      // mois à venir — « la date de première échéance en séance, tu peux
+      // valider ça au 04 du mois à venir » (direction, 05/11/2026).
+      // C'est le jour de prélèvement de la maison, et la séance n'a plus
+      // à y penser : tout ce qu'elle valide tombe au 4. Le directeur
+      // peut encore la changer avec `definirPremiereEcheance`, mais il
+      // le fera sciemment, et non par oubli — c'est l'oubli qui avait
+      // envoyé les 25 dossiers du 23/10/2026 au 23 novembre.
+      `INSERT INTO commission_sessions
+         (scheduled_for, scheduled_by, plafond, plafond_par, plafond_le,
+          premiere_echeance, premiere_echeance_par, premiere_echeance_le)
        VALUES ($1, $2, $3, CASE WHEN $3::bigint IS NULL THEN NULL ELSE $2::uuid END,
-               CASE WHEN $3::bigint IS NULL THEN NULL ELSE now() END)
-       RETURNING id, scheduled_for, status, scheduled_by, plafond`,
+               CASE WHEN $3::bigint IS NULL THEN NULL ELSE now() END,
+               (date_trunc('month', $1::timestamptz) + interval '1 month' + interval '3 days')::date,
+               $2::uuid, now())
+       RETURNING id, scheduled_for, status, scheduled_by, plafond,
+                 to_char(premiere_echeance, 'YYYY-MM-DD') AS premiere_echeance`,
       [scheduledFor, actorId, plafond]
     );
     return rows[0];
