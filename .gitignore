@@ -11,3 +11,11 @@ cpg-api/scripts/legacy_import_data.json
 
 # Reglages locaux de Claude Code (permissions de la machine, pas du projet)
 .claude/settings.local.json
+
+# Sauvegardes de la base et cle de chiffrement — jamais dans le depot.
+# Elles vivent hors du projet (~/Sauvegardes-CPG et ~/.cpg), ces lignes
+# sont un filet au cas ou quelqu'un les deplacerait ici un jour.
+*.dump
+*.dump.enc
+cle-sauvegarde
+Sauvegardes-CPG/
