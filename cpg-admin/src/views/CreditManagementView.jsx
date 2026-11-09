@@ -64,7 +64,7 @@ const NATURES = [
   },
   {
     k: 'report_echeance', t: 'Sauter un mois', i: PauseCircle,
-    d: 'Pour un client en difficulté : les échéances reculent, les montants restent intacts, aucun intérêt en plus.',
+    d: 'Pour un client en difficulté : les échéances reculent, la mensualité reste identique. Coût : 10 000 F par mois sauté, ajoutés à la dernière échéance.',
     champs: ['mois'],
   },
   {
@@ -100,7 +100,8 @@ function resumerEffet(kind, effet) {
     return `${effet.echeances_redatees} échéance(s) ramenée(s) au ${effet.jour} du mois`;
   }
   if (kind === 'report_echeance') {
-    return `${effet.echeances_reportees} échéance(s) reportée(s) de ${effet.mois} mois, sans intérêt supplémentaire`;
+    return `${effet.echeances_reportees} échéance(s) reportée(s) de ${effet.mois} mois ; `
+      + `${formatFCFA(effet.interets_ajoutes)} F d’intérêt de report ajoutés à l’échéance ${effet.derniere_echeance?.sequence}`;
   }
   if (kind === 'prelevement_supplementaire') {
     return `${formatFCFA(effet.preleve)} F prélevés sur l’échéance ${effet.sequence}`
@@ -671,7 +672,12 @@ export default function CreditManagementView({ role }) {
 function DetailDemande({ d }) {
   const bouts = [];
   if (d.kind === 'dates_echeances') bouts.push(`passer au ${d.details.jour} du mois`);
-  if (d.kind === 'report_echeance') bouts.push(`sauter ${d.details.mois} mois`);
+  if (d.kind === 'report_echeance') {
+    bouts.push(`sauter ${d.details.mois} mois`);
+    if (d.details.frais_annonces) {
+      bouts.push(`${formatFCFA(d.details.frais_annonces)} F d’intérêt de report`);
+    }
+  }
   if (d.kind === 'montant') bouts.push(`imputer ${formatFCFA(d.details.montant_depose)} F déposés`);
   if (d.kind === 'taux') bouts.push(`taux à ${(Number(d.details.taux_mensuel) * 100).toFixed(2)} %/mois`);
   if (d.kind === 'prelevement_supplementaire') bouts.push('encaisser une mensualité de plus');

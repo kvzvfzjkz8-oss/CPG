@@ -31,6 +31,23 @@ import { getCeiling } from './productService.js';
 
 const JOUR_DE_PRELEVEMENT_PAR_DEFAUT = 4;
 
+/**
+ * Ce que coûte un mois sauté, par mois sauté.
+ *
+ * « Le mois sauté donne un intérêt de 10 000 F pour le saut. »
+ * (direction, 09/11/2026)
+ *
+ * Un montant fixe, et non un pourcentage : la direction l'a posé ainsi,
+ * et c'est plus simple à annoncer au client qu'un calcul.
+ *
+ * Il est ajouté à la DERNIÈRE échéance restante, pas à la prochaine.
+ * Le mettre sur la prochaine annulerait le soulagement qu'on vient
+ * d'accorder à un client en difficulté : sa mensualité doit rester
+ * identique, c'est le total dû qui monte. C'est aussi la convention du
+ * projet — la dernière échéance absorbe les ajustements.
+ */
+const FRAIS_REPORT_PAR_MOIS = 10000;
+
 /** Le `jour` du mois, n mois après une date — borné à la fin des mois courts. */
 function auJour(depuis, n, jour) {
   const d = new Date(`${depuis}T12:00:00Z`);
@@ -84,6 +101,9 @@ export async function proposerModification({ creditId, kind, details, motif, act
       throw new ApiError(422, 'Un report se compte en mois entiers, de 1 à 3. Au-delà, c’est un réaménagement du crédit, pas un report.');
     }
     corps.mois = mois;
+    // Consigné dès la proposition : l'opérateur et le directeur voient
+    // ce que le report coûtera au client avant de signer, et non après.
+    corps.frais_annonces = FRAIS_REPORT_PAR_MOIS * mois;
   } else if (kind === 'montant') {
     const montant = Number(details?.montantDepose);
     if (!Number.isFinite(montant) || montant <= 0) {
@@ -283,17 +303,17 @@ export async function validerModification({ requestId, note, actorId }) {
     // SAUTER UN MOIS, POUR UN CLIENT EN DIFFICULTÉ
     //
     // Les échéances restantes reculent toutes du même nombre de mois,
-    // en gardant leur jour. Les MONTANTS ne changent pas : le report
-    // est un pur décalage, sans intérêt supplémentaire. C'est la
-    // lecture humaine de « client en difficulté » — on lui donne du
-    // temps, on ne lui vend pas du temps. Si la direction veut faire
-    // porter l'intérêt du mois sauté, c'est le seul endroit à changer,
-    // et l'effet consigne `interets_ajoutes` pour que la question
-    // reste visible dans l'historique.
+    // en gardant leur jour. Leur MONTANT MENSUEL ne change pas : c'est
+    // le sens du geste, soulager la trésorerie du client.
+    //
+    // En revanche le report n'est pas gratuit — FRAIS_REPORT_PAR_MOIS
+    // par mois sauté, ajoutés à la dernière échéance. Le client paie
+    // donc la même chose chaque mois, et 10 000 F de plus au total par
+    // mois de répit.
     const mois = demande.details.mois ?? 1;
     effet = await withTransaction(async (client) => {
       const { rows: restantes } = await client.query(
-        `SELECT id, sequence, to_char(due_date, 'YYYY-MM-DD') AS due
+        `SELECT id, sequence, amount::bigint AS amount, to_char(due_date, 'YYYY-MM-DD') AS due
          FROM installments
          WHERE credit_id = $1 AND status <> 'payee'
          ORDER BY sequence
@@ -303,7 +323,7 @@ export async function validerModification({ requestId, note, actorId }) {
       if (!restantes.length) {
         throw new ApiError(422, 'Ce crédit n’a plus d’échéance à venir : il n’y a rien à reporter.');
       }
-      const avant = restantes.map((r) => ({ sequence: r.sequence, due: r.due }));
+      const avant = restantes.map((r) => ({ sequence: r.sequence, due: r.due, montant: Number(r.amount) }));
       const apres = [];
       for (const r of restantes) {
         const d = new Date(`${r.due}T12:00:00Z`);
@@ -312,9 +332,25 @@ export async function validerModification({ requestId, note, actorId }) {
           `UPDATE installments SET due_date = $1::date, status = 'a_venir' WHERE id = $2`,
           [cible, r.id]
         );
-        apres.push({ sequence: r.sequence, due: cible });
+        apres.push({ sequence: r.sequence, due: cible, montant: Number(r.amount) });
       }
-      return { mois, echeances_reportees: restantes.length, interets_ajoutes: 0, avant, apres };
+
+      const frais = FRAIS_REPORT_PAR_MOIS * mois;
+      const derniere = restantes[restantes.length - 1];
+      const nouveauMontant = Number(derniere.amount) + frais;
+      await client.query('UPDATE installments SET amount = $1 WHERE id = $2',
+        [nouveauMontant, derniere.id]);
+      apres[apres.length - 1].montant = nouveauMontant;
+
+      return {
+        mois,
+        echeances_reportees: restantes.length,
+        interets_ajoutes: frais,
+        frais_par_mois: FRAIS_REPORT_PAR_MOIS,
+        derniere_echeance: { sequence: derniere.sequence, avant: Number(derniere.amount), apres: nouveauMontant },
+        avant,
+        apres,
+      };
     });
   } else if (demande.kind === 'taux') {
     // RÉVISER LE TAUX D'UN CRÉDIT EN COURS

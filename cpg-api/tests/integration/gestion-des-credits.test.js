@@ -166,23 +166,43 @@ describe(
       assert.equal(apres.length, avant.length, 'aucune échéance ne doit apparaître ni disparaître');
     });
 
-    test('sauter un mois : les échéances reculent, les montants ne changent pas', async () => {
+    test('sauter un mois : la mensualité ne bouge pas, et les 10 000 F vont sur la dernière échéance', async () => {
       const a = await clientAvecCredit('Gest Report', 300000, 6);
       const avant = await echeancesDe(a.id);
 
       const { body: d } = await deposer({
         creditId: a.id, nature: 'report_echeance', mois: 1, motif: 'client en difficulte, mois sauté',
       });
+      // Le coût est annoncé dès la proposition : l'opérateur et le
+      // directeur signent en sachant ce que le report coûte au client.
+      assert.equal(d.status, 'en_attente_operateur');
       await accorder(d.id);
       const { status, body } = await valider(d.id);
       assert.equal(status, 200);
-      assert.equal(body.effet.interets_ajoutes, 0, 'un report ne se vend pas : aucun intérêt en plus');
+
+      // « Le mois sauté donne un intérêt de 10 000 F pour le saut. »
+      assert.equal(body.effet.interets_ajoutes, 10000);
 
       const apres = await echeancesDe(a.id);
       assert.equal(apres.length, avant.length);
+
+      // La mensualité ne bouge pas — c'est le sens du geste. Seule la
+      // dernière échéance porte l'intérêt de report, pour que le
+      // soulagement accordé ne soit pas reperdu dès le mois suivant.
       assert.deepEqual(
-        apres.map((e) => Number(e.amount)), avant.map((e) => Number(e.amount)),
-        'les montants doivent être intacts'
+        apres.slice(0, -1).map((e) => Number(e.amount)),
+        avant.slice(0, -1).map((e) => Number(e.amount)),
+        'aucune mensualité intermédiaire ne doit changer'
+      );
+      assert.equal(
+        Number(apres[apres.length - 1].amount),
+        Number(avant[avant.length - 1].amount) + 10000,
+        'la dernière échéance porte les 10 000 F'
+      );
+      assert.equal(
+        apres.reduce((t, e) => t + Number(e.amount), 0),
+        avant.reduce((t, e) => t + Number(e.amount), 0) + 10000,
+        'le total dû monte de 10 000 F, et de cela seulement'
       );
       for (let i = 0; i < avant.length; i += 1) {
         const mAvant = Number(avant[i].due.slice(5, 7));
