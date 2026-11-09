@@ -19,6 +19,7 @@ import { fetchNotifications, markMessagesInternesVus } from '../services/notific
 import catalogRoutes from './catalog.routes.js';
 import operationsRoutes from './operations.routes.js';
 import commissionRoutes from './commission.routes.js';
+import gestionCreditsRoutes from './gestionCredits.routes.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -31,6 +32,10 @@ router.use('/operations', operationsRoutes);
 
 // Comité de crédit : programmation des séances, dépôt, décisions, double validation.
 router.use('/commission', commissionRoutes);
+
+// Gestion des credits : le gestionnaire propose une modification sur un
+// dossier en cours, l'operateur donne son accord, le directeur valide.
+router.use('/gestion-credits', gestionCreditsRoutes);
 
 /* ═══════════════════════════════════════════════════════════════════
    FILE DES DEMANDES — rôles Opérateur et Superviseur

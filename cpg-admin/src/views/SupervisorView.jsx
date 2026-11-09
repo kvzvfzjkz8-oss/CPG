@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   LayoutDashboard, ShieldCheck, Users, Wallet, UserCog, Bell, Package, CalendarClock, Check, X,
   Gavel, KeyRound, History, Calculator, Inbox, Info, Trash2, AlertTriangle, HandCoins, Search,
+  SlidersHorizontal,
 } from 'lucide-react';
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -10,6 +11,7 @@ import {
 import { colors, fonts, formatFCFA } from '../theme';
 import { CreditsEnCoursPanel, ClientDetailModal } from '../components/ClientsCredits';
 import { CoffresPanel } from '../components/Coffres';
+import CreditManagementView from './CreditManagementView';
 import { Card, Badge, Tabs, KpiCard, SectionTitle, DataTable, td } from '../components/UI';
 import {
   approveCredit, setUserStatus, fetchUsers, rechercherUtilisateurs, createUser, updateUser, resetClientPin, fetchStatistics, fetchMomoTransactions,
@@ -56,6 +58,13 @@ export default function SupervisorView({ role, ongletDemande }) {
   }
   if (can(role, 'demandes.lire')) {
     tabs.push({ key: 'credits-actifs', label: 'Crédits en cours', icon: Wallet });
+  }
+  // Gestion des credits : le gestionnaire y propose, le directeur y
+  // valide, et l'operateur y donne son accord. Place juste apres
+  // « Credits en cours » parce que c'est le meme sujet vu autrement :
+  // l'un montre l'etat, l'autre permet d'agir dessus.
+  if (can(role, 'credits.lire_modifications')) {
+    tabs.push({ key: 'gestion-credits', label: 'Gestion des crédits', icon: SlidersHorizontal });
   }
   if (can(role, 'credits.simuler')) {
     tabs.push({ key: 'simulation', label: 'Simulation', icon: Calculator });
@@ -108,6 +117,7 @@ export default function SupervisorView({ role, ongletDemande }) {
       {tab === 'seances' && <CommissionHistoryView />}
       {tab === 'demandes' && <DemandesEnAttenteLectureSeule role={role} />}
       {tab === 'credits-actifs' && <CreditsEnCoursPanel role={role} />}
+      {tab === 'gestion-credits' && <CreditManagementView role={role} />}
       {tab === 'simulation' && <SimulationPanel />}
       {tab === 'validation' && <FinalValidation />}
       {tab === 'catalogue' && <CatalogView role={role} />}

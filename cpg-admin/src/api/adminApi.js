@@ -1181,3 +1181,61 @@ export async function ajusterDossierCommission(creditId, { montant, duree, motif
     },
   });
 }
+
+// ─────────────────────────────────────────────────────────────────────
+//  GESTION DES CRÉDITS — trois signatures avant qu'un dossier bouge
+// ─────────────────────────────────────────────────────────────────────
+//
+// Le gestionnaire propose, l'opérateur donne son accord, le directeur
+// valide. Chaque étape a sa route et sa permission ; rien ne s'applique
+// avant la dernière.
+
+/** Les demandes de modification, filtrables par état. */
+export async function fetchModificationsCredit({ statut, creditId } = {}) {
+  const p = new URLSearchParams();
+  if (statut) p.set('statut', statut);
+  if (creditId) p.set('creditId', creditId);
+  const q = p.toString();
+  return apiRequest(`/v1/admin/gestion-credits${q ? `?${q}` : ''}`);
+}
+
+/**
+ * Dépose une demande. `nature` vaut dates_echeances,
+ * prelevement_supplementaire, report_echeance, taux ou montant ; les
+ * champs attendus dépendent d'elle, et le serveur dit lequel manque.
+ */
+export async function proposerModificationCredit(corps) {
+  return apiRequest('/v1/admin/gestion-credits', { method: 'POST', body: corps });
+}
+
+/** L'accord de l'opérateur : la demande passe au directeur. */
+export async function accorderModificationCredit(id, note) {
+  return apiRequest(`/v1/admin/gestion-credits/${id}/accord`, {
+    method: 'POST', body: { ...(note ? { note } : {}) },
+  });
+}
+
+/** La validation du directeur : c'est là, et seulement là, que le dossier bouge. */
+export async function validerModificationCredit(id, note) {
+  return apiRequest(`/v1/admin/gestion-credits/${id}/valider`, {
+    method: 'POST', body: { ...(note ? { note } : {}) },
+  });
+}
+
+/** Refus, à l'une ou l'autre étape. Le motif est obligatoire. */
+export async function refuserModificationCredit(id, note) {
+  return apiRequest(`/v1/admin/gestion-credits/${id}/refuser`, {
+    method: 'POST', body: { note },
+  });
+}
+
+/**
+ * L'échéancier d'un crédit, pour désigner l'échéance à prélever dans
+ * une demande de prélèvement supplémentaire. On réutilise la route de
+ * détail du dossier plutôt que d'en ajouter une : elle renvoie déjà les
+ * échéances, et le gestionnaire y a droit.
+ */
+export async function fetchEcheancierCredit(creditId) {
+  const { installments } = await apiRequest(`/v1/admin/credits/${creditId}`);
+  return installments ?? [];
+}

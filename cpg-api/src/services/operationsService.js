@@ -733,7 +733,7 @@ export async function fetchMonthInstallments({ recherche, asOf } = {}) {
  * transaction : l'échec de l'une (provision insuffisante) n'annule
  * pas les autres.
  */
-export async function collectInstallments({ echeanceIds, actorId }) {
+export async function collectInstallments({ echeanceIds, actorId, forcer = false }) {
   if (!Array.isArray(echeanceIds) || echeanceIds.length === 0) {
     throw new ApiError(422, 'Aucune échéance sélectionnée.');
   }
@@ -781,8 +781,14 @@ export async function collectInstallments({ echeanceIds, actorId }) {
       continue;
     }
 
+    // `forcer` n'est jamais pose par les ecrans ordinaires : il ne
+    // vient que d'une demande de prelevement supplementaire ayant
+    // obtenu l'accord de l'operateur PUIS la validation du directeur
+    // (credit_modification_requests, migration 061). C'est la seule
+    // facon d'outrepasser « un salaire paie une mensualite », et elle
+    // laisse trois signatures derriere elle.
     const issue = await withTransaction((client) => collecterUneEcheance(
-      client, echeance, actorId, { ignorerDepuis: debutDuLot }
+      client, echeance, actorId, { ignorerDepuis: debutDuLot, forcer }
     ));
     if (issue.ok) {
       preleves.push({ ...issue, client: echeance.client });

@@ -66,6 +66,12 @@ export const PERMISSIONS = {
     // sens, « prelevement ponctuel OU versement ponctuel ».
     'operations.demander_versement_ponctuel',
 
+    // L'accord de l'operateur sur une demande du gestionnaire : il
+    // verifie que c'est tenable au guichet. Il ne decide pas — le
+    // directeur tranche apres lui.
+    'credits.accorder_modification',
+    'credits.lire_modifications',
+
     // Rattrapage d'un frais de tenue ou d'agios que le prelevement
     // automatique du 25 a manque — un agent credite apres cette date,
     // ou cree entre deux passages. Distincte de frais.appliquer, qui
@@ -114,6 +120,18 @@ export const PERMISSIONS = {
   ],
 
   [ROLES.SUPERVISEUR]: [
+    // ─────────────────────────────────────────────────────────────
+    //  Gestion des credits (migration 061)
+    // ─────────────────────────────────────────────────────────────
+    // Le gestionnaire connait le client : c'est lui qui propose de
+    // changer le jour de prelevement, d'encaisser une mensualite de
+    // plus, de reporter un mois pour un client en difficulte ou de
+    // reviser un taux. Il ne decide rien : l'operateur donne son
+    // accord, le directeur valide. Trois signatures avant que le
+    // dossier ne bouge.
+    'credits.proposer_modification',
+    'credits.lire_modifications',
+
     'messagerie_interne.acceder',
     'statistiques.lire',
     'demandes.lire',
@@ -287,6 +305,12 @@ export const PERMISSIONS = {
     // l'opérateur — c'est la validation demandée, pas une formalité :
     // la contrainte no_self_decision_echeance l'impose aussi en base.
     'operations.decider_correction_echeance',
+
+    // Dernier maillon de la gestion des credits : le directeur engage
+    // la maison. Il ne propose pas — s'il le faisait, personne ne
+    // pourrait valider sa demande.
+    'credits.decider_modification',
+    'credits.lire_modifications',
 
     // La Caisse : le directeur valide chaque retrait guichet et chaque
     // réapprovisionnement avant qu'ils aient un effet réel — jamais

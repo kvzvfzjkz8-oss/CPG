@@ -93,8 +93,14 @@ export const PERMISSIONS = {
     // Versement ponctuel : créditer le compte d'un client. Symétrique
     // du retrait, soumis à la même validation du directeur.
     'operations.demander_versement_ponctuel',
+    // L'accord de l'operateur sur une demande du gestionnaire.
+    'credits.accorder_modification',
+    'credits.lire_modifications',
   ],
   [ROLES.SUPERVISEUR]: [
+    // Gestion des credits : le gestionnaire propose, il ne decide pas.
+    'credits.proposer_modification',
+    'credits.lire_modifications',
     'messagerie_interne.acceder',
     'statistiques.lire',
     'demandes.lire',
