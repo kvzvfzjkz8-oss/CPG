@@ -327,8 +327,23 @@ export default function PayrollTrackingView() {
               detail={`${t.soldesTout} entièrement servis`} />
             <Chiffre icone={Wallet} libelle="Salaires versés" valeur={formatFCFA(t.salaire)} ton="or" />
             <Chiffre icone={HandCoins} libelle="Déjà retiré" valeur={formatFCFA(t.retire)} />
-            <Chiffre icone={CheckCheck} libelle="Prélevé sur crédits" valeur={formatFCFA(t.preleve)}
-              detail={`dont ${formatFCFA(t.frais)} de frais`} />
+            {/*
+              La carte annonçait « Prélevé sur crédits X — dont Y de
+              frais ». C'était faux : `preleve` ne compte que les
+              écritures `paiement_credit`, `frais` que les écritures
+              `frais`. Les deux sont disjointes, donc Y n'était PAS
+              compris dans X — il s'y ajoutait. En novembre 2026 cela
+              cachait 1 014 000 F : l'écran annonçait 7 298 034 F
+              encaissés quand 8 312 034 F avaient quitté les comptes.
+              On montre donc le total, qui est la question qu'on se pose
+              en ouvrant cet écran, et le détail en dessous.
+            */}
+            <Chiffre
+              icone={CheckCheck}
+              libelle="Prélevé sur les comptes"
+              valeur={formatFCFA(t.preleve + t.frais)}
+              detail={`dont ${formatFCFA(t.preleve)} de crédits et ${formatFCFA(t.frais)} de frais`}
+            />
             <Chiffre icone={Building2} libelle="Reste à payer" valeur={formatFCFA(t.resteAPayer)} ton="danger" />
           </div>
 
@@ -354,7 +369,7 @@ export default function PayrollTrackingView() {
                       <th style={{ padding: '10px', fontWeight: 500 }}>Agents</th>
                       <th style={{ padding: '10px', fontWeight: 500 }}>Salaires versés</th>
                       <th style={{ padding: '10px', fontWeight: 500 }}>Argent sorti</th>
-                      <th style={{ padding: '10px', fontWeight: 500 }}>Prélevé</th>
+                      <th style={{ padding: '10px', fontWeight: 500 }}>Prélevé crédits</th>
                       <th style={{ padding: '10px', fontWeight: 500 }}>Soldes débiteurs</th>
                       <th style={{ padding: '10px 14px', fontWeight: 500 }}>Reste à payer</th>
                     </tr>
@@ -440,7 +455,7 @@ export default function PayrollTrackingView() {
                       <th style={{ textAlign: 'left', padding: '8px 14px', fontWeight: 500 }}>Agent</th>
                       <th style={{ padding: '8px 10px', fontWeight: 500 }}>Salaire</th>
                       <th style={{ padding: '8px 10px', fontWeight: 500 }}>Déjà retiré</th>
-                      <th style={{ padding: '8px 10px', fontWeight: 500 }}>Prélevé</th>
+                      <th style={{ padding: '8px 10px', fontWeight: 500 }}>Prélevé crédits</th>
                       <th style={{ padding: '8px 10px', fontWeight: 500 }}>Solde</th>
                       <th style={{ padding: '8px 14px', fontWeight: 500 }}>Reste à payer</th>
                     </tr>
