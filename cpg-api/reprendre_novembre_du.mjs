@@ -33,11 +33,26 @@
  *
  *   railway run --service Postgres -- node cpg-api/reprendre_novembre_du.mjs
  *   railway run --service Postgres -- node cpg-api/reprendre_novembre_du.mjs --executer
+ *
+ * Avec des references en argument, seuls ces dossiers sont traites :
+ *   railway run --service Postgres -- node cpg-api/reprendre_novembre_du.mjs CPG-2338,CPG-9237
  */
 process.env.DATABASE_URL = process.env.DATABASE_PUBLIC_URL;
 process.env.DATABASE_SSL = 'relaxed';
 
 const executer = process.argv.includes('--executer');
+
+// Restreindre a des dossiers nommes. Sans cet argument le script traite
+// TOUS les credits que la regle autorise, ce qui est le bon defaut pour
+// une reprise generale — mais la direction demande parfois de n'en
+// traiter que quelques-uns, et prelever un client qu'elle n'a pas
+// nomme serait un abus.
+const REFS = process.argv.slice(2)
+  .filter((a) => a !== '--executer')
+  .flatMap((a) => a.split(','))
+  .map((a) => a.trim())
+  .filter(Boolean);
+
 const CIBLE = '2026-11-04';
 const SUITE = '2026-12-04';
 
@@ -94,6 +109,7 @@ const { rows: candidats } = await query(
 );
 
 const dus = candidats.filter((c) => {
+  if (REFS.length && !REFS.includes(c.reference)) return false;
   const requis = Number(c.solde_apres) < 0 ? 2 : 1;
   return c.salaires >= requis;
 });
