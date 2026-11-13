@@ -167,7 +167,26 @@ function Overview({ onOuvrirCredits }) {
   const { kpis: k, creditsParMois, segments } = stats;
   const kpiCards = [
     { label: 'Crédits actifs', value: String(k.credits_actifs), delta: '', up: true },
-    { label: 'Encours total', value: `${formatFCFA(k.encours_total)} F`, delta: '', up: true },
+    // « Encours » = ce qui reste a recouvrer, et non les capitaux
+    // accordes : ce second chiffre ne baissait jamais quand les clients
+    // remboursaient. Le capital accorde reste visible en dessous — il
+    // dit le volume d'activite, quand l'encours dit le risque porte.
+    {
+      label: 'Encours total',
+      value: `${formatFCFA(k.encours_total)} F`,
+      delta: k.capital_accorde ? `${formatFCFA(k.capital_accorde)} F accordés` : '',
+      up: true,
+    },
+    // L'angle mort : entre la validation en seance et le deblocage, un
+    // dossier quittait « en attente » sans entrer dans « credits
+    // actifs ». Ce que le directeur vient de signer doit rester visible
+    // jusqu'a ce que l'argent sorte.
+    {
+      label: 'Validés, en attente de déblocage',
+      value: String(k.valides_en_attente ?? 0),
+      delta: Number(k.valides_en_attente) > 0 ? `${formatFCFA(k.valides_en_attente_montant)} F` : '',
+      up: true,
+    },
     { label: 'Dossiers en attente', value: String(k.en_attente), delta: '', up: true },
     { label: 'Échéances en retard', value: String(k.echeances_en_retard), delta: '', up: k.echeances_en_retard === 0 },
   ];

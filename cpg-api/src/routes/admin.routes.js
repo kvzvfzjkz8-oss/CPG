@@ -1571,8 +1571,41 @@ router.get('/statistiques', requirePermission('statistiques.lire'), async (req, 
       query(`
         SELECT
           count(*) FILTER (WHERE status = 'approuve') AS credits_actifs,
-          COALESCE(sum(amount) FILTER (WHERE status = 'approuve'), 0) AS encours_total,
-          count(*) FILTER (WHERE status IN ('en_verification', 'valide_niveau1')) AS en_attente
+
+          -- ENCOURS = CE QUI RESTE A RECOUVRER, pas ce qui a ete accorde.
+          --
+          -- La somme des capitaux accordes ne baisse jamais : un client
+          -- qui rembourse ne la fait pas bouger d'un franc. Au
+          -- 13/11/2026 elle affichait 35 875 001 F quand 26 272 987 F
+          -- restaient reellement dus — 9 602 014 F deja encaisses que
+          -- l'indicateur continuait de compter comme encours.
+          --
+          -- On somme donc les echeances NON PAYEES des credits en
+          -- cours : c'est l'encours au sens ou la direction l'entend,
+          -- et il baisse a chaque prelevement.
+          COALESCE((
+            SELECT sum(i.amount)
+            FROM installments i
+            JOIN credit_requests c2 ON c2.id = i.credit_id
+            WHERE c2.status = 'approuve' AND i.status <> 'payee'
+          ), 0) AS encours_total,
+
+          -- Le capital accorde reste disponible a cote : il dit le
+          -- volume d'activite, quand l'encours dit le risque porte.
+          COALESCE(sum(amount) FILTER (WHERE status = 'approuve'), 0) AS capital_accorde,
+
+          count(*) FILTER (WHERE status IN ('en_verification', 'valide_niveau1')) AS en_attente,
+
+          -- L'ANGLE MORT, ferme le 13/11/2026.
+          --
+          -- Un dossier valide en commission quitte « en attente » sans
+          -- entrer dans « credits actifs » : entre la signature du
+          -- directeur et le deblocage, il n'apparaissait nulle part.
+          -- Le 13/11/2026, 24 dossiers et 6 475 000 F etaient ainsi
+          -- invisibles le lendemain meme de leur validation.
+          count(*) FILTER (WHERE status IN ('valide_commission', 'valide_double')) AS valides_en_attente,
+          COALESCE(sum(amount) FILTER (WHERE status IN ('valide_commission', 'valide_double')), 0)
+            AS valides_en_attente_montant
         FROM credit_requests
       `),
       query(`
