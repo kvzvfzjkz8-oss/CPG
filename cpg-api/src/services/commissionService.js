@@ -423,6 +423,14 @@ export async function fetchCommissionQueue({ sessionId }) {
             aj.full_name AS ajuste_par_nom,
             u.full_name AS client, u.employer, u.job_title, u.client_number,
 
+            -- Le produit sollicite. « Je dois avoir toutes les infos
+            -- avant de valider » (direction, 13/11/2026) : un EXPRESS a
+            -- 9,21 %/mois sur 5 mois et un SCOLAIRE a 5 % sur 4 mois ne
+            -- s'arbitrent pas de la meme facon, et le comite ne pouvait
+            -- pas le savoir depuis cet ecran.
+            prod.code AS produit_code, prod.name AS produit_nom,
+            pv.monthly_rate AS produit_taux,
+
             -- ─────────────────────────────────────────────────────────
             -- LA SITUATION DU CLIENT
             --
@@ -502,6 +510,9 @@ export async function fetchCommissionQueue({ sessionId }) {
        ) h
        WHERE h.created_at >= now() - interval '90 days'
      ) dec ON TRUE
+
+     LEFT JOIN product_versions pv ON pv.id = c.product_version_id
+     LEFT JOIN credit_products prod ON prod.id = pv.product_id
 
      WHERE c.commission_session_id = $1 AND c.status = 'en_attente_commission'
      ORDER BY u.full_name`,
@@ -602,9 +613,11 @@ export async function withdrawCommissionItem({ itemId }) {
 /** Points de l'ordre du jour (difficultés, demandes exceptionnelles) pour une séance donnée. */
 export async function fetchCommissionItems({ sessionId }) {
   const { rows } = await query(
+    // L'employeur voyage avec le nom : c'est de lui que vient le salaire
+    // qui remboursera, et la commission le demande a chaque dossier.
     `SELECT i.id, i.type, i.titre, i.note, i.status, i.credit_id,
             c.reference AS credit_reference,
-            u.full_name AS client
+            u.full_name AS client, btrim(u.employer) AS employer
      FROM commission_items i
      LEFT JOIN credit_requests c ON c.id = i.credit_id
      LEFT JOIN users u ON u.id = i.client_id
@@ -920,6 +933,8 @@ export async function fetchSessionDetail({ sessionId }) {
     `SELECT c.id, c.reference, c.amount, c.duration_months, c.status AS statut_actuel,
             c.commission_note, c.commission_decision_note, c.commission_decided_at,
             u.full_name AS client, u.employer, u.job_title,
+            prod.code AS produit_code, prod.name AS produit_nom,
+            pv.monthly_rate AS produit_taux,
             decideur.full_name AS decide_par,
             CASE
               WHEN c.commission_decision_by IS NULL THEN 'non_tranche'
@@ -929,6 +944,8 @@ export async function fetchSessionDetail({ sessionId }) {
      FROM credit_requests c
      JOIN users u ON u.id = c.user_id
      LEFT JOIN users decideur ON decideur.id = c.commission_decision_by
+     LEFT JOIN product_versions pv ON pv.id = c.product_version_id
+     LEFT JOIN credit_products prod ON prod.id = pv.product_id
      WHERE c.commission_session_id = $1
      ORDER BY u.full_name`,
     [sessionId]
@@ -937,7 +954,7 @@ export async function fetchSessionDetail({ sessionId }) {
   const { rows: points } = await query(
     `SELECT i.id, i.type, i.titre, i.note, i.status, i.decision_note, i.decided_at,
             ref.reference AS credit_reference,
-            u.full_name AS client,
+            u.full_name AS client, btrim(u.employer) AS employer,
             decideur.full_name AS decide_par,
             CASE i.status
               WHEN 'rejete'     THEN 'refuse'

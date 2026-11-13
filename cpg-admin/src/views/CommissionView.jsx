@@ -260,6 +260,39 @@ function Toast({ text }) {
   );
 }
 
+/**
+ * L'entreprise du client, affichée à côté de son nom en commission.
+ *
+ * « J'aimerais que le nom de l'entreprise rattaché aux clients
+ *   apparaisse à côté des noms des clients en commission. »
+ *   (direction, 13/11/2026)
+ *
+ * L'écran montrait `job_title ?? employer` : le poste s'il existe,
+ * l'employeur seulement à défaut. Comme 205 des 229 clients ont un
+ * poste renseigné, l'entreprise n'apparaissait presque jamais — alors
+ * que c'est elle qui compte en séance, puisque c'est d'elle que vient
+ * le salaire qui remboursera le crédit.
+ */
+/**
+ * Le produit sollicité, tel qu'il doit se lire en séance.
+ *
+ * « Mets aussi le type de crédit que le client sollicite à côté, je
+ *   dois avoir toutes les infos avant de valider. »
+ *   (direction, 13/11/2026)
+ *
+ * Le taux accompagne le code : un EXPRESS à 9,21 %/mois sur 5 mois et
+ * un SCOLAIRE à 5 % sur 4 mois ne s'arbitrent pas de la même façon, et
+ * c'est le genre de chose qu'on ne doit pas avoir à aller chercher
+ * ailleurs au moment de trancher.
+ */
+function produitDe(c) {
+  if (!c.produit_code) return 'produit inconnu';
+  const taux = c.produit_taux != null ? ` à ${(Number(c.produit_taux) * 100).toFixed(2)} %/mois` : '';
+  return `${c.produit_code}${taux}`;
+}
+
+const employeurDe = (c) => (c.employer?.trim() ? c.employer.trim() : 'sans employeur');
+
 export default function CommissionView({ role }) {
   const [tab, setTab] = useState('seance');
   const [session, setSession] = useState(null);
@@ -595,10 +628,14 @@ function NewCreditsDeposit({ hasOpenSession, onDepose }) {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, marginBottom: 8 }}>
               <div>
                 <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: colors.ink, fontFamily: fonts.body }}>
-                  {c.client} · {c.id}
+                  {c.client}
+                  <span style={{ color: colors.forest, fontWeight: 600 }}> — {employeurDe(c)}</span>
+                  <span style={{ color: colors.muted, fontWeight: 400 }}> · {c.id}</span>
                 </p>
                 <p style={{ margin: '2px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>
-                  {c.job_title ?? c.employer ?? '—'} · {formatFCFA(c.amount)} F sur {c.duration_months} mois
+                  <span style={{ color: colors.forest, fontWeight: 600 }}>{produitDe(c)}</span>
+                  {' · '}{formatFCFA(c.amount)} F sur {c.duration_months} mois
+                  {' · '}{c.job_title ?? '—'}
                 </p>
                 {c.credit_en_cours && (
                   <p
@@ -770,7 +807,7 @@ function DifficultyDeposit({ hasOpenSession, sessionId }) {
           {deposees.map((p) => (
             <div key={p.id} style={{ padding: '10px 14px', borderRadius: 10, border: `1px solid ${colors.line}`, background: colors.bg }}>
               <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
-                {p.client ? `${p.client} — ` : ''}{p.titre}
+                {p.client ? `${p.client} — ${employeurDe(p)} — ` : ''}{p.titre}
               </p>
               {p.note && (
                 <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>{p.note}</p>
@@ -911,7 +948,7 @@ function ExceptionalDeposit({ hasOpenSession, sessionId }) {
           {deposees.map((p) => (
             <div key={p.id} style={{ padding: '10px 14px', borderRadius: 10, border: `1px solid ${colors.line}`, background: colors.bg }}>
               <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: colors.ink, fontFamily: fonts.body }}>
-                {p.client ? `${p.client} — ` : ''}{p.titre}
+                {p.client ? `${p.client} — ${employeurDe(p)} — ` : ''}{p.titre}
               </p>
               {p.note && (
                 <p style={{ margin: '3px 0 0', fontSize: 11, color: colors.muted, fontFamily: fonts.body }}>{p.note}</p>
@@ -1080,8 +1117,8 @@ function HoldSessionPanel({ session, onHeld, onChange, role }) {
             {agenda.credits.map((c) => (
               <AgendaRow
                 key={`credit:${c.id}`}
-                titre={`${c.client} · ${c.id}`}
-                sousTitre={`${c.job_title ?? c.employer ?? '—'} · ${formatFCFA(c.amount)} F sur ${c.duration_months} mois${c.commission_note ? ` — ${c.commission_note}` : ''}`}
+                titre={`${c.client} — ${employeurDe(c)} · ${c.id}`}
+                sousTitre={`${produitDe(c)} · ${formatFCFA(c.amount)} F sur ${c.duration_months} mois · ${c.job_title ?? '—'}${c.commission_note ? ` — ${c.commission_note}` : ''}`}
                 badge="Nouveau crédit"
                 decision={decisions[`credit:${c.id}`]}
                 onDecision={(d) => setDecision('credit', c.id, d)}
@@ -1112,7 +1149,7 @@ function HoldSessionPanel({ session, onHeld, onChange, role }) {
             {agenda.points.map((p) => (
               <AgendaRow
                 key={`item:${p.id}`}
-                titre={p.client ? `${p.client} — ${p.titre}` : p.titre}
+                titre={p.client ? `${p.client} — ${employeurDe(p)} — ${p.titre}` : p.titre}
                 sousTitre={p.note}
                 badge={p.type === 'dossier_difficulte' ? 'Dossier en difficulté' : 'Demande exceptionnelle'}
                 badgeTone={p.type === 'dossier_difficulte' ? 'danger' : 'gold'}
