@@ -106,6 +106,62 @@ async function ajouterFraisTenue(taches) {
 }
 
 /**
+ * Sauvegarde de la base : alerte quand la dernière remonte à plus de
+ * SAUVEGARDE_SEUIL_HEURES.
+ *
+ * Les sauvegardes vivent sur la machine qui les prend, le logiciel
+ * tourne ailleurs : sans la table `sauvegardes` (migration 062),
+ * personne ici ne saurait dire quand la base a été sauvegardée pour la
+ * dernière fois.
+ *
+ * Les 11 et 12 novembre 2026, l'agent a échoué deux soirs de suite sur
+ * une erreur DNS — le Mac dormait à 20h30. Trois jours sans sauvegarde,
+ * dont celui de la paie EFF : 20 076 514 F versés, 884 074 F prélevés.
+ * Le seul endroit où cela s'écrivait était un fichier journal que
+ * personne n'ouvre. Désormais cela remonte là où le directeur regarde.
+ *
+ * Le libellé porte l'âge réel plutôt qu'un « en retard » sec : deux
+ * jours et trois semaines n'appellent pas la même réaction.
+ */
+const SAUVEGARDE_SEUIL_HEURES = 48;
+
+async function ajouterSauvegardeEnRetard(taches) {
+  try {
+    const { rows } = await query(
+      `SELECT to_char(max(prise_le), 'DD/MM/YYYY "à" HH24"h"MI') AS derniere,
+              EXTRACT(EPOCH FROM (now() - max(prise_le))) / 3600 AS heures
+       FROM sauvegardes`
+    );
+    const heures = rows[0]?.heures === null || rows[0]?.heures === undefined
+      ? null
+      : Math.floor(Number(rows[0].heures));
+
+    if (heures === null) {
+      taches.push({
+        cle: 'sauvegarde_base',
+        libelle: 'Aucune sauvegarde de la base enregistrée',
+        nombre: 1,
+      });
+      return;
+    }
+    if (heures < SAUVEGARDE_SEUIL_HEURES) return;
+
+    const jours = Math.floor(heures / 24);
+    const age = jours >= 1
+      ? `${jours} jour${jours > 1 ? 's' : ''}`
+      : `${heures} heures`;
+    taches.push({
+      cle: 'sauvegarde_base',
+      libelle: `Sauvegarde de la base en retard — la dernière date du ${rows[0].derniere} (${age})`,
+      nombre: 1,
+    });
+  } catch {
+    // Best effort : sur un environnement pas encore migré, la table
+    // n'existe pas et l'absence d'alerte vaut mieux qu'une erreur.
+  }
+}
+
+/**
  * Tâches en attente, propres à ce que le rôle a réellement à traiter.
  * Chaque entrée : { cle, libelle, nombre }. Une requête qui échoue
  * (permission DB, table absente sur un environnement pas encore migré)
@@ -149,6 +205,7 @@ async function fetchTasksForRole(role) {
   }
 
   if (role === 'superviseur' || role === 'directeur') {
+    await ajouterSauvegardeEnRetard(taches);
     await add(
       'seance_a_tenir', 'Séance de commission planifiée, non tenue',
       `SELECT count(*)::int AS n FROM commission_sessions WHERE status = 'planifiee' AND scheduled_for <= now()`

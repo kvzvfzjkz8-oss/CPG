@@ -51,7 +51,7 @@ import { copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync,
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createCipheriv, createHash, randomBytes, scryptSync } from 'node:crypto';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import path from 'node:path';
 
 const DOSSIER = process.env.CPG_SAUVEGARDES ?? path.join(homedir(), 'Sauvegardes-CPG');
@@ -324,6 +324,32 @@ async function sauvegarder() {
     console.log(`\nPas de copie miroir : cette sauvegarde n'existe qu'ici.`);
     console.log(`  Posez CPG_MIROIR sur une cle USB ou un dossier synchronise`);
     console.log(`  pour qu'un Mac perdu n'emporte pas l'historique avec lui.`);
+  }
+
+  // ── La trace dans le logiciel ────────────────────────────────────
+  //
+  // Les sauvegardes vivent sur cette machine, le logiciel sur une
+  // autre : sans cette ligne, personne dans l'application ne sait si la
+  // base a ete sauvegardee hier ou il y a trois semaines. C'est ce qui
+  // a laisse passer les 11 et 12 novembre 2026, ou l'agent a echoue
+  // deux soirs sans que quiconque le voie.
+  //
+  // En « best effort » : si l'ecriture echoue, la sauvegarde reste
+  // valide et le fichier est deja sur le disque. Perdre la trace est
+  // ennuyeux ; perdre la sauvegarde parce qu'on n'a pas pu tracer
+  // serait absurde.
+  try {
+    await execFileP('psql', ['-X', '-q', '-c',
+      `INSERT INTO sauvegardes
+         (fichier, sha256, taille_chiffree, taille_dump, tables, lignes_total, miroir, hote)
+       VALUES ('${path.basename(cible)}', '${sha}', ${taille}, ${brut},
+               ${Object.keys(comptes).length}, ${lignes}, ${MIROIR ? 'true' : 'false'},
+               '${(process.env.HOSTNAME || hostname()).replace(/'/g, '')}')
+       ON CONFLICT (fichier) DO NOTHING`,
+    ], { env: envPg() });
+    console.log('  trace inscrite dans le journal des sauvegardes');
+  } catch (e) {
+    console.log(`  (trace non inscrite : ${String(e.message).split('\n')[0]})`);
   }
 
   const { total, supprimees } = appliquerRetention();
