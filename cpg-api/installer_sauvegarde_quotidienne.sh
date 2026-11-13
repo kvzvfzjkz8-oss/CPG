@@ -34,7 +34,7 @@ SAUVEGARDE QUOTIDIENNE DE LA BASE CPG
 
   Agent      $ETIQUETTE
   Heure      chaque jour a ${HEURE}h${MINUTE} (et au reveil si le Mac etait eteint)
-  Script     $PROJET/cpg-api/sauvegarder_base.mjs
+  Script     $PROJET/cpg-api/sauvegarde_agent.sh (reessaie 6 fois si le reseau manque)
   Journal    $JOURNAL
   Miroir     $MIROIR
   Fichier    $PLIST
@@ -104,13 +104,8 @@ cat > "$PLIST" <<PL
   <key>WorkingDirectory</key><string>$PROJET</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$RAILWAY</string>
-    <string>run</string>
-    <string>--service</string>
-    <string>Postgres</string>
-    <string>--</string>
-    <string>$NODE</string>
-    <string>cpg-api/sauvegarder_base.mjs</string>
+    <string>/bin/bash</string>
+    <string>$PROJET/cpg-api/sauvegarde_agent.sh</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -142,6 +137,14 @@ sleep 25
 # `railway run` DOIT tourner dans le dossier du projet, puisque c'est
 # la qu'est enregistre le lien vers le projet Railway — on ne peut donc
 # pas deplacer le script hors de Documents pour contourner.
+if grep -qi "failed to lookup address information\|dns error" "$JOURNAL" 2>/dev/null \
+   && ! ls "$HOME/Sauvegardes-CPG"/*.dump.enc >/dev/null 2>&1; then
+  echo
+  echo "  Le journal montre une erreur DNS : le Mac n'avait pas de reseau."
+  echo "  Le script de l'agent reessaie maintenant 6 fois sur 12 minutes,"
+  echo "  ce qui suffit a couvrir un reveil de veille."
+fi
+
 if grep -qi "operation not permitted" "$JOURNAL" 2>/dev/null; then
   cat <<REMEDE
 
