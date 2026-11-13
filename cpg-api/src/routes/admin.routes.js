@@ -968,21 +968,31 @@ router.post(
       // possible, mais seul le directeur peut le confirmer en
       // connaissance de cause, jamais un doublon créé par erreur.
       const { rows: homonymes } = await query(
-        `SELECT id, full_name, client_number, created_at FROM users WHERE lower(full_name) = lower($1)`,
+        `SELECT id, full_name, client_number, role::text AS role, created_at
+         FROM users WHERE lower(full_name) = lower($1)`,
         [b.nomComplet]
       );
       if (homonymes.length > 0) {
+        // Depuis la 063, un employé CPG a DEUX fiches : son compte
+        // d'agent pour travailler, son compte client pour être payé.
+        // Créer la seconde déclenche donc cet avertissement sur sa
+        // propre fiche — le message doit le dire, sinon le directeur
+        // croit à un vrai doublon et renonce.
+        const h = homonymes[0];
+        const estUnAgent = h.role !== 'client';
+        const quoi = estUnAgent
+          ? `Le compte d’agent de « ${h.full_name} » (${h.role}) porte déjà ce nom.`
+          : `Un compte existe déjà au nom de « ${h.full_name} »${h.client_number ? ` (${h.client_number})` : ''}.`;
+
         if (req.user.role !== 'directeur') {
-          throw new ApiError(
-            409,
-            `Un compte existe déjà au nom de « ${homonymes[0].full_name} ». Seul le directeur peut confirmer un homonyme.`,
-            'nom_duplique'
-          );
+          throw new ApiError(409, `${quoi} Seul le directeur peut confirmer un homonyme.`, 'nom_duplique');
         }
         if (!b.confirmerDoublon) {
           throw new ApiError(
             409,
-            `Un compte existe déjà au nom de « ${homonymes[0].full_name} »${homonymes[0].client_number ? ` (${homonymes[0].client_number})` : ''}. Confirmez pour créer quand même un homonyme.`,
+            estUnAgent && b.role === 'client'
+              ? `${quoi} Confirmez pour lui ouvrir un compte client — c’est ainsi qu’un employé CPG touche son salaire sur le logiciel.`
+              : `${quoi} Confirmez pour créer quand même un homonyme.`,
             'confirmation_doublon_requise'
           );
         }
