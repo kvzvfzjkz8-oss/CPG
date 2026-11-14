@@ -2231,7 +2231,7 @@ function UserManagement({ role }) {
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState({ nomComplet: '', telephone: '', email: '', role: 'operateur', motDePasse: '', codePin: '' });
+  const [form, setForm] = useState({ nomComplet: '', telephone: '', email: '', role: 'operateur', motDePasse: '', codePin: '', typeClient: 'particulier' });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [confirmingResetId, setConfirmingResetId] = useState(null);
@@ -2300,6 +2300,7 @@ function UserManagement({ role }) {
       email: u.email ?? '',
       poste: u.job_title ?? '',
       employeur: u.employer ?? '',
+      typeClient: u.type_client ?? 'particulier',
     });
   };
 
@@ -2309,7 +2310,7 @@ function UserManagement({ role }) {
     try {
       const updated = await updateUser(editingId, editForm);
       setList((prev) => prev.map((u) => (u.id === editingId
-        ? { ...u, full_name: updated.full_name, phone: updated.phone, email: updated.email, job_title: updated.job_title, employer: updated.employer }
+        ? { ...u, full_name: updated.full_name, phone: updated.phone, email: updated.email, job_title: updated.job_title, employer: updated.employer, type_client: updated.type_client }
         : u)));
       setEditingId(null);
       flash('Informations mises à jour.');
@@ -2400,13 +2401,16 @@ function UserManagement({ role }) {
       // jamais se voir attribuer un email ou un mot de passe resté
       // d'un essai précédent avec un autre rôle.
       const payload = form.role === 'client'
-        ? { nomComplet: form.nomComplet, telephone: form.telephone, role: form.role, codePin: form.codePin }
+        ? {
+          nomComplet: form.nomComplet, telephone: form.telephone, role: form.role,
+          codePin: form.codePin, typeClient: form.typeClient,
+        }
         : { nomComplet: form.nomComplet, telephone: form.telephone, role: form.role, email: form.email, motDePasse: form.motDePasse };
       if (forcerDoublon) payload.confirmerDoublon = true;
 
       const cree = await createUser(payload);
       setCreating(false);
-      setForm({ nomComplet: '', telephone: '', email: '', role: 'operateur', motDePasse: '', codePin: '' });
+      setForm({ nomComplet: '', telephone: '', email: '', role: 'operateur', motDePasse: '', codePin: '', typeClient: 'particulier' });
       load();
       if (payload.role === 'client') {
         flash(`Compte créé — numéro client ${cree.client_number}. Communiquez-le au client pour qu'il active son PIN dans l'app.`);
@@ -2580,9 +2584,23 @@ function UserManagement({ role }) {
                 <option value="superviseur">Gestionnaire / Superviseur</option>
               </select>
               {form.role === 'client' ? (
-                <input placeholder="Code PIN (optionnel — laissez vide pour que le client l'active lui-même)" value={form.codePin}
-                  onChange={(e) => setForm((f) => ({ ...f, codePin: e.target.value }))}
-                  style={{ padding: '9px 11px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body }} />
+                <>
+                  <input placeholder="Code PIN (optionnel — laissez vide pour que le client l'active lui-même)" value={form.codePin}
+                    onChange={(e) => setForm((f) => ({ ...f, codePin: e.target.value }))}
+                    style={{ padding: '9px 11px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body }} />
+                  {/*
+                    Particulier ou entreprise : ce choix decide du
+                    bareme de frais de tenue — 6 500 F contre 15 000 F.
+                    Il est a cote du PIN parce qu'il se decide au meme
+                    moment, a l'ouverture du compte.
+                  */}
+                  <select value={form.typeClient}
+                    onChange={(e) => setForm((f) => ({ ...f, typeClient: e.target.value }))}
+                    style={{ padding: '9px 11px', borderRadius: 9, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body }}>
+                    <option value="particulier">Particulier — frais de tenue ordinaires</option>
+                    <option value="entreprise">Entreprise — frais de tenue majorés</option>
+                  </select>
+                </>
               ) : (
                 <>
                   <input placeholder="Email" type="email" value={form.email}
@@ -2657,6 +2675,16 @@ function UserManagement({ role }) {
                     onChange={(e) => setEditForm((f) => ({ ...f, employeur: e.target.value }))}
                     style={{ padding: '8px 10px', borderRadius: 8, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body, width: 150 }}
                   />
+                  {u.role === 'client' && (
+                    <select
+                      value={editForm.typeClient ?? 'particulier'}
+                      onChange={(e) => setEditForm((f) => ({ ...f, typeClient: e.target.value }))}
+                      style={{ padding: '8px 10px', borderRadius: 8, border: `1px solid ${colors.line}`, fontSize: 12, fontFamily: fonts.body, width: 150 }}
+                    >
+                      <option value="particulier">Particulier</option>
+                      <option value="entreprise">Entreprise</option>
+                    </select>
+                  )}
                   <button onClick={saveEdit} disabled={editBusy} style={{ ...actionBtn(colors.forest, '#fff'), padding: '7px 14px' }}>
                     {editBusy ? 'Enregistrement…' : 'Enregistrer'}
                   </button>
@@ -2697,7 +2725,19 @@ function UserManagement({ role }) {
                 <td style={{ ...td, color: colors.muted }}>{u.employer ?? '—'}</td>
                 <td style={{ ...td, color: colors.muted }}>{u.role}</td>
                 <td style={td}>
-                  <Badge>{u.role === 'client' ? 'Client' : 'Employé'}</Badge>
+                  {/*
+                    La colonne disait seulement « Client » ou
+                    « Employé ». Un compte d'entreprise paie 15 000 F de
+                    frais de tenue contre 6 500 F : cela doit se voir
+                    dans la liste, pas seulement dans la fiche.
+                  */}
+                  {u.role === 'client' ? (
+                    <Badge tone={u.type_client === 'entreprise' ? 'gold' : 'neutral'}>
+                      {u.type_client === 'entreprise' ? 'Entreprise' : 'Particulier'}
+                    </Badge>
+                  ) : (
+                    <Badge>Employé</Badge>
+                  )}
                 </td>
                 <td style={td}>
                   <Badge tone={u.status === 'suspendu' ? 'danger' : 'neutral'}>

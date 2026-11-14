@@ -138,6 +138,15 @@ async function seed() {
        'journalier_solde', 'solde_debiteur', 0, 0.000500, 0, 25000, 5000],
       ['FRAIS_TENUE', 'Frais de tenue de compte', 'Forfait mensuel.',
        'fixe', 'tenue_compte', 1000, 0, 0, null, 0],
+      // Le barème entreprise vient de la migration 064, mais ce script
+      // TRUNCATE les barèmes avant de poser les siens : sans cette
+      // ligne, une base de test n'aurait jamais de barème entreprise et
+      // les tests qui en dépendent passeraient pour de mauvaises
+      // raisons. Même logique que la remarque sur credit_products
+      // au-dessus.
+      ['FRAIS_TENUE_ENTREPRISE', 'Frais de tenue de compte — entreprise',
+       'Forfait mensuel appliqué aux comptes d\'entreprise, plus élevé que celui des particuliers.',
+       'fixe', 'tenue_compte', 15000, 0, 0, null, 0],
       ['COMM_RETRAIT', 'Commission de retrait', 'Commission sur retrait en agence.',
        'pourcentage', 'retrait', 0, 0.005000, 200, 5000, 10000],
       ['COMM_MOMO', 'Commission transfert Mobile Money', 'Commission sur transfert sortant.',

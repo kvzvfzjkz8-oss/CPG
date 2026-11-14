@@ -885,7 +885,7 @@ router.get('/utilisateurs', requirePermission('utilisateurs.gerer'), async (req,
     const statut = String(req.query.statut ?? '').trim();
 
     const champs = `u.id, u.full_name, u.phone, u.email, u.role, u.status, u.client_number,
-              u.job_title, u.employer, u.created_at,
+              u.job_title, u.employer, u.type_client::text AS type_client, u.created_at,
               (u.pin_hash IS NOT NULL AND u.role <> 'client') AS pin_backoffice_defini,
               u.pin_updated_at,
               cb.full_name AS cree_par, ub.full_name AS modifie_par`;
@@ -990,6 +990,10 @@ const createUserSchema = z.object({
   codePin: z.string().regex(/^\d{4,6}$/).optional(), // clients
   employeur: z.string().max(120).optional(),
   poste: z.string().max(120).optional(),
+  // Particulier ou entreprise : c'est ce qui decide du bareme de frais
+  // de tenue, 6 500 F contre 15 000 F (migration 064). Reserve aux
+  // clients — la base le refuse pour un agent.
+  typeClient: z.enum(['particulier', 'entreprise']).optional().default('particulier'),
   confirmerDoublon: z.boolean().optional().default(false),
 });
 
@@ -1063,12 +1067,15 @@ router.post(
         try {
           created = await withTransaction(async (client) => {
             const { rows } = await client.query(
-              `INSERT INTO users (full_name, phone, email, role, employer, job_title, pin_hash, password_hash, client_number, created_by)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-               RETURNING id, full_name, role, status, client_number`,
+              `INSERT INTO users (full_name, phone, email, role, employer, job_title, pin_hash, password_hash, client_number, type_client, created_by)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::client_type, $11)
+               RETURNING id, full_name, role, status, client_number, type_client`,
               [
                 b.nomComplet, b.telephone, b.email?.toLowerCase() ?? null, b.role,
                 b.employeur ?? null, b.poste ?? null, pinHash, passwordHash, clientNumber,
+                // Un agent est toujours « particulier » : la contrainte
+                // type_client_reserve_aux_clients le refuserait sinon.
+                b.role === 'client' ? b.typeClient : 'particulier',
                 req.user.id,
               ]
             );
@@ -1114,6 +1121,7 @@ const updateUserSchema = z.object({
   email: z.string().email().optional(),
   employeur: z.string().max(120).optional(),
   poste: z.string().max(120).optional(),
+  typeClient: z.enum(['particulier', 'entreprise']).optional(),
 }).refine((b) => Object.keys(b).length > 0, { message: 'Renseignez au moins un champ à modifier.' });
 
 router.patch(
@@ -1132,11 +1140,18 @@ router.patch(
       if (b.email !== undefined) push('email', b.email.toLowerCase());
       if (b.employeur !== undefined) push('employer', b.employeur);
       if (b.poste !== undefined) push('job_title', b.poste);
+      // Le type ne se change que sur un client : la contrainte
+      // type_client_reserve_aux_clients refuserait « entreprise » sur
+      // un agent, et le message serait obscur.
+      if (b.typeClient !== undefined) {
+        params.push(b.typeClient);
+        sets.push(`type_client = $${params.length}::client_type`);
+      }
       push('updated_by', req.user.id);
 
       const { rows } = await query(
         `UPDATE users SET ${sets.join(', ')} WHERE id = $1
-         RETURNING id, full_name, phone, email, role, employer, job_title`,
+         RETURNING id, full_name, phone, email, role, employer, job_title, type_client`,
         params
       );
       if (!rows[0]) throw new ApiError(404, 'Utilisateur introuvable.');

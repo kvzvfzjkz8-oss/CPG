@@ -467,26 +467,42 @@ export async function runTenueCompteBatch({ periodStart, periodEnd }) {
   periodStart = mois.debut;
   periodEnd = mois.fin;
 
-  const { rows: fee } = await query(
+  // DEUX BARÈMES DEPUIS LE 14/11/2026 : un pour les particuliers, un
+  // pour les entreprises — « les frais de tenue ne sont pas les mêmes
+  // mais plus élevés » (direction). Les deux portent le même
+  // déclencheur `tenue_compte` ; prendre le premier actif comme avant
+  // reviendrait à facturer au hasard selon l'ordre de la table.
+  const { rows: baremes } = await query(
     `SELECT * FROM current_fee_versions
-     WHERE trigger_on = 'tenue_compte' AND status = 'actif'
-     LIMIT 1`
+     WHERE trigger_on = 'tenue_compte' AND status = 'actif'`
   );
+  const parType = {
+    particulier: baremes.find((b) => b.code === 'FRAIS_TENUE'),
+    entreprise: baremes.find((b) => b.code === 'FRAIS_TENUE_ENTREPRISE'),
+  };
 
-  if (!fee[0]) return { applied: 0, message: 'Aucun barème de frais de tenue actif.' };
+  // Sans barème entreprise, une entreprise paie celui des
+  // particuliers : mieux vaut sous-facturer que de ne rien prélever du
+  // tout, et le cas ne se produit que si la direction l'a désactivé.
+  if (!parType.particulier && !parType.entreprise) {
+    return { applied: 0, message: 'Aucun barème de frais de tenue actif.' };
+  }
 
   const { rows: accounts } = await query(
-    `SELECT a.id FROM accounts a JOIN users u ON u.id = a.user_id WHERE u.role = 'client' AND u.status = 'actif'`
+    `SELECT a.id, u.type_client::text AS type_client
+     FROM accounts a JOIN users u ON u.id = a.user_id
+     WHERE u.role = 'client' AND u.status = 'actif'`
   );
 
   const results = [];
   for (const account of accounts) {
+    const bareme = parType[account.type_client] ?? parType.particulier ?? parType.entreprise;
     try {
       const result = await runTenueCompteForAccount({
         accountId: account.id,
         periodStart,
         periodEnd,
-        feeVersion: fee[0],
+        feeVersion: bareme,
       });
       if (result.amount > 0) results.push(result);
     } catch (error) {
@@ -614,17 +630,42 @@ function moisDepuisPeriode(periode) {
   return { debut: debut.toISOString().slice(0, 10), fin: fin.toISOString().slice(0, 10) };
 }
 
-/** Le barème actif pour cette nature de frais, ou null s'il n'y en a pas. */
-async function baremeActifPour(nature) {
+/**
+ * Le barème actif pour cette nature de frais, ou null s'il n'y en a pas.
+ *
+ * `accountId` compte depuis le 14/11/2026 : les frais de tenue ont deux
+ * barèmes, particulier et entreprise, qui portent le même déclencheur.
+ * Sans le compte, on prenait le premier actif — c'est-à-dire au hasard
+ * selon l'ordre de la table, et donc parfois 15 000 F à un particulier.
+ *
+ * Sans barème pour le type du client, on retombe sur l'autre : mieux
+ * vaut sous-facturer une entreprise que de ne rien prélever du tout.
+ */
+async function baremeActifPour(nature, accountId = null) {
   const declencheur = DECLENCHEUR_PAR_NATURE[nature];
   if (!declencheur) return null;
+
   const { rows } = await query(
     `SELECT * FROM current_fee_versions
-     WHERE trigger_on = $1 AND status = 'actif'
-     LIMIT 1`,
+     WHERE trigger_on = $1 AND status = 'actif'`,
     [declencheur]
   );
-  return rows[0] ?? null;
+  if (rows.length <= 1) return rows[0] ?? null;
+
+  // Plusieurs barèmes pour le même déclencheur : c'est le cas des frais
+  // de tenue. On choisit selon le type du titulaire du compte.
+  let type = 'particulier';
+  if (accountId) {
+    const { rows: titulaire } = await query(
+      `SELECT u.type_client::text AS type_client
+       FROM accounts a JOIN users u ON u.id = a.user_id
+       WHERE a.id = $1`,
+      [accountId]
+    );
+    type = titulaire[0]?.type_client ?? 'particulier';
+  }
+  const attendu = type === 'entreprise' ? 'FRAIS_TENUE_ENTREPRISE' : 'FRAIS_TENUE';
+  return rows.find((r) => r.code === attendu) ?? rows[0];
 }
 
 /**
@@ -655,7 +696,7 @@ async function dejaPreleveCeMois({ accountId, nature, periodStart, periodEnd }) 
  * directeur qui voit le montant avant de valider.
  */
 export async function previewFraisPonctuel({ accountId, nature, periode }) {
-  const bareme = await baremeActifPour(nature);
+  const bareme = await baremeActifPour(nature, accountId);
   if (!bareme) {
     throw new RateError(
       nature === 'agios'
@@ -726,7 +767,7 @@ export async function previewFraisPonctuel({ accountId, nature, periode }) {
  * règle reste écrite à un seul endroit.
  */
 export async function appliquerFraisPonctuel({ accountId, nature, periode, client }) {
-  const bareme = await baremeActifPour(nature);
+  const bareme = await baremeActifPour(nature, accountId);
   if (!bareme) {
     throw new RateError('Le barème de ce frais n’est plus actif — prélèvement impossible.', 'bareme_absent');
   }

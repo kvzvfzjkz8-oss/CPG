@@ -263,7 +263,7 @@ export async function imprimerHistoriqueClient(clientId, clientNumber) {
 }
 
 /** Création d'un compte employé ou client. */
-export async function createUser({ nomComplet, telephone, email, role, motDePasse, codePin, employeur, poste, confirmerDoublon }) {
+export async function createUser({ nomComplet, telephone, email, role, motDePasse, codePin, employeur, poste, typeClient, confirmerDoublon }) {
   return apiRequest('/v1/admin/utilisateurs', {
     method: 'POST',
     body: {
@@ -277,6 +277,8 @@ export async function createUser({ nomComplet, telephone, email, role, motDePass
       ...(codePin ? { codePin } : {}),
       ...(employeur ? { employeur } : {}),
       ...(poste ? { poste } : {}),
+      // Particulier ou entreprise : decide du bareme de frais de tenue.
+      ...(typeClient ? { typeClient } : {}),
       ...(confirmerDoublon ? { confirmerDoublon } : {}),
     },
   });
@@ -288,7 +290,7 @@ export async function setUserStatus(userId, statut) {
 }
 
 /** Modifie les informations d'un utilisateur (nom, téléphone, poste, employeur...). */
-export async function updateUser(userId, { nomComplet, telephone, email, poste, employeur }) {
+export async function updateUser(userId, { nomComplet, telephone, email, poste, employeur, typeClient }) {
   return apiRequest(`/v1/admin/utilisateurs/${userId}`, {
     method: 'PATCH',
     body: {
@@ -297,6 +299,7 @@ export async function updateUser(userId, { nomComplet, telephone, email, poste, 
       ...(email ? { email } : {}),
       ...(poste ? { poste } : {}),
       ...(employeur ? { employeur } : {}),
+      ...(typeClient ? { typeClient } : {}),
     },
   });
 }
