@@ -6,6 +6,7 @@ import { requireAuth, requirePermission } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { ApiError } from '../middleware/errorHandler.js';
 import { genererSituationPDF } from '../services/situationService.js';
+import { genererRibPDF } from '../services/ribService.js';
 import { computeSchedule, buildInstallments, computeFileFee, genererReferenceUnique, DEFAULT_MONTHLY_RATE } from '../services/creditService.js';
 import { genererContratPDF } from '../services/contractService.js';
 import { getActiveScale } from '../services/productService.js';
@@ -806,6 +807,52 @@ router.get('/clients/:id/situation/pdf', requirePermission('demandes.lire'), asy
       `inline; filename="Situation-${client.client_number ?? client.id}.pdf"`
     );
     const doc = genererSituationPDF({ client, credits, totaux, editePar: req.user?.full_name ?? null });
+    doc.pipe(res);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /admin/clients/:id/rib — le relevé d'identité du compte, à
+ * imprimer et remettre au client.
+ *
+ * Ce n'est pas un RIB bancaire : CPG n'a pas de code banque attribué,
+ * et le document le dit lui-même. C'est l'identité du compte — nom et
+ * numéro CPG — pour qu'un employeur ou un tiers sache où verser.
+ *
+ * Même permission que la situation du compte : qui peut lire le dossier
+ * d'un client peut lui éditer son relevé.
+ */
+router.get('/clients/:id/rib', requirePermission('demandes.lire'), async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      `SELECT u.id, btrim(u.full_name) AS full_name, u.client_number, u.phone,
+              btrim(u.employer) AS employer, u.role::text AS role,
+              a.currency, a.created_at
+       FROM users u
+       LEFT JOIN accounts a ON a.user_id = u.id
+       WHERE u.id = $1
+       ORDER BY a.created_at
+       LIMIT 1`,
+      [req.params.id]
+    );
+    const client = rows[0];
+    if (!client) throw new ApiError(404, 'Client introuvable.');
+    if (client.role !== 'client') {
+      throw new ApiError(422, 'Seul un compte client possède un relevé d’identité.');
+    }
+    if (!client.client_number) {
+      throw new ApiError(422, 'Ce client n’a pas encore de numéro de compte.');
+    }
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="RIB-${client.client_number}.pdf"`);
+    const doc = genererRibPDF({
+      client,
+      compte: { currency: client.currency, created_at: client.created_at },
+      editePar: req.user?.full_name ?? null,
+    });
     doc.pipe(res);
   } catch (error) {
     next(error);

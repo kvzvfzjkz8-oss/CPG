@@ -15,6 +15,7 @@ import CreditManagementView from './CreditManagementView';
 import { Card, Badge, Tabs, KpiCard, SectionTitle, DataTable, td } from '../components/UI';
 import {
   approveCredit, setUserStatus, fetchUsers, rechercherUtilisateurs, createUser, updateUser, resetClientPin, fetchStatistics, fetchMomoTransactions,
+  imprimerRibClient,
   fetchPendingInstallmentAdjustments, decideInstallmentAdjustment,
   fetchPendingCreditDeletionRequests, deciderSuppressionCreditDoubleValidation,
   fetchPendingCommissionItemDeletionRequests, deciderSuppressionCommissionItemDoubleValidation,
@@ -2320,6 +2321,18 @@ function UserManagement({ role }) {
   };
 
   const [contratBusyId, setContratBusyId] = useState(null);
+  const [ribBusyId, setRibBusyId] = useState(null);
+  const imprimerRib = async (u) => {
+    setRibBusyId(u.id);
+    try {
+      await imprimerRibClient(u.id, u.client_number);
+    } catch (e) {
+      setError(e.message ?? 'Le relevé n’a pas pu être édité.');
+    } finally {
+      setRibBusyId(null);
+    }
+  };
+
   const genererContrat = async (u) => {
     setContratBusyId(u.id);
     try {
@@ -2708,6 +2721,16 @@ function UserManagement({ role }) {
                         style={{ border: 'none', background: 'transparent', color: colors.forestLight, fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: fonts.body }}
                       >
                         {contratBusyId === u.id ? '…' : 'Contrat'}
+                      </button>
+                    )}
+                    {u.role === 'client' && u.client_number && (
+                      <button
+                        onClick={() => imprimerRib(u)}
+                        disabled={ribBusyId === u.id}
+                        title="Imprimer le relevé d’identité du compte, à remettre au client"
+                        style={{ border: 'none', background: 'transparent', color: colors.forestLight, fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: fonts.body }}
+                      >
+                        {ribBusyId === u.id ? '…' : 'RIB'}
                       </button>
                     )}
                     {u.role === 'client' && (

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   Inbox, ShieldCheck, MessageCircle, Check, X, Eye, Filter, Send, CalendarClock, Gavel, Plus, Wallet,
-  AlertTriangle, Phone, Pencil, PlayCircle, HandCoins, RefreshCw,
+  AlertTriangle, Phone, Pencil, PlayCircle, HandCoins, RefreshCw, SlidersHorizontal,
 } from 'lucide-react';
 import { colors, fonts, formatFCFA } from '../theme';
 import { Card, Badge, Tabs, SectionTitle } from '../components/UI';
@@ -16,6 +16,7 @@ import {
 } from '../api/adminApi';
 import OperationsView from './OperationsView';
 import PunctualWithdrawalView from './PunctualWithdrawalView';
+import CreditManagementView from './CreditManagementView';
 import { CreditsEnCoursPanel } from '../components/ClientsCredits';
 
 export default function OperatorView() {
@@ -58,6 +59,12 @@ export default function OperatorView() {
           { key: 'prelevements', label: 'Prélèvements du mois', icon: Wallet },
           { key: 'echeances-retard', label: 'Échéances en retard', icon: AlertTriangle, badge: overdueCount },
           { key: 'credits-actifs', label: 'Crédits en cours', icon: Wallet },
+          // Gestion des credits : l'operateur y donne son accord sur
+          // les demandes du gestionnaire. L'ecran existait pour le
+          // gestionnaire et le directeur, pas pour lui — il avait le
+          // droit d'accorder sans avoir ou le faire, et les demandes
+          // restaient bloquees en « en_attente_operateur ».
+          { key: 'gestion-credits', label: 'Gestion des crédits', icon: SlidersHorizontal },
           { key: 'double-validation', label: 'Double validation', icon: Gavel },
           { key: 'verification', label: 'Vérification client', icon: ShieldCheck },
           { key: 'operations', label: 'Opérations mensuelles', icon: CalendarClock },
@@ -73,6 +80,7 @@ export default function OperatorView() {
         fetchOverdueInstallments().then((list) => setOverdueCount(list.length)).catch(() => {});
       }} />}
       {tab === 'credits-actifs' && <CreditsEnCoursPanel />}
+      {tab === 'gestion-credits' && <CreditManagementView role="operateur" />}
       {tab === 'double-validation' && <DoubleValidation />}
       {tab === 'verification' && <ClientVerification />}
       {tab === 'operations' && <OperationsView />}

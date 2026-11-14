@@ -145,6 +145,13 @@ export const PERMISSIONS = {
   // fixer un taux hors marge, trancher les propositions du gestionnaire,
   // et seul à pouvoir toucher aux plafonds réglementaires.
   [ROLES.DIRECTEUR]: [
+    // Gestion des credits : dernier maillon, il valide. Ces deux
+    // permissions existaient cote serveur depuis la migration 061 mais
+    // manquaient ICI : son onglet ne s'affichait donc pas, et les
+    // demandes du gestionnaire restaient invisibles pour lui.
+    'credits.decider_modification',
+    'credits.lire_modifications',
+
     'messagerie_interne.acceder',
     'statistiques.lire',
     'demandes.lire',

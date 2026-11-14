@@ -220,6 +220,25 @@ export async function imprimerSituationClient(clientId, clientNumber) {
   URL.revokeObjectURL(url);
 }
 
+/**
+ * Relevé d'identité du compte, en PDF.
+ *
+ * Ce n'est pas un RIB bancaire — CPG n'a pas de code banque — mais
+ * l'identité du compte : nom du titulaire et numéro CPG, pour qu'un
+ * employeur ou un tiers sache où verser. Le document le dit lui-même.
+ */
+export async function imprimerRibClient(clientId, clientNumber) {
+  const blob = await apiRequestBlob(`/v1/admin/clients/${clientId}/rib`);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `RIB-${clientNumber ?? clientId}.pdf`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 /** Fiche complète d'un client : ses informations et l'historique de tous ses crédits. */
 export async function fetchClientDetail(clientId) {
   return apiRequest(`/v1/admin/clients/${clientId}`);
