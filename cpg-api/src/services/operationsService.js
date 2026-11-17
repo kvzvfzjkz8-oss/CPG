@@ -360,7 +360,30 @@ async function collecterUneEcheance(client, echeance, actorId, { forcer = false,
   // l'opérateur de solder plusieurs arriérés d'un même crédit en un
   // seul lot — un geste unique, où il a choisi les échéances une par
   // une.
-  const { rows: cycle } = forcer ? { rows: [] } : await client.query(
+  // ─────────────────────────────────────────────────────────────────
+  //  UNE ENTREPRISE N'A PAS DE SALAIRE
+  // ─────────────────────────────────────────────────────────────────
+  //
+  // « Fais-le, virement mensuel encaissé au guichet. »
+  // (direction, 17/11/2026)
+  //
+  // Toute la règle ci-dessous raisonne sur le salaire : c'est lui qui
+  // paie, et c'est son arrivée qui autorise la mensualité suivante. Une
+  // entreprise ne reçoit jamais de ligne de paie — elle vire sa
+  // mensualité, qu'on encaisse au guichet. Appliquée telle quelle, la
+  // règle bloquait son crédit après la PREMIÈRE échéance, et pour
+  // toujours.
+  //
+  // Pour elle, le rythme n'est donc pas le salaire mais l'échéancier :
+  // on prélève quand l'échéance est due et que la provision est là. Les
+  // 231 particuliers, eux, restent protégés exactement comme avant.
+  const { rows: titulaire } = await client.query(
+    `SELECT type_client::text AS type_client FROM users WHERE id = $1`,
+    [echeance.user_id]
+  );
+  const estEntreprise = titulaire[0]?.type_client === 'entreprise';
+
+  const { rows: cycle } = (forcer || estEntreprise) ? { rows: [] } : await client.query(
     `WITH dernier AS (
        SELECT i.sequence, i.paid_at, le.id AS entry_id, le.created_at, le.account_id
        FROM installments i
@@ -452,7 +475,14 @@ async function collecterUneEcheance(client, echeance, actorId, { forcer = false,
     // Le découvert n'est autorisé que si l'agent a bien été payé ce
     // mois-ci : c'est ce qui distingue un mauvais payeur d'un agent
     // dont l'entreprise n'a pas encore versé les salaires.
-    const { rows: paye } = await client.query(
+    //
+    // Une entreprise n'est jamais « payée » : sa provision vient d'un
+    // virement encaissé au guichet. On ne la met donc jamais à
+    // découvert — l'échéance reste en retard, sans mouvement d'argent,
+    // jusqu'à ce que le virement arrive. C'est le même refus qu'avant,
+    // avec un motif qui dit la vérité plutôt que de réclamer un salaire
+    // qui n'existe pas.
+    const { rows: paye } = estEntreprise ? { rows: [] } : await client.query(
       `SELECT 1 FROM ledger_entries
        WHERE account_id = $1 AND type = 'salaire'
          AND created_at >= date_trunc('month', CURRENT_DATE)
@@ -472,7 +502,9 @@ async function collecterUneEcheance(client, echeance, actorId, { forcer = false,
         sequence: echeance.sequence,
         amount: echeance.amount,
         soldeDisponible: soldeAvant,
-        motif: 'salaire du mois non encore versé',
+        motif: estEntreprise
+          ? 'provision insuffisante — le virement mensuel n’a pas encore été encaissé'
+          : 'salaire du mois non encore versé',
       };
     }
   }
