@@ -53,7 +53,7 @@ const unique = Date.now();
 let suivant = 0;
 let creneau = 0;
 
-async function clientAvecCredit(nom, typeClient, montant, duree) {
+async function clientAvecCredit(nom, typeClient, montant, duree, codeProduit = 'MICRO_STD') {
   const gestionnaire = await loginStaff('gestionnaire');
   const operateur = await loginStaff('operateur');
   const directeur = await loginStaff('directeur');
@@ -72,7 +72,9 @@ async function clientAvecCredit(nom, typeClient, montant, duree) {
     method: 'POST', body: { phone, pin: '1234' },
   });
   const { body: cat } = await api('/v1/admin/catalogue/produits/actifs', { token: gestionnaire });
-  const produitId = cat.produits.find((p) => p.code === 'MICRO_STD').product_id;
+  const produit = cat.produits.find((p) => p.code === codeProduit);
+  assert.ok(produit, `le produit ${codeProduit} doit être actif dans le catalogue`);
+  const produitId = produit.product_id;
 
   const { body: credit } = await api('/v1/client/credits', {
     method: 'POST', token: session.accessToken,
@@ -199,6 +201,41 @@ describe(
 
       const apres = await echeancesDe(e.id);
       assert.equal(apres[0].st, 'en_retard', 'l’échéance est signalée en retard');
+    });
+
+    test('le produit ENTREPRISE porte 10 millions sur 12 mois, et s’amortit', async () => {
+      // « Fais le produit crédit entreprise jusqu'à 10 millions sur 12
+      //   mois. » (direction, 18/11/2026)
+      //
+      // Le produit naît en brouillon : fixer un taux et activer
+      // appartiennent au directeur. On l'active ici pour éprouver ses
+      // bornes — c'est le seul moyen de vérifier qu'un dossier de 10
+      // millions passe réellement le circuit.
+      const directeur = await loginStaff('directeur');
+      const { body: cat } = await api('/v1/admin/catalogue/produits', { token: directeur });
+      const produit = cat.produits.find((p) => p.code === 'ENTREPRISE');
+      assert.ok(produit, 'le produit ENTREPRISE doit exister');
+      await api(`/v1/admin/catalogue/produits/${produit.id}/statut`, {
+        method: 'PATCH', token: directeur, body: { statut: 'actif' },
+      });
+
+      const e = await clientAvecCredit(
+        `Entreprise Dix Millions ${unique}`, 'entreprise', 10000000, 12, 'ENTREPRISE'
+      );
+
+      const ech = await echeancesDe(e.id);
+      assert.equal(ech.length, 12, 'douze mensualités');
+      const total = ech.reduce((t, x) => t + Number(x.amount), 0);
+      assert.ok(total > 10000000, `le total dû couvre le capital et les intérêts : ${total}`);
+
+      // Et il s'amortit sans salaire, comme tout crédit d'entreprise.
+      await rendreEchues(e.id, 2);
+      const frais = await echeancesDe(e.id);
+      await encaisser(e.clientId, frais[0].amount + frais[1].amount);
+      for (const i of [0, 1]) {
+        const r = await prelever([frais[i].id]);
+        assert.equal(r.preleves.length, 1, `mensualité ${i + 1} : ${JSON.stringify(r.echecs)}`);
+      }
     });
 
     test('le passage automatique traite l’entreprise comme l’échéancier le demande', async () => {

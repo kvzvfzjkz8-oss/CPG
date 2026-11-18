@@ -131,6 +131,32 @@ async function seed() {
       [decouvert[0].id, gestionnaire.id]
     );
 
+    // Le crédit entreprise, en brouillon comme en production
+    // (migration 065). Repris ici pour la même raison que le découvert
+    // ci-dessus : ce script TRUNCATE credit_products, et sans cette
+    // ligne aucun environnement de test n'aurait de produit capable de
+    // porter 10 millions sur 12 mois.
+    //
+    // 2,5 % et non les 9,9 % de la migration : le plafond
+    // réglementaire est fixé à 3 % pour les tests.
+    const { rows: entreprise } = await client.query(
+      `INSERT INTO credit_products (code, name, description, status, nature, created_by)
+       VALUES ('ENTREPRISE', 'Crédit entreprise',
+               'Crédit destiné aux comptes d''entreprise. Remboursement par virement '
+               || 'mensuel encaissé au guichet : son échéancier ne dépend pas d''un salaire.',
+               'brouillon', 'credit', $1)
+       RETURNING id`,
+      [gestionnaire.id]
+    );
+    await client.query(
+      `INSERT INTO product_versions
+         (product_id, version, monthly_rate, min_amount, max_amount, min_duration, max_duration,
+          file_fee_fixed, created_by, note)
+       VALUES ($1, 1, 0.0250, 500000, 10000000, 3, 12, 0, $2,
+               'Barème initial — montants et durée posés par la direction le 18/11/2026')`,
+      [entreprise[0].id, gestionnaire.id]
+    );
+
     console.log('Création des services annexes et agios…');
     const services = [
       ['AGIOS_DECOUVERT', 'Agios sur solde débiteur',
